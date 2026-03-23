@@ -1,0 +1,8 @@
+[package]
+name = "amux-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "amux CLI binary (socket client)"
+
+[dependencies]

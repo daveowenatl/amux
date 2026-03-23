@@ -1,0 +1,17 @@
+[package]
+name = "amux-term"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Terminal pane abstraction wrapping wezterm-term + portable-pty"
+
+[dependencies]
+wezterm-term = { workspace = true }
+portable-pty = { workspace = true }
+winit = { workspace = true }
+url = { workspace = true }
+tracing = { workspace = true }
+anyhow = "1"
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
