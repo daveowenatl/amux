@@ -1,0 +1,8 @@
+[package]
+name = "amux-render-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "amux wgpu + cosmic-text GPU renderer"
+
+[dependencies]

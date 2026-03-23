@@ -1,0 +1,8 @@
+[package]
+name = "amux-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "amux main binary: GUI + event loop"
+
+[dependencies]

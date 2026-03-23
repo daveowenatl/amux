@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/amux-app",
+    "crates/amux-cli",
+    "crates/amux-term",
+    "crates/amux-render-soft",
+    "crates/amux-render-gpu",
+    "crates/amux-ipc",
+    "crates/amux-layout",
+    "crates/amux-notify",
+    "crates/amux-session",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/yourusername/amux"
+
+[workspace.dependencies]
+# Terminal engine
+wezterm-term = { git = "https://github.com/wezterm/wezterm", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
+portable-pty = "0.9"
+
+# Windowing
+winit = "0.30"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Internal crates
+amux-term = { path = "crates/amux-term" }
+amux-ipc = { path = "crates/amux-ipc" }
+amux-layout = { path = "crates/amux-layout" }
+amux-notify = { path = "crates/amux-notify" }
+amux-session = { path = "crates/amux-session" }
+amux-render-soft = { path = "crates/amux-render-soft" }
+amux-render-gpu = { path = "crates/amux-render-gpu" }
