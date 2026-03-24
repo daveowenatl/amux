@@ -19,6 +19,10 @@ pub const METHODS: &[&str] = &[
     "pane.close",
     "pane.focus",
     "pane.list",
+    "status.set",
+    "notify.send",
+    "notify.list",
+    "notify.clear",
 ];
 
 // --- Params ---
@@ -69,4 +73,47 @@ pub struct SurfaceListResult {
 #[derive(Debug, Serialize)]
 pub struct ReadTextResult {
     pub text: String,
+}
+
+// --- Status / Notify Params ---
+
+#[derive(Debug, Deserialize)]
+pub struct StatusSetParams {
+    pub workspace_id: String,
+    pub state: String,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NotifySendParams {
+    pub workspace_id: String,
+    pub pane_id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub body: String,
+}
+
+// --- Status / Notify Results ---
+
+#[derive(Debug, Serialize)]
+pub struct NotifySendResult {
+    pub notification_id: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NotifyListEntry {
+    pub id: u64,
+    pub workspace_id: String,
+    pub pane_id: String,
+    pub title: String,
+    pub body: String,
+    pub source: String,
+    pub read: bool,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NotifyListResult {
+    pub notifications: Vec<NotifyListEntry>,
 }

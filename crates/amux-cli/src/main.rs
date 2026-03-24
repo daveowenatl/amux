@@ -100,6 +100,37 @@ enum Command {
         /// Surface ID to focus
         surface_id: String,
     },
+    /// Set workspace agent status (displayed as a sidebar pill)
+    #[command(name = "set-status")]
+    SetStatus {
+        /// Status state: idle, active, waiting
+        state: String,
+        /// Optional label text
+        label: Option<String>,
+        /// Target workspace ID (defaults to AMUX_WORKSPACE_ID)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Send a notification
+    Notify {
+        /// Notification body
+        body: String,
+        /// Notification title
+        #[arg(long)]
+        title: Option<String>,
+        /// Target workspace ID (defaults to AMUX_WORKSPACE_ID)
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Target pane ID (defaults to focused pane)
+        #[arg(long)]
+        pane: Option<String>,
+    },
+    /// List notifications
+    #[command(name = "list-notifications")]
+    ListNotifications,
+    /// Clear all notifications
+    #[command(name = "clear-notifications")]
+    ClearNotifications,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -353,6 +384,76 @@ async fn main() -> anyhow::Result<()> {
                 print_response(&resp, true);
             } else if resp.ok {
                 println!("Focused surface {}", surface_id);
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        // --- Notification / Status commands ---
+        Command::SetStatus {
+            state,
+            label,
+            workspace,
+        } => {
+            let ws_id = workspace
+                .or_else(|| std::env::var("AMUX_WORKSPACE_ID").ok())
+                .unwrap_or_else(|| "0".to_string());
+            let mut params = serde_json::json!({
+                "workspace_id": ws_id,
+                "state": state,
+            });
+            if let Some(l) = label {
+                params["label"] = serde_json::json!(l);
+            }
+            let resp = client.call("status.set", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("Status set");
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::Notify {
+            body,
+            title,
+            workspace,
+            pane,
+        } => {
+            let ws_id = workspace
+                .or_else(|| std::env::var("AMUX_WORKSPACE_ID").ok())
+                .unwrap_or_else(|| "0".to_string());
+            let pane_id = pane.unwrap_or_else(|| "0".to_string());
+            let mut params = serde_json::json!({
+                "workspace_id": ws_id,
+                "pane_id": pane_id,
+                "body": body,
+            });
+            if let Some(t) = title {
+                params["title"] = serde_json::json!(t);
+            }
+            let resp = client.call("notify.send", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                if let Some(result) = &resp.result {
+                    if let Some(id) = result.get("notification_id") {
+                        println!("Notification sent: {}", id);
+                    }
+                }
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::ListNotifications => {
+            let resp = client.call("notify.list", serde_json::json!({})).await?;
+            print_response(&resp, cli.json);
+        }
+        Command::ClearNotifications => {
+            let resp = client.call("notify.clear", serde_json::json!({})).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("Notifications cleared");
             } else {
                 print_response(&resp, false);
             }

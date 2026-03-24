@@ -18,5 +18,6 @@ tracing-subscriber = { workspace = true }
 portable-pty = { workspace = true }
 amux-ipc = { workspace = true }
 amux-layout = { workspace = true }
+amux-notify = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

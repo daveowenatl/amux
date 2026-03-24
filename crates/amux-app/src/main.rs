@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use amux_ipc::IpcCommand;
 use amux_layout::{NavDirection, PaneId, PaneTree, SplitDirection};
+use amux_notify::{flash_alpha, FlashReason, NotificationSource, NotificationStore, FLASH_DURATION};
 use amux_term::color::resolve_color;
+use amux_term::osc::NotificationEvent;
 use amux_term::config::AmuxTermConfig;
 use amux_term::pane::TerminalPane;
 use portable_pty::CommandBuilder;
@@ -45,7 +47,6 @@ fn main() -> anyhow::Result<()> {
         zoomed: None,
         dragging_divider: None,
         last_pane_sizes: HashMap::new(),
-        status: None,
     };
 
     let options = eframe::NativeOptions {
@@ -75,8 +76,8 @@ fn main() -> anyhow::Result<()> {
                 socket_addr: ipc_addr,
                 config,
                 last_panel_rect: None,
-                focus_changed_at: std::time::Instant::now(),
-                focus_highlight_pane: initial_pane_id,
+                notifications: NotificationStore::new(),
+                show_notification_panel: false,
             }))
         }),
     )
@@ -145,8 +146,6 @@ struct Workspace {
     zoomed: Option<PaneId>,
     dragging_divider: Option<DragState>,
     last_pane_sizes: HashMap<PaneId, (usize, usize)>,
-    #[allow(dead_code)]
-    status: Option<String>,
 }
 
 struct SidebarState {
@@ -216,10 +215,8 @@ struct AmuxApp {
     socket_addr: amux_ipc::IpcAddr,
     config: Arc<AmuxTermConfig>,
     last_panel_rect: Option<egui::Rect>,
-    /// Instant when focus last changed pane, for fade-out animation.
-    focus_changed_at: std::time::Instant,
-    /// The pane that received focus (for rendering the fade indicator).
-    focus_highlight_pane: PaneId,
+    notifications: NotificationStore,
+    show_notification_panel: bool,
 }
 
 impl AmuxApp {
@@ -235,14 +232,24 @@ impl AmuxApp {
         let ws = self.active_workspace_mut();
         if ws.focused_pane != pane_id {
             ws.focused_pane = pane_id;
-            self.focus_changed_at = std::time::Instant::now();
-            self.focus_highlight_pane = pane_id;
+            // Clear notifications on the newly focused pane
+            self.notifications.mark_pane_read(pane_id);
+            // Navigation flash — but suppress if other panes have unread
+            let pane_ids: Vec<u64> = self.active_workspace().tree.iter_panes();
+            if !self
+                .notifications
+                .has_unread_excluding(&pane_ids, pane_id)
+            {
+                self.notifications
+                    .flash_pane(pane_id, FlashReason::Navigation);
+            }
         }
     }
 
     fn flash_focus(&mut self) {
-        self.focus_changed_at = std::time::Instant::now();
-        self.focus_highlight_pane = self.focused_pane_id();
+        let pane_id = self.focused_pane_id();
+        self.notifications
+            .flash_pane(pane_id, FlashReason::Navigation);
     }
 
     fn focused_pane_id(&self) -> PaneId {
@@ -262,6 +269,9 @@ impl eframe::App for AmuxApp {
                 }
             }
         }
+
+        // Drain notification events from all surfaces
+        self.drain_notifications();
 
         // Process IPC commands
         self.process_ipc_commands();
@@ -329,6 +339,11 @@ impl eframe::App for AmuxApp {
 
                 ui.allocate_rect(panel_rect, egui::Sense::click_and_drag());
             });
+
+        // Notification panel overlay
+        if self.show_notification_panel {
+            self.render_notification_panel(ctx);
+        }
 
         // Update window title from focused pane's active surface
         let focused_id = self.focused_pane_id();
@@ -525,23 +540,67 @@ impl AmuxApp {
             surface.scroll_offset,
         );
 
-        // Fading focus indicator
-        if pane_id == self.focus_highlight_pane {
-            let elapsed = self.focus_changed_at.elapsed().as_secs_f32();
-            let fade_duration = 1.0; // seconds
-            let alpha = ((1.0 - elapsed / fade_duration).clamp(0.0, 1.0) * 255.0) as u8;
-            if alpha > 0 {
-                ui.painter().rect_stroke(
-                    rect,
-                    0.0,
-                    egui::Stroke::new(
-                        2.0,
-                        egui::Color32::from_rgba_unmultiplied(80, 140, 220, alpha),
-                    ),
-                    egui::StrokeKind::Inside,
-                );
-                // Keep repainting during the fade
-                ui.ctx().request_repaint();
+        // Notification ring + flash animation (matching cmux)
+        let pane_u64 = pane_id;
+        let ring_rect = rect.shrink(2.0);
+
+        // 1. Persistent unread ring (NOT on focused pane)
+        if !is_focused && self.notifications.pane_unread(pane_u64) > 0 {
+            // Steady blue ring with glow
+            let ring_color = egui::Color32::from_rgba_unmultiplied(40, 120, 255, 89); // 0.35 * 255
+            ui.painter().rect_stroke(
+                ring_rect,
+                6.0,
+                egui::Stroke::new(2.5, ring_color),
+                egui::StrokeKind::Inside,
+            );
+            ui.ctx().request_repaint();
+        }
+
+        // 2. Flash animation (on ANY pane including focused)
+        if let Some(state) = self.notifications.pane_state(pane_u64) {
+            if let Some(started) = state.flash_started_at {
+                let elapsed = started.elapsed().as_secs_f32();
+                if elapsed < FLASH_DURATION {
+                    let alpha = flash_alpha(elapsed);
+                    let base_color = match state.flash_reason {
+                        Some(FlashReason::Navigation) => [0u8, 128, 128], // teal
+                        _ => [40, 120, 255],                              // blue
+                    };
+                    let glow_alpha = (alpha * 0.6 * 255.0) as u8;
+                    let ring_alpha = (alpha * 255.0) as u8;
+                    // Glow (wider, more transparent)
+                    ui.painter().rect_stroke(
+                        ring_rect.expand(1.0),
+                        6.0,
+                        egui::Stroke::new(
+                            4.0,
+                            egui::Color32::from_rgba_unmultiplied(
+                                base_color[0],
+                                base_color[1],
+                                base_color[2],
+                                glow_alpha,
+                            ),
+                        ),
+                        egui::StrokeKind::Outside,
+                    );
+                    // Ring
+                    ui.painter().rect_stroke(
+                        ring_rect,
+                        6.0,
+                        egui::Stroke::new(
+                            2.5,
+                            egui::Color32::from_rgba_unmultiplied(
+                                base_color[0],
+                                base_color[1],
+                                base_color[2],
+                                ring_alpha,
+                            ),
+                        ),
+                        egui::StrokeKind::Inside,
+                    );
+                    ui.ctx().request_repaint();
+                }
             }
         }
     }
@@ -580,9 +639,14 @@ impl AmuxApp {
                         egui::Color32::TRANSPARENT
                     };
 
+                    let pane_ids: Vec<u64> = ws.tree.iter_panes();
+                    let unread = self.notifications.workspace_unread_count(&pane_ids);
+                    let has_status = self.notifications.workspace_status(ws.id).is_some();
+                    let row_height = if has_status { 38.0 } else { 24.0 };
+
                     let response = ui.horizontal(|ui| {
                         let (rect, response) = ui.allocate_exact_size(
-                            ui.available_size_before_wrap(),
+                            egui::vec2(ui.available_width(), row_height),
                             egui::Sense::click(),
                         );
                         if ui.is_rect_visible(rect) {
@@ -599,16 +663,67 @@ impl AmuxApp {
                                 egui::FontId::proportional(14.0),
                                 text_color,
                             );
-                            // Pane count badge
-                            let count = ws.tree.iter_panes().len();
-                            let count_text = format!("{}", count);
-                            ui.painter().text(
-                                egui::pos2(rect.right() - 8.0, rect.min.y + 4.0),
-                                egui::Align2::RIGHT_TOP,
-                                &count_text,
-                                egui::FontId::proportional(11.0),
-                                egui::Color32::from_gray(100),
-                            );
+
+                            // Unread badge or pane count
+                            if unread > 0 {
+                                let badge_center =
+                                    egui::pos2(rect.right() - 16.0, rect.min.y + 12.0);
+                                ui.painter().circle_filled(
+                                    badge_center,
+                                    8.0,
+                                    egui::Color32::from_rgb(40, 120, 255),
+                                );
+                                ui.painter().text(
+                                    badge_center,
+                                    egui::Align2::CENTER_CENTER,
+                                    format!("{}", unread),
+                                    egui::FontId::proportional(9.0),
+                                    egui::Color32::WHITE,
+                                );
+                            } else {
+                                let count = ws.tree.iter_panes().len();
+                                ui.painter().text(
+                                    egui::pos2(rect.right() - 8.0, rect.min.y + 4.0),
+                                    egui::Align2::RIGHT_TOP,
+                                    format!("{}", count),
+                                    egui::FontId::proportional(11.0),
+                                    egui::Color32::from_gray(100),
+                                );
+                            }
+
+                            // Status pill
+                            if let Some(status) =
+                                self.notifications.workspace_status(ws.id)
+                            {
+                                let (pill_color, default_text) = match status.state {
+                                    amux_notify::AgentState::Active => {
+                                        (egui::Color32::from_rgb(50, 180, 80), "active")
+                                    }
+                                    amux_notify::AgentState::Waiting => {
+                                        (egui::Color32::from_rgb(230, 170, 40), "waiting")
+                                    }
+                                    amux_notify::AgentState::Idle => {
+                                        (egui::Color32::from_gray(100), "idle")
+                                    }
+                                };
+                                let label =
+                                    status.label.as_deref().unwrap_or(default_text);
+                                let pill_pos =
+                                    egui::pos2(rect.min.x + 8.0, rect.min.y + 22.0);
+                                let text_width = label.len() as f32 * 5.5 + 8.0;
+                                let pill_rect = egui::Rect::from_min_size(
+                                    pill_pos,
+                                    egui::vec2(text_width.min(rect.width() - 32.0), 14.0),
+                                );
+                                ui.painter().rect_filled(pill_rect, 7.0, pill_color);
+                                ui.painter().text(
+                                    pill_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    label,
+                                    egui::FontId::proportional(9.0),
+                                    egui::Color32::WHITE,
+                                );
+                            }
                         }
                         response
                     });
@@ -725,7 +840,6 @@ impl AmuxApp {
             zoomed: None,
             dragging_divider: None,
             last_pane_sizes: HashMap::new(),
-            status: None,
         };
 
         self.workspaces.push(workspace);
@@ -760,10 +874,13 @@ impl AmuxApp {
         if self.workspaces.len() <= 1 {
             return;
         }
+        let ws_id = self.workspaces[ws_idx].id;
         let pane_ids: Vec<PaneId> = self.workspaces[ws_idx].tree.iter_panes();
-        for id in pane_ids {
-            self.panes.remove(&id);
+        for id in &pane_ids {
+            self.panes.remove(id);
+            self.notifications.remove_pane(*id);
         }
+        self.notifications.remove_workspace(ws_id);
         self.workspaces.remove(ws_idx);
         if self.active_workspace_idx >= self.workspaces.len() {
             self.active_workspace_idx = self.workspaces.len() - 1;
@@ -967,6 +1084,18 @@ impl AmuxApp {
                     return self.do_toggle_zoom();
                 }
 
+                // Notification panel: Cmd+I / Ctrl+I
+                if is_cmd && !modifiers.shift && *key == egui::Key::I {
+                    self.show_notification_panel = !self.show_notification_panel;
+                    return true;
+                }
+
+                // Jump to latest unread: Cmd+Shift+U / Ctrl+Shift+U
+                if is_cmd && modifiers.shift && *key == egui::Key::U {
+                    self.jump_to_latest_unread();
+                    return true;
+                }
+
                 // Scroll
                 if modifiers.shift && *key == egui::Key::PageUp {
                     return self.do_scroll(-1);
@@ -1030,6 +1159,7 @@ impl AmuxApp {
                     ws.zoomed = None;
                 }
                 self.panes.remove(&focused_id);
+                self.notifications.remove_pane(focused_id);
                 self.set_focus(new_focus);
             }
             return true;
@@ -1087,6 +1217,194 @@ impl AmuxApp {
             let max_offset = total.saturating_sub(rows);
             let new_offset = surface.scroll_offset as isize - lines;
             surface.scroll_offset = (new_offset.max(0) as usize).min(max_offset);
+        }
+    }
+
+    // --- Notifications ---
+
+    fn drain_notifications(&mut self) {
+        // Collect events first to avoid borrow conflicts
+        let focused = self.focused_pane_id();
+        let mut events: Vec<(u64, u64, u64, NotificationEvent)> = Vec::new();
+
+        for (&pane_id, managed) in &self.panes {
+            let ws_id = self.workspace_for_pane(pane_id).unwrap_or(0);
+            for surface in &managed.surfaces {
+                for event in surface.pane.drain_notifications() {
+                    events.push((ws_id, pane_id, surface.id, event));
+                }
+            }
+        }
+
+        for (ws_id, pane_id, surface_id, event) in events {
+            let (title, body, source) = match event {
+                NotificationEvent::Toast { title, body } => {
+                    (title.unwrap_or_default(), body, NotificationSource::Toast)
+                }
+                NotificationEvent::Bell => {
+                    (String::new(), "Bell".to_string(), NotificationSource::Bell)
+                }
+                // Title and directory changes are not user-facing notifications
+                NotificationEvent::TitleChanged(_) | NotificationEvent::WorkingDirectoryChanged => {
+                    continue;
+                }
+            };
+
+            if pane_id == focused {
+                // Focused pane: still record but mark as read (flash only, no ring)
+                self.notifications
+                    .push_read(ws_id, pane_id, surface_id, title, body, source);
+            } else {
+                self.notifications
+                    .push(ws_id, pane_id, surface_id, title, body, source);
+            }
+        }
+    }
+
+    fn workspace_for_pane(&self, pane_id: PaneId) -> Option<u64> {
+        self.workspaces
+            .iter()
+            .find(|ws| ws.tree.iter_panes().contains(&pane_id))
+            .map(|ws| ws.id)
+    }
+
+    fn jump_to_latest_unread(&mut self) {
+        if let Some(notif) = self.notifications.most_recent_unread() {
+            let ws_id = notif.workspace_id;
+            let pane_id = notif.pane_id as PaneId;
+
+            // Switch to the notification's workspace
+            if let Some(idx) = self.workspaces.iter().position(|ws| ws.id == ws_id) {
+                self.active_workspace_idx = idx;
+            }
+            self.set_focus(pane_id);
+        }
+    }
+
+    fn render_notification_panel(&mut self, ctx: &egui::Context) {
+        let mut close_panel = false;
+        let mut mark_all = false;
+        let mut jump_to: Option<(u64, u64)> = None; // (workspace_id, pane_id)
+        let mut remove_id: Option<u64> = None;
+
+        egui::Window::new("Notifications")
+            .collapsible(false)
+            .resizable(true)
+            .default_size([380.0, 460.0])
+            .anchor(egui::Align2::RIGHT_TOP, [-10.0, 10.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading(
+                        egui::RichText::new("Notifications").color(egui::Color32::from_gray(220)),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("Clear All").clicked() {
+                            mark_all = true;
+                        }
+                        if ui.small_button("Jump to Latest").clicked() {
+                            jump_to = self
+                                .notifications
+                                .most_recent_unread()
+                                .map(|n| (n.workspace_id, n.pane_id));
+                            close_panel = true;
+                        }
+                    });
+                });
+                ui.separator();
+
+                let notifications = self.notifications.all_notifications();
+                if notifications.is_empty() {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(40.0);
+                        ui.label(
+                            egui::RichText::new("No notifications yet")
+                                .color(egui::Color32::from_gray(100)),
+                        );
+                    });
+                } else {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        // Iterate newest first
+                        for notif in notifications.iter().rev() {
+                            let response = ui.horizontal(|ui| {
+                                // Unread dot
+                                let dot_color = if notif.read {
+                                    egui::Color32::from_gray(60)
+                                } else {
+                                    egui::Color32::from_rgb(40, 120, 255)
+                                };
+                                let dot_rect = ui.allocate_exact_size(
+                                    egui::vec2(8.0, 8.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().circle_filled(
+                                    dot_rect.0.center(),
+                                    3.0,
+                                    dot_color,
+                                );
+
+                                ui.vertical(|ui| {
+                                    let title = if notif.title.is_empty() {
+                                        &notif.body
+                                    } else {
+                                        &notif.title
+                                    };
+                                    ui.label(
+                                        egui::RichText::new(title)
+                                            .color(egui::Color32::from_gray(200)),
+                                    );
+                                    if !notif.title.is_empty() && !notif.body.is_empty() {
+                                        let body_display = if notif.body.len() > 100 {
+                                            format!("{}...", &notif.body[..97])
+                                        } else {
+                                            notif.body.clone()
+                                        };
+                                        ui.label(
+                                            egui::RichText::new(body_display)
+                                                .small()
+                                                .color(egui::Color32::from_gray(140)),
+                                        );
+                                    }
+                                    let age = format_duration(notif.created_at.elapsed());
+                                    ui.label(
+                                        egui::RichText::new(age)
+                                            .small()
+                                            .color(egui::Color32::from_gray(80)),
+                                    );
+                                });
+
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.small_button("×").clicked() {
+                                            remove_id = Some(notif.id);
+                                        }
+                                    },
+                                );
+                            });
+                            if response.response.interact(egui::Sense::click()).clicked() {
+                                jump_to = Some((notif.workspace_id, notif.pane_id));
+                                close_panel = true;
+                            }
+                            ui.separator();
+                        }
+                    });
+                }
+            });
+
+        if mark_all {
+            self.notifications.mark_all_read();
+        }
+        if let Some(id) = remove_id {
+            self.notifications.remove_notification(id);
+        }
+        if let Some((ws_id, pane_id)) = jump_to {
+            if let Some(idx) = self.workspaces.iter().position(|ws| ws.id == ws_id) {
+                self.active_workspace_idx = idx;
+            }
+            self.set_focus(pane_id as PaneId);
+        }
+        if close_panel {
+            self.show_notification_panel = false;
         }
     }
 
@@ -1351,6 +1669,7 @@ impl AmuxApp {
                                 ws.zoomed = None;
                             }
                             self.panes.remove(&target);
+                            self.notifications.remove_pane(target);
                             if should_refocus {
                                 self.set_focus(new_focus);
                             }
@@ -1633,6 +1952,78 @@ impl AmuxApp {
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
                 }
             }
+            "status.set" => {
+                match serde_json::from_value::<amux_ipc::methods::StatusSetParams>(
+                    req.params.clone(),
+                ) {
+                    Ok(params) => {
+                        let ws_id = params.workspace_id.parse::<u64>().unwrap_or(0);
+                        let state = match params.state.as_str() {
+                            "active" => amux_notify::AgentState::Active,
+                            "waiting" => amux_notify::AgentState::Waiting,
+                            _ => amux_notify::AgentState::Idle,
+                        };
+                        self.notifications.set_status(ws_id, state, params.label);
+                        Response::ok(req.id.clone(), serde_json::json!({}))
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "notify.send" => {
+                match serde_json::from_value::<amux_ipc::methods::NotifySendParams>(
+                    req.params.clone(),
+                ) {
+                    Ok(params) => {
+                        let ws_id = params.workspace_id.parse::<u64>().unwrap_or(0);
+                        let pane_id = params
+                            .pane_id
+                            .parse::<u64>()
+                            .unwrap_or(self.focused_pane_id());
+                        let title = params.title.unwrap_or_default();
+                        let nid = self.notifications.push(
+                            ws_id,
+                            pane_id,
+                            0,
+                            title,
+                            params.body,
+                            NotificationSource::Cli,
+                        );
+                        Response::ok(
+                            req.id.clone(),
+                            serde_json::json!({"notification_id": nid}),
+                        )
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "notify.list" => {
+                let entries: Vec<serde_json::Value> = self
+                    .notifications
+                    .all_notifications()
+                    .iter()
+                    .map(|n| {
+                        let source_str = match n.source {
+                            NotificationSource::Toast => "toast",
+                            NotificationSource::Bell => "bell",
+                            NotificationSource::Cli => "cli",
+                        };
+                        serde_json::json!({
+                            "id": n.id,
+                            "workspace_id": n.workspace_id.to_string(),
+                            "pane_id": n.pane_id.to_string(),
+                            "title": n.title,
+                            "body": n.body,
+                            "source": source_str,
+                            "read": n.read,
+                        })
+                    })
+                    .collect();
+                Response::ok(req.id.clone(), serde_json::json!({"notifications": entries}))
+            }
+            "notify.clear" => {
+                self.notifications.clear_all();
+                Response::ok(req.id.clone(), serde_json::json!({}))
+            }
             _ => Response::err(
                 req.id.clone(),
                 "method_not_found",
@@ -1876,6 +2267,17 @@ fn srgba_to_egui(color: SrgbaTuple) -> egui::Color32 {
         (color.2 * 255.0).round() as u8,
         (color.3 * 255.0).round() as u8,
     )
+}
+
+fn format_duration(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        format!("{}s ago", secs)
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else {
+        format!("{}h ago", secs / 3600)
+    }
 }
 
 // --- Key encoding (egui events -> terminal bytes) ---
