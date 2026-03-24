@@ -3,6 +3,7 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 
+use amux_ipc::IpcCommand;
 use amux_term::color::resolve_color;
 use amux_term::config::AmuxTermConfig;
 use amux_term::pane::TerminalPane;
@@ -14,8 +15,18 @@ const FONT_SIZE: f32 = 14.0;
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    let cmd = CommandBuilder::new(&shell);
+    // Start IPC server first to get the socket path for env injection
+    let (ipc_rx, ipc_addr) = amux_ipc::start_server()?;
+    tracing::info!("IPC server: {}", ipc_addr);
+
+    // Spawn terminal with user's shell + injected env vars
+    let shell = default_shell();
+    let mut cmd = CommandBuilder::new(&shell);
+    cmd.env("AMUX_SOCKET_PATH", ipc_addr.to_string());
+    cmd.env("AMUX_WORKSPACE_ID", "default");
+    cmd.env("AMUX_SURFACE_ID", "default");
+    cmd.env("TERM", "xterm-256color");
+
     let config = Arc::new(AmuxTermConfig::default());
     let mut pane = TerminalPane::spawn(80, 24, cmd, config)?;
 
@@ -44,23 +55,53 @@ fn main() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    eframe::run_native(
+    let ipc_addr_cleanup = ipc_addr.clone();
+    let result = eframe::run_native(
         "amux",
         options,
         Box::new(move |_cc| {
             Ok(Box::new(AmuxApp {
                 pane,
                 byte_rx,
+                ipc_rx,
                 last_size: (0, 0),
             }))
         }),
     )
-    .map_err(|e| anyhow::anyhow!("{}", e))
+    .map_err(|e| anyhow::anyhow!("{}", e));
+
+    // Clean up socket file
+    cleanup_addr(&ipc_addr_cleanup);
+
+    result
+}
+
+fn default_shell() -> String {
+    #[cfg(unix)]
+    {
+        std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+    }
+    #[cfg(windows)]
+    {
+        std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+    }
+}
+
+fn cleanup_addr(addr: &amux_ipc::IpcAddr) {
+    match addr {
+        #[cfg(unix)]
+        amux_ipc::IpcAddr::Unix(path) => {
+            let _ = std::fs::remove_file(path);
+        }
+        #[cfg(windows)]
+        amux_ipc::IpcAddr::NamedPipe(_) => {}
+    }
 }
 
 struct AmuxApp {
     pane: TerminalPane,
     byte_rx: mpsc::Receiver<Vec<u8>>,
+    ipc_rx: std::sync::mpsc::Receiver<IpcCommand>,
     last_size: (usize, usize),
 }
 
@@ -72,6 +113,9 @@ impl eframe::App for AmuxApp {
             got_data = true;
             self.pane.feed_bytes(&bytes);
         }
+
+        // Process IPC commands
+        self.process_ipc_commands();
 
         // Handle keyboard/paste input
         self.handle_input(ctx);
@@ -99,6 +143,66 @@ impl eframe::App for AmuxApp {
 }
 
 impl AmuxApp {
+    fn process_ipc_commands(&mut self) {
+        while let Ok(cmd) = self.ipc_rx.try_recv() {
+            let response = self.dispatch_ipc(&cmd.request);
+            let _ = cmd.reply_tx.send(response);
+        }
+    }
+
+    fn dispatch_ipc(&mut self, req: &amux_ipc::Request) -> amux_ipc::Response {
+        use amux_ipc::Response;
+        match req.method.as_str() {
+            "system.ping" => Response::ok(req.id.clone(), serde_json::json!({"pong": true})),
+            "system.capabilities" => Response::ok(
+                req.id.clone(),
+                serde_json::json!({"methods": amux_ipc::methods::METHODS}),
+            ),
+            "system.identify" => Response::ok(
+                req.id.clone(),
+                serde_json::json!({
+                    "workspace_id": "default",
+                    "surface_id": "default",
+                }),
+            ),
+            "surface.list" => {
+                let (cols, rows) = self.pane.dimensions();
+                Response::ok(
+                    req.id.clone(),
+                    serde_json::json!({
+                        "surfaces": [{
+                            "id": "default",
+                            "title": self.pane.title(),
+                            "cols": cols,
+                            "rows": rows,
+                            "alive": self.pane.is_alive(),
+                        }],
+                    }),
+                )
+            }
+            "surface.send_text" => {
+                match serde_json::from_value::<amux_ipc::methods::SendTextParams>(
+                    req.params.clone(),
+                ) {
+                    Ok(params) => match self.pane.write_bytes(params.text.as_bytes()) {
+                        Ok(_) => Response::ok(req.id.clone(), serde_json::json!({})),
+                        Err(e) => Response::err(req.id.clone(), "write_error", &e.to_string()),
+                    },
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "surface.read_text" => {
+                let text = self.pane.read_screen_text();
+                Response::ok(req.id.clone(), serde_json::json!({"text": text}))
+            }
+            _ => Response::err(
+                req.id.clone(),
+                "method_not_found",
+                &format!("unknown method: {}", req.method),
+            ),
+        }
+    }
+
     fn render_terminal(&mut self, ui: &mut egui::Ui) {
         let font_id = egui::FontId::monospace(FONT_SIZE);
         let cell_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
