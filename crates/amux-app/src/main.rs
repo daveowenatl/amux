@@ -18,6 +18,43 @@ use portable_pty::CommandBuilder;
 use wezterm_surface::{CursorShape, CursorVisibility};
 use wezterm_term::color::SrgbaTuple;
 
+/// Try to get the current working directory of a process by PID.
+/// Falls back across platform-specific mechanisms.
+fn get_cwd_from_pid(pid: u32) -> Option<String> {
+    // Linux: readlink /proc/{pid}/cwd
+    #[cfg(target_os = "linux")]
+    {
+        let link = std::fs::read_link(format!("/proc/{}/cwd", pid)).ok()?;
+        return Some(link.to_string_lossy().to_string());
+    }
+
+    // macOS: use lsof to query the cwd
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("lsof")
+            .args(["-a", "-d", "cwd", "-p", &pid.to_string(), "-Fn"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        // lsof -Fn outputs lines like "p1234\nn/path/to/dir"
+        for line in text.lines() {
+            if let Some(path) = line.strip_prefix('n') {
+                if path.starts_with('/') {
+                    return Some(path.to_string());
+                }
+            }
+        }
+        return None;
+    }
+
+    // Windows / other: no fallback yet
+    #[allow(unreachable_code)]
+    None
+}
+
 const FONT_SIZE: f32 = 14.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
 const TAB_BAR_HEIGHT: f32 = 24.0;
@@ -547,7 +584,11 @@ impl AmuxApp {
                                 .pane
                                 .working_dir()
                                 .and_then(|url| url.to_file_path().ok())
-                                .map(|p| p.to_string_lossy().to_string());
+                                .map(|p| p.to_string_lossy().to_string())
+                                .or_else(|| {
+                                    // Fallback: query the child process's cwd via OS APIs
+                                    sf.pane.child_pid().and_then(get_cwd_from_pid)
+                                });
                             let scrollback = sf.pane.read_scrollback_text(4096);
                             let (cols, rows) = sf.pane.dimensions();
                             amux_session::SavedSurface {

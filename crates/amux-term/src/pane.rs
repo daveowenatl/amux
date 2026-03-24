@@ -192,6 +192,11 @@ impl TerminalPane {
         self.terminal.get_current_dir()
     }
 
+    /// Get the child process ID, if available.
+    pub fn child_pid(&self) -> Option<u32> {
+        self.child.process_id()
+    }
+
     /// Check whether the child process is still alive.
     pub fn is_alive(&mut self) -> bool {
         // try_wait returns Ok(Some(status)) if exited, Ok(None) if still running
