@@ -240,7 +240,11 @@ impl NotificationStore {
 
     /// Remove a specific notification by id.
     pub fn remove_notification(&mut self, notification_id: u64) {
-        if let Some(pos) = self.notifications.iter().position(|n| n.id == notification_id) {
+        if let Some(pos) = self
+            .notifications
+            .iter()
+            .position(|n| n.id == notification_id)
+        {
             let notif = self.notifications.remove(pos);
             if !notif.read {
                 if let Some(state) = self.pane_states.get_mut(&notif.pane_id) {
@@ -267,9 +271,7 @@ impl NotificationStore {
 
     /// Get unread count for a pane.
     pub fn pane_unread(&self, pane_id: u64) -> usize {
-        self.pane_states
-            .get(&pane_id)
-            .map_or(0, |s| s.unread_count)
+        self.pane_states.get(&pane_id).map_or(0, |s| s.unread_count)
     }
 
     /// Check if any pane in the given set has unread notifications,
@@ -286,10 +288,7 @@ impl NotificationStore {
 
     /// Total unread count across the given pane set.
     pub fn workspace_unread_count(&self, pane_ids: &[u64]) -> usize {
-        pane_ids
-            .iter()
-            .map(|id| self.pane_unread(*id))
-            .sum()
+        pane_ids.iter().map(|id| self.pane_unread(*id)).sum()
     }
 
     /// Get pane visual state (for ring + flash rendering).
@@ -365,7 +364,14 @@ mod tests {
     #[test]
     fn push_increments_unread() {
         let mut store = NotificationStore::new();
-        let id = store.push(1, 10, 100, "Test".into(), "body".into(), NotificationSource::Bell);
+        let id = store.push(
+            1,
+            10,
+            100,
+            "Test".into(),
+            "body".into(),
+            NotificationSource::Bell,
+        );
         assert_eq!(id, 1);
         assert_eq!(store.pane_unread(10), 1);
         assert_eq!(store.all_notifications().len(), 1);
@@ -375,7 +381,14 @@ mod tests {
     #[test]
     fn push_read_does_not_increment_unread() {
         let mut store = NotificationStore::new();
-        store.push_read(1, 10, 100, "Test".into(), "body".into(), NotificationSource::Toast);
+        store.push_read(
+            1,
+            10,
+            100,
+            "Test".into(),
+            "body".into(),
+            NotificationSource::Toast,
+        );
         assert_eq!(store.pane_unread(10), 0);
         assert_eq!(store.all_notifications().len(), 1);
         assert!(store.all_notifications()[0].read);
@@ -387,7 +400,14 @@ mod tests {
     fn mark_pane_read_clears_unread() {
         let mut store = NotificationStore::new();
         store.push(1, 10, 100, "A".into(), "a".into(), NotificationSource::Bell);
-        store.push(1, 10, 101, "B".into(), "b".into(), NotificationSource::Toast);
+        store.push(
+            1,
+            10,
+            101,
+            "B".into(),
+            "b".into(),
+            NotificationSource::Toast,
+        );
         assert_eq!(store.pane_unread(10), 2);
 
         store.mark_pane_read(10);
@@ -413,8 +433,22 @@ mod tests {
     #[test]
     fn most_recent_unread() {
         let mut store = NotificationStore::new();
-        store.push(1, 10, 100, "First".into(), "a".into(), NotificationSource::Bell);
-        store.push(1, 20, 200, "Second".into(), "b".into(), NotificationSource::Toast);
+        store.push(
+            1,
+            10,
+            100,
+            "First".into(),
+            "a".into(),
+            NotificationSource::Bell,
+        );
+        store.push(
+            1,
+            20,
+            200,
+            "Second".into(),
+            "b".into(),
+            NotificationSource::Toast,
+        );
         let recent = store.most_recent_unread().unwrap();
         assert_eq!(recent.title, "Second");
 
@@ -442,7 +476,14 @@ mod tests {
         let mut store = NotificationStore::new();
         store.push(1, 10, 100, "A".into(), "a".into(), NotificationSource::Bell);
         store.push(1, 10, 101, "B".into(), "b".into(), NotificationSource::Bell);
-        store.push(1, 20, 200, "C".into(), "c".into(), NotificationSource::Toast);
+        store.push(
+            1,
+            20,
+            200,
+            "C".into(),
+            "c".into(),
+            NotificationSource::Toast,
+        );
         assert_eq!(store.workspace_unread_count(&[10, 20]), 3);
     }
 
