@@ -961,9 +961,10 @@ impl AmuxApp {
                 let label = if raw_title.is_empty() {
                     format!("tab {}", idx + 1)
                 } else {
-                    // Truncate long titles
-                    if raw_title.len() > 20 {
-                        format!("{}...", &raw_title[..17])
+                    // Truncate long titles (char-safe for UTF-8)
+                    if raw_title.chars().count() > 20 {
+                        let prefix: String = raw_title.chars().take(17).collect();
+                        format!("{prefix}...")
                     } else {
                         raw_title.to_string()
                     }
@@ -1807,12 +1808,22 @@ impl AmuxApp {
         true
     }
 
-    /// Close a pane entirely. If it's the last pane in the workspace,
-    /// close the workspace too.
+    /// Close a pane entirely. Finds the owning workspace (not necessarily the
+    /// active one). If it's the last pane in that workspace, close the workspace.
     fn close_pane(&mut self, pane_id: PaneId) {
-        let pane_count = self.active_workspace().tree.iter_panes().len();
+        // Find the workspace that owns this pane
+        let ws_idx = match self
+            .workspaces
+            .iter()
+            .position(|ws| ws.tree.iter_panes().contains(&pane_id))
+        {
+            Some(idx) => idx,
+            None => return, // pane not in any workspace
+        };
+
+        let pane_count = self.workspaces[ws_idx].tree.iter_panes().len();
         if pane_count > 1 {
-            let ws = self.active_workspace_mut();
+            let ws = &mut self.workspaces[ws_idx];
             if let Some(new_focus) = ws.tree.close(pane_id) {
                 ws.last_pane_sizes.remove(&pane_id);
                 if ws.zoomed == Some(pane_id) {
@@ -1820,11 +1831,12 @@ impl AmuxApp {
                 }
                 self.panes.remove(&pane_id);
                 self.notifications.remove_pane(pane_id);
-                self.set_focus(new_focus);
+                if ws_idx == self.active_workspace_idx {
+                    self.set_focus(new_focus);
+                }
             }
         } else {
             // Last pane in workspace -> close workspace
-            let ws_idx = self.active_workspace_idx;
             self.close_workspace_at(ws_idx);
         }
     }
@@ -2706,33 +2718,44 @@ impl AmuxApp {
                             .and_then(|s| s.parse::<PaneId>().ok())
                             .unwrap_or(self.focused_pane_id());
 
-                        let sf_id = self.next_surface_id;
-                        self.next_surface_id += 1;
-                        let ws_id = self.active_workspace().id;
+                        // Validate pane exists before spawning a surface
+                        if !self.panes.contains_key(&target_pane) {
+                            Response::err(req.id.clone(), "not_found", "pane not found")
+                        } else {
+                            // Find the workspace that owns this pane
+                            let ws_id = self
+                                .workspaces
+                                .iter()
+                                .find(|ws| ws.tree.iter_panes().contains(&target_pane))
+                                .map(|ws| ws.id)
+                                .unwrap_or_else(|| self.active_workspace().id);
 
-                        match spawn_surface(
-                            80,
-                            24,
-                            &self.socket_addr,
-                            &self.config,
-                            ws_id,
-                            sf_id,
-                            None,
-                            None,
-                        ) {
-                            Ok(surface) => {
-                                if let Some(managed) = self.panes.get_mut(&target_pane) {
+                            let sf_id = self.next_surface_id;
+                            self.next_surface_id += 1;
+
+                            match spawn_surface(
+                                80,
+                                24,
+                                &self.socket_addr,
+                                &self.config,
+                                ws_id,
+                                sf_id,
+                                None,
+                                None,
+                            ) {
+                                Ok(surface) => {
+                                    let managed = self.panes.get_mut(&target_pane).unwrap();
                                     managed.surfaces.push(surface);
                                     managed.active_surface_idx = managed.surfaces.len() - 1;
                                     Response::ok(
                                         req.id.clone(),
                                         serde_json::json!({"surface_id": sf_id.to_string()}),
                                     )
-                                } else {
-                                    Response::err(req.id.clone(), "not_found", "pane not found")
+                                }
+                                Err(e) => {
+                                    Response::err(req.id.clone(), "spawn_error", &e.to_string())
                                 }
                             }
-                            Err(e) => Response::err(req.id.clone(), "spawn_error", &e.to_string()),
                         }
                     }
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
