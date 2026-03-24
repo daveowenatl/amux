@@ -104,7 +104,7 @@ fn main() -> anyhow::Result<()> {
             #[cfg(feature = "gpu-renderer")]
             let gpu_renderer = _cc.wgpu_render_state.as_ref().map(|rs| {
                 tracing::info!("GPU renderer initialized (wgpu backend)");
-                GpuRenderer::new(rs.clone())
+                GpuRenderer::new(rs.clone(), FONT_SIZE)
             });
 
             Ok(Box::new(AmuxApp {
@@ -575,6 +575,23 @@ struct AmuxApp {
 }
 
 impl AmuxApp {
+    /// Get cell dimensions in logical points, using GPU renderer measurements
+    /// when available, falling back to egui font measurements.
+    fn cell_dimensions(&self, ui: &egui::Ui) -> (f32, f32) {
+        #[cfg(feature = "gpu-renderer")]
+        if let Some(gpu) = &self.gpu_renderer {
+            let cw = gpu.cell_width();
+            let ch = gpu.cell_height();
+            if cw > 0.0 && ch > 0.0 {
+                return (cw, ch);
+            }
+        }
+        let font_id = egui::FontId::monospace(FONT_SIZE);
+        let cell_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
+        let cell_height = ui.fonts(|f| f.row_height(&font_id));
+        (cell_width, cell_height)
+    }
+
     fn active_workspace(&self) -> &Workspace {
         &self.workspaces[self.active_workspace_idx]
     }
@@ -1330,9 +1347,7 @@ impl AmuxApp {
     // --- Resize ---
 
     fn resize_pane_if_needed(&mut self, id: PaneId, rect: egui::Rect, ui: &egui::Ui) {
-        let font_id = egui::FontId::monospace(FONT_SIZE);
-        let cell_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
-        let cell_height = ui.fonts(|f| f.row_height(&font_id));
+        let (cell_width, cell_height) = self.cell_dimensions(ui);
 
         // Account for tab bar height (always shown)
         let content_height = rect.height() - TAB_BAR_HEIGHT;
@@ -2236,9 +2251,7 @@ impl AmuxApp {
     // --- Selection Mouse ---
 
     fn handle_selection_mouse(&mut self, ui: &egui::Ui, pane_id: PaneId, content_rect: egui::Rect) {
-        let font_id = egui::FontId::monospace(FONT_SIZE);
-        let cell_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
-        let cell_height = ui.fonts(|f| f.row_height(&font_id));
+        let (cell_width, cell_height) = self.cell_dimensions(ui);
 
         let managed = match self.panes.get(&pane_id) {
             Some(m) => m,
@@ -3202,9 +3215,6 @@ fn render_pane(
         if actual_cols == 0 || actual_rows == 0 {
             return;
         }
-        let font_id = egui::FontId::monospace(FONT_SIZE);
-        let cell_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
-        let cell_height = ui.fonts(|f| f.row_height(&font_id));
         let palette = pane.palette();
         let cursor = pane.cursor();
         let screen = pane.screen();
@@ -3217,8 +3227,7 @@ fn render_pane(
             scroll_offset,
         );
         let pixels_per_point = ui.ctx().pixels_per_point();
-        let callback =
-            gpu.paint_callback(rect, snapshot, cell_width, cell_height, pixels_per_point);
+        let callback = gpu.paint_callback(rect, snapshot, pixels_per_point);
         ui.painter().add(egui::Shape::Callback(callback));
         return;
     }

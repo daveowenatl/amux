@@ -1,10 +1,18 @@
+mod atlas;
 mod callback;
 mod pipeline;
 pub mod snapshot;
 
+use cosmic_text::fontdb::Family;
+use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};
+
+use atlas::GlyphAtlas;
 use callback::{PhysRect, TerminalGpuResources, TerminalPaintCallback};
-use pipeline::BackgroundPipeline;
+use pipeline::{BackgroundPipeline, ForegroundPipeline};
 pub use snapshot::TerminalSnapshot;
+
+/// Atlas texture size (2048×2048, ~4MB for R8).
+const ATLAS_SIZE: u32 = 2048;
 
 /// GPU-accelerated terminal renderer using wgpu.
 ///
@@ -20,31 +28,46 @@ pub struct GpuRenderer {
 impl GpuRenderer {
     /// Create a new GPU renderer from eframe's render state.
     ///
-    /// Initializes the background pipeline and registers GPU resources
-    /// in egui's callback resource map.
-    pub fn new(render_state: egui_wgpu::RenderState) -> Self {
+    /// Initializes pipelines, glyph atlas, and font system. Registers GPU
+    /// resources in egui's callback resource map.
+    pub fn new(render_state: egui_wgpu::RenderState, font_size: f32) -> Self {
         let target_format = render_state.target_format;
         let device = &render_state.device;
 
         let bg_pipeline = BackgroundPipeline::new(device, target_format);
+        let fg_pipeline = ForegroundPipeline::new(device, target_format);
+        let atlas = GlyphAtlas::new(device, ATLAS_SIZE);
 
-        // Register resources in egui's callback_resources for access during prepare/paint.
+        let mut font_system = FontSystem::new();
+        let swash_cache = SwashCache::new();
+
+        // Measure cell dimensions via cosmic-text (same approach as amux-render-soft).
+        let line_height = (font_size * 1.3).ceil();
+        let metrics = Metrics::new(font_size, line_height);
+        let cell_width = measure_cell_width(&mut font_system, metrics);
+        let cell_height = line_height;
+
+        // Register resources in egui's callback_resources.
         render_state
             .renderer
             .write()
             .callback_resources
             .insert(TerminalGpuResources {
                 bg_pipeline,
+                fg_pipeline,
+                atlas,
+                font_system,
+                swash_cache,
+                metrics,
                 bg_instance_count: 0,
+                fg_instance_count: 0,
+                atlas_bind_group_dirty: true,
             });
 
         Self {
             render_state,
-            // Placeholder cell dimensions — will be set properly when cosmic-text
-            // font measurement is added in PR 8c. For now, use egui's measurements
-            // passed in via paint_callback().
-            cell_width: 0.0,
-            cell_height: 0.0,
+            cell_width,
+            cell_height,
         }
     }
 
@@ -52,18 +75,15 @@ impl GpuRenderer {
     /// into the given rect during egui's render pass.
     ///
     /// `snapshot` contains pre-extracted terminal state (cells, colors, cursor).
-    /// `cell_width` and `cell_height` are in logical points (will be scaled by pixels_per_point).
     /// `pixels_per_point` is the current DPI scale factor.
     pub fn paint_callback(
         &self,
         rect: egui::Rect,
         snapshot: TerminalSnapshot,
-        cell_width: f32,
-        cell_height: f32,
         pixels_per_point: f32,
     ) -> egui::PaintCallback {
-        let phys_cell_w = cell_width * pixels_per_point;
-        let phys_cell_h = cell_height * pixels_per_point;
+        let phys_cell_w = self.cell_width * pixels_per_point;
+        let phys_cell_h = self.cell_height * pixels_per_point;
 
         let callback = TerminalPaintCallback {
             snapshot,
@@ -80,16 +100,36 @@ impl GpuRenderer {
     }
 
     /// Get the cell width in logical points.
-    ///
-    /// Returns 0.0 until cosmic-text font measurement is implemented (PR 8c).
     pub fn cell_width(&self) -> f32 {
         self.cell_width
     }
 
     /// Get the cell height in logical points.
-    ///
-    /// Returns 0.0 until cosmic-text font measurement is implemented (PR 8c).
     pub fn cell_height(&self) -> f32 {
         self.cell_height
     }
+}
+
+/// Measure monospace cell width by laying out "M" and reading the advance.
+fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics) -> f32 {
+    let mut buffer = Buffer::new_empty(metrics);
+    {
+        let mut borrowed = buffer.borrow_with(font_system);
+        borrowed.set_size(Some(200.0), Some(metrics.line_height));
+        borrowed.set_text(
+            "M",
+            Attrs::new().family(Family::Monospace),
+            Shaping::Advanced,
+        );
+        borrowed.shape_until_scroll(true);
+    }
+
+    for run in buffer.layout_runs() {
+        if let Some(glyph) = run.glyphs.iter().next() {
+            return glyph.w;
+        }
+    }
+
+    // Fallback: estimate from font size
+    metrics.font_size * 0.6
 }
