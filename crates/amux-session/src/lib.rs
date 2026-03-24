@@ -120,9 +120,7 @@ fn load_from_path(path: &std::path::Path) -> anyhow::Result<Option<SessionData>>
     }
 
     // Reject empty sessions (no workspaces, or all workspaces have no panes)
-    if data.workspaces.is_empty()
-        || data.workspaces.iter().all(|ws| ws.panes.is_empty())
-    {
+    if data.workspaces.is_empty() || data.workspaces.iter().all(|ws| ws.panes.is_empty()) {
         return Ok(None);
     }
 

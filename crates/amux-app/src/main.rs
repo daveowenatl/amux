@@ -1071,7 +1071,9 @@ impl AmuxApp {
 
             // Apply tab switch/close (need to re-borrow managed)
             if let Some(idx) = close_tab {
-                let is_last = self.panes.get(&pane_id)
+                let is_last = self
+                    .panes
+                    .get(&pane_id)
                     .is_some_and(|m| m.surfaces.len() <= 1);
                 if is_last {
                     self.close_pane(pane_id);
@@ -1755,7 +1757,10 @@ impl AmuxApp {
                     return None;
                 }
                 let layout = ws.tree.layout(panel_rect);
-                layout.iter().find(|(_, rect)| rect.contains(pos)).map(|(id, _)| *id)
+                layout
+                    .iter()
+                    .find(|(_, rect)| rect.contains(pos))
+                    .map(|(id, _)| *id)
             });
             if let Some(pane_id) = target_pane {
                 if let Some(managed) = self.panes.get_mut(&pane_id) {
@@ -2747,7 +2752,10 @@ impl AmuxApp {
                             if let Ok(sf_id) = sf_id_str.parse::<u64>() {
                                 // Find which pane owns this surface
                                 let target = self.panes.iter().find_map(|(&pid, m)| {
-                                    m.surfaces.iter().position(|s| s.id == sf_id).map(|idx| (pid, idx))
+                                    m.surfaces
+                                        .iter()
+                                        .position(|s| s.id == sf_id)
+                                        .map(|idx| (pid, idx))
                                 });
                                 if let Some((pane_id, idx)) = target {
                                     let managed = self.panes.get_mut(&pane_id).unwrap();

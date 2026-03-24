@@ -421,11 +421,23 @@ fn emit_color_sgr(buf: &mut String, color: wezterm_term::color::ColorAttribute, 
         }
         ColorAttribute::TrueColorWithDefaultFallback(srgba) => {
             let (r, g, b, _) = srgba.to_srgb_u8();
-            buf.push_str(&format!(";{};2;{};{};{}", if is_fg { 38 } else { 48 }, r, g, b));
+            buf.push_str(&format!(
+                ";{};2;{};{};{}",
+                if is_fg { 38 } else { 48 },
+                r,
+                g,
+                b
+            ));
         }
         ColorAttribute::TrueColorWithPaletteFallback(srgba, _) => {
             let (r, g, b, _) = srgba.to_srgb_u8();
-            buf.push_str(&format!(";{};2;{};{};{}", if is_fg { 38 } else { 48 }, r, g, b));
+            buf.push_str(&format!(
+                ";{};2;{};{};{}",
+                if is_fg { 38 } else { 48 },
+                r,
+                g,
+                b
+            ));
         }
     }
 }
