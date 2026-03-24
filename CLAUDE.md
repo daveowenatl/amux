@@ -21,6 +21,8 @@ cargo fmt --check              # Check formatting without modifying
 
 Requirements: Rust 1.80+, C compiler, platform graphics drivers. Windows needs MSVC toolchain.
 
+**Before pushing any commit**, always run `cargo fmt --check` and `cargo clippy --workspace -- -D warnings` to catch lint and formatting issues locally. CI will reject PRs that fail these checks.
+
 ## Workspace Structure
 
 Cargo workspace with 9 crates under `crates/`:

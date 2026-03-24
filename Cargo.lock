@@ -94,9 +94,11 @@ dependencies = [
  "amux-ipc",
  "amux-layout",
  "amux-notify",
+ "amux-session",
  "amux-term",
  "anyhow",
  "arboard",
+ "dirs",
  "eframe",
  "egui",
  "portable-pty",
@@ -113,6 +115,7 @@ name = "amux-cli"
 version = "0.1.0"
 dependencies = [
  "amux-ipc",
+ "amux-session",
  "anyhow",
  "clap",
  "serde_json",
@@ -163,6 +166,14 @@ dependencies = [
 [[package]]
 name = "amux-session"
 version = "0.1.0"
+dependencies = [
+ "amux-layout",
+ "anyhow",
+ "dirs",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "amux-term"
@@ -1184,6 +1195,12 @@ dependencies = [
  "regex-automata",
  "regex-syntax",
 ]
+
+[[package]]
+name = "fastrand"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
 name = "fax"
@@ -3693,6 +3710,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8eab9a99a024a169fe8a903cf9d4a3b3601109bcc13bd9e3c6fff259138626c4"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "tempfile"
+version = "3.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+dependencies = [
+ "fastrand",
+ "getrandom 0.4.2",
+ "once_cell",
+ "rustix 1.1.4",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

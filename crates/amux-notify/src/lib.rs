@@ -17,7 +17,7 @@ pub enum AgentState {
 }
 
 /// What triggered the notification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NotificationSource {
     Toast,

@@ -9,6 +9,7 @@ use amux_layout::{NavDirection, PaneId, PaneTree, SplitDirection};
 use amux_notify::{
     flash_alpha, FlashReason, NotificationSource, NotificationStore, FLASH_DURATION,
 };
+use amux_session::SessionData;
 use amux_term::color::resolve_color;
 use amux_term::config::AmuxTermConfig;
 use amux_term::osc::NotificationEvent;
@@ -16,6 +17,43 @@ use amux_term::pane::TerminalPane;
 use portable_pty::CommandBuilder;
 use wezterm_surface::{CursorShape, CursorVisibility};
 use wezterm_term::color::SrgbaTuple;
+
+/// Try to get the current working directory of a process by PID.
+/// Falls back across platform-specific mechanisms.
+fn get_cwd_from_pid(pid: u32) -> Option<String> {
+    // Linux: readlink /proc/{pid}/cwd
+    #[cfg(target_os = "linux")]
+    {
+        let link = std::fs::read_link(format!("/proc/{}/cwd", pid)).ok()?;
+        return Some(link.to_string_lossy().to_string());
+    }
+
+    // macOS: use lsof to query the cwd
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("lsof")
+            .args(["-a", "-d", "cwd", "-p", &pid.to_string(), "-Fn"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        // lsof -Fn outputs lines like "p1234\nn/path/to/dir"
+        for line in text.lines() {
+            if let Some(path) = line.strip_prefix('n') {
+                if path.starts_with('/') {
+                    return Some(path.to_string());
+                }
+            }
+        }
+        return None;
+    }
+
+    // Windows / other: no fallback yet
+    #[allow(unreachable_code)]
+    None
+}
 
 const FONT_SIZE: f32 = 14.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
@@ -29,27 +67,23 @@ fn main() -> anyhow::Result<()> {
 
     let config = Arc::new(AmuxTermConfig::default());
 
-    // Spawn initial pane with one surface
-    let initial_pane_id: PaneId = 0;
-    let surface = spawn_surface(80, 24, &ipc_addr, &config, 0, 0)?;
-
-    let managed = ManagedPane {
-        surfaces: vec![surface],
-        active_surface_idx: 0,
-        selection: None,
+    // Try to restore a previous session
+    let restored = match amux_session::load() {
+        Ok(Some(session)) => {
+            tracing::info!("Restoring session from {}", session.saved_at);
+            Some(session)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!("Failed to load session, starting fresh: {}", e);
+            None
+        }
     };
 
-    let mut panes = HashMap::new();
-    panes.insert(initial_pane_id, managed);
-
-    let initial_workspace = Workspace {
-        id: 0,
-        title: "default".to_string(),
-        tree: PaneTree::new(initial_pane_id),
-        focused_pane: initial_pane_id,
-        zoomed: None,
-        dragging_divider: None,
-        last_pane_sizes: HashMap::new(),
+    let state = if let Some(session) = restored {
+        restore_session(&session, &ipc_addr, &config)
+    } else {
+        fresh_startup(&ipc_addr, &config)?
     };
 
     let options = eframe::NativeOptions {
@@ -65,25 +99,23 @@ fn main() -> anyhow::Result<()> {
         options,
         Box::new(move |_cc| {
             Ok(Box::new(AmuxApp {
-                workspaces: vec![initial_workspace],
-                active_workspace_idx: 0,
-                panes,
-                next_pane_id: 1,
-                next_workspace_id: 1,
-                next_surface_id: 1,
-                sidebar: SidebarState {
-                    visible: true,
-                    width: DEFAULT_SIDEBAR_WIDTH,
-                },
+                workspaces: state.workspaces,
+                active_workspace_idx: state.active_workspace_idx,
+                panes: state.panes,
+                next_pane_id: state.next_pane_id,
+                next_workspace_id: state.next_workspace_id,
+                next_surface_id: state.next_surface_id,
+                sidebar: state.sidebar,
                 ipc_rx,
                 socket_addr: ipc_addr,
                 config,
                 last_panel_rect: None,
-                notifications: NotificationStore::new(),
+                notifications: state.notifications,
                 show_notification_panel: false,
                 last_click_time: Instant::now(),
                 last_click_pos: egui::Pos2::ZERO,
                 click_count: 0,
+                wants_exit: false,
             }))
         }),
     )
@@ -91,6 +123,224 @@ fn main() -> anyhow::Result<()> {
 
     cleanup_addr(&ipc_addr_cleanup);
     result
+}
+
+/// Bundled startup state to avoid complex return tuples.
+struct StartupState {
+    workspaces: Vec<Workspace>,
+    active_workspace_idx: usize,
+    panes: HashMap<PaneId, ManagedPane>,
+    next_pane_id: PaneId,
+    next_workspace_id: u64,
+    next_surface_id: u64,
+    sidebar: SidebarState,
+    notifications: NotificationStore,
+}
+
+/// Create a fresh default startup (one workspace, one pane).
+fn fresh_startup(
+    ipc_addr: &amux_ipc::IpcAddr,
+    config: &Arc<AmuxTermConfig>,
+) -> anyhow::Result<StartupState> {
+    let initial_pane_id: PaneId = 0;
+    let surface = spawn_surface(80, 24, ipc_addr, config, 0, 0, None, None)?;
+
+    let managed = ManagedPane {
+        surfaces: vec![surface],
+        active_surface_idx: 0,
+        selection: None,
+    };
+
+    let mut panes = HashMap::new();
+    panes.insert(initial_pane_id, managed);
+
+    let workspace = Workspace {
+        id: 0,
+        title: "Terminal 1".to_string(),
+        tree: PaneTree::new(initial_pane_id),
+        focused_pane: initial_pane_id,
+        zoomed: None,
+        dragging_divider: None,
+        last_pane_sizes: HashMap::new(),
+    };
+
+    Ok(StartupState {
+        workspaces: vec![workspace],
+        active_workspace_idx: 0,
+        panes,
+        next_pane_id: 1,
+        next_workspace_id: 1,
+        next_surface_id: 1,
+        sidebar: SidebarState {
+            visible: true,
+            width: DEFAULT_SIDEBAR_WIDTH,
+        },
+        notifications: NotificationStore::new(),
+    })
+}
+
+/// Restore app state from a saved session. Falls back to fresh startup on any failure.
+fn restore_session(
+    session: &SessionData,
+    ipc_addr: &amux_ipc::IpcAddr,
+    config: &Arc<AmuxTermConfig>,
+) -> StartupState {
+    let mut workspaces = Vec::new();
+    let mut panes: HashMap<PaneId, ManagedPane> = HashMap::new();
+
+    for saved_ws in &session.workspaces {
+        for (&pane_id, saved_pane) in &saved_ws.panes {
+            let mut surfaces = Vec::new();
+            for saved_sf in &saved_pane.surfaces {
+                let cwd = saved_sf.working_dir.as_deref();
+                let scrollback = if saved_sf.scrollback.is_empty() {
+                    None
+                } else {
+                    Some(saved_sf.scrollback.as_str())
+                };
+
+                match spawn_surface(
+                    saved_sf.cols,
+                    saved_sf.rows,
+                    ipc_addr,
+                    config,
+                    saved_ws.id,
+                    saved_sf.id,
+                    cwd,
+                    scrollback,
+                ) {
+                    Ok(surface) => surfaces.push(surface),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to restore surface {} in pane {}: {}",
+                            saved_sf.id,
+                            pane_id,
+                            e
+                        );
+                    }
+                }
+            }
+
+            if surfaces.is_empty() {
+                tracing::warn!("All surfaces failed for pane {}, skipping", pane_id);
+                continue;
+            }
+
+            let active_idx = saved_pane
+                .active_surface_idx
+                .min(surfaces.len().saturating_sub(1));
+            panes.insert(
+                pane_id,
+                ManagedPane {
+                    surfaces,
+                    active_surface_idx: active_idx,
+                    selection: None,
+                },
+            );
+        }
+
+        // Verify all pane IDs in the tree were actually restored
+        let tree_pane_ids = saved_ws.tree.iter_panes();
+        let all_panes_restored = tree_pane_ids.iter().all(|id| panes.contains_key(id));
+        if !all_panes_restored {
+            tracing::warn!(
+                "Skipping workspace {} (tree references missing panes)",
+                saved_ws.title
+            );
+            // Clean up any panes we did restore for this workspace
+            for id in &tree_pane_ids {
+                panes.remove(id);
+            }
+            continue;
+        }
+
+        let focused = if panes.contains_key(&saved_ws.focused_pane) {
+            saved_ws.focused_pane
+        } else {
+            *tree_pane_ids.first().unwrap_or(&0)
+        };
+
+        workspaces.push(Workspace {
+            id: saved_ws.id,
+            title: saved_ws.title.clone(),
+            tree: saved_ws.tree.clone(),
+            focused_pane: focused,
+            zoomed: saved_ws.zoomed.filter(|z| panes.contains_key(z)),
+            dragging_divider: None,
+            last_pane_sizes: HashMap::new(),
+        });
+    }
+
+    // If nothing restored, fall back to fresh
+    if workspaces.is_empty() {
+        tracing::warn!("Session restore produced no workspaces, starting fresh");
+        return match fresh_startup(ipc_addr, config) {
+            Ok(result) => result,
+            Err(e) => {
+                tracing::error!("Fresh startup also failed: {}", e);
+                panic!("Cannot start amux: {}", e);
+            }
+        };
+    }
+
+    let sidebar = SidebarState {
+        visible: session.sidebar.visible,
+        width: session.sidebar.width,
+    };
+
+    // Restore notifications (without Instant-dependent fields)
+    let mut store = NotificationStore::new();
+    for saved_n in &session.notifications {
+        let source = match saved_n.source.as_str() {
+            "toast" => NotificationSource::Toast,
+            "bell" => NotificationSource::Bell,
+            _ => NotificationSource::Cli,
+        };
+        if saved_n.read {
+            store.push_read(
+                saved_n.workspace_id,
+                saved_n.pane_id,
+                saved_n.surface_id,
+                saved_n.title.clone(),
+                saved_n.body.clone(),
+                source,
+            );
+        } else {
+            store.push(
+                saved_n.workspace_id,
+                saved_n.pane_id,
+                saved_n.surface_id,
+                saved_n.title.clone(),
+                saved_n.body.clone(),
+                source,
+            );
+        }
+    }
+
+    // Restore workspace statuses
+    for (ws_id, saved_status) in &session.workspace_statuses {
+        let state = match saved_status.state.as_str() {
+            "active" => amux_notify::AgentState::Active,
+            "waiting" => amux_notify::AgentState::Waiting,
+            _ => amux_notify::AgentState::Idle,
+        };
+        store.set_status(*ws_id, state, saved_status.label.clone());
+    }
+
+    let active_idx = session
+        .active_workspace_idx
+        .min(workspaces.len().saturating_sub(1));
+
+    StartupState {
+        workspaces,
+        active_workspace_idx: active_idx,
+        panes,
+        next_pane_id: session.next_pane_id,
+        next_workspace_id: session.next_workspace_id,
+        next_surface_id: session.next_surface_id,
+        sidebar,
+        notifications: store,
+    }
 }
 
 fn default_shell() -> String {
@@ -216,6 +466,7 @@ impl SelectionState {
 /// Word boundary delimiters for double-click selection.
 const WORD_DELIMITERS: &str = " \t\n()[]{}'\"|<>&;:,.`~!@#$%^*-+=?/\\";
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_surface(
     cols: u16,
     rows: u16,
@@ -223,6 +474,8 @@ fn spawn_surface(
     config: &Arc<AmuxTermConfig>,
     workspace_id: u64,
     surface_id: u64,
+    cwd: Option<&str>,
+    scrollback: Option<&str>,
 ) -> anyhow::Result<PaneSurface> {
     let shell = default_shell();
     let mut cmd = CommandBuilder::new(&shell);
@@ -231,7 +484,34 @@ fn spawn_surface(
     cmd.env("AMUX_SURFACE_ID", surface_id.to_string());
     cmd.env("TERM", "xterm-256color");
 
+    if let Some(dir) = cwd {
+        let path = std::path::Path::new(dir);
+        if path.is_dir() {
+            cmd.cwd(path);
+        } else {
+            tracing::warn!("Saved working dir no longer exists: {}", dir);
+            if let Some(home) = dirs::home_dir() {
+                cmd.cwd(home);
+            }
+        }
+    }
+
     let mut pane = TerminalPane::spawn(cols, rows, cmd, config.clone())?;
+
+    // Inject scrollback text before starting the reader thread.
+    // feed_bytes writes directly to the terminal state machine, not through the PTY.
+    if let Some(text) = scrollback {
+        if !text.is_empty() {
+            // Convert \n to \r\n for terminal processing, avoiding extra trailing blank line.
+            let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+            let trimmed = normalized.trim_end_matches('\n');
+            let buffer = trimmed.replace('\n', "\r\n");
+            if !buffer.is_empty() {
+                pane.feed_bytes(buffer.as_bytes());
+                pane.feed_bytes(b"\r\n");
+            }
+        }
+    }
 
     let mut reader = pane.take_reader().expect("reader already taken");
     let (byte_tx, byte_rx) = mpsc::channel::<Vec<u8>>();
@@ -278,6 +558,7 @@ struct AmuxApp {
     last_click_time: Instant,
     last_click_pos: egui::Pos2,
     click_count: u32,
+    wants_exit: bool,
 }
 
 impl AmuxApp {
@@ -313,10 +594,190 @@ impl AmuxApp {
     fn focused_pane_id(&self) -> PaneId {
         self.active_workspace().focused_pane
     }
+
+    /// Drain any pending PTY bytes into the terminal state machine so that
+    /// title, working directory, and scrollback are up to date before save.
+    fn flush_pending_io(&mut self) {
+        for managed in self.panes.values_mut() {
+            for surface in &mut managed.surfaces {
+                while let Ok(bytes) = surface.byte_rx.try_recv() {
+                    surface.pane.feed_bytes(&bytes);
+                }
+            }
+        }
+    }
+
+    fn build_session_data(&self) -> SessionData {
+        let mut saved_workspaces = Vec::new();
+        for ws in &self.workspaces {
+            let mut saved_panes = std::collections::HashMap::new();
+            for &pane_id in &ws.tree.iter_panes() {
+                if let Some(managed) = self.panes.get(&pane_id) {
+                    let surfaces: Vec<amux_session::SavedSurface> = managed
+                        .surfaces
+                        .iter()
+                        .map(|sf| {
+                            let working_dir = sf
+                                .pane
+                                .working_dir()
+                                .and_then(|url| url.to_file_path().ok())
+                                .map(|p| p.to_string_lossy().to_string())
+                                .or_else(|| {
+                                    // Fallback: query the child process's cwd via OS APIs
+                                    sf.pane.child_pid().and_then(get_cwd_from_pid)
+                                });
+                            let scrollback = sf.pane.read_scrollback_text(4096);
+                            let (cols, rows) = sf.pane.dimensions();
+                            amux_session::SavedSurface {
+                                id: sf.id,
+                                title: sf.pane.title().to_string(),
+                                working_dir,
+                                scrollback,
+                                cols: cols as u16,
+                                rows: rows as u16,
+                            }
+                        })
+                        .collect();
+                    saved_panes.insert(
+                        pane_id,
+                        amux_session::SavedManagedPane {
+                            surfaces,
+                            active_surface_idx: managed.active_surface_idx,
+                        },
+                    );
+                }
+            }
+            saved_workspaces.push(amux_session::SavedWorkspace {
+                id: ws.id,
+                title: ws.title.clone(),
+                tree: ws.tree.clone(),
+                focused_pane: ws.focused_pane,
+                zoomed: ws.zoomed,
+                panes: saved_panes,
+            });
+        }
+
+        let notifications: Vec<amux_session::SavedNotification> = self
+            .notifications
+            .all_notifications()
+            .iter()
+            .map(|n| amux_session::SavedNotification {
+                id: n.id,
+                workspace_id: n.workspace_id,
+                pane_id: n.pane_id,
+                surface_id: n.surface_id,
+                title: n.title.clone(),
+                body: n.body.clone(),
+                source: match n.source {
+                    NotificationSource::Toast => "toast",
+                    NotificationSource::Bell => "bell",
+                    NotificationSource::Cli => "cli",
+                }
+                .to_string(),
+                read: n.read,
+            })
+            .collect();
+
+        let workspace_statuses: std::collections::HashMap<u64, amux_session::SavedWorkspaceStatus> =
+            self.workspaces
+                .iter()
+                .filter_map(|ws| {
+                    self.notifications.workspace_status(ws.id).map(|status| {
+                        (
+                            ws.id,
+                            amux_session::SavedWorkspaceStatus {
+                                state: match status.state {
+                                    amux_notify::AgentState::Active => "active",
+                                    amux_notify::AgentState::Waiting => "waiting",
+                                    amux_notify::AgentState::Idle => "idle",
+                                }
+                                .to_string(),
+                                label: status.label.clone(),
+                            },
+                        )
+                    })
+                })
+                .collect();
+
+        SessionData {
+            version: 1,
+            saved_at: chrono_now(),
+            workspaces: saved_workspaces,
+            active_workspace_idx: self.active_workspace_idx,
+            next_pane_id: self.next_pane_id,
+            next_workspace_id: self.next_workspace_id,
+            next_surface_id: self.next_surface_id,
+            sidebar: amux_session::SavedSidebar {
+                visible: self.sidebar.visible,
+                width: self.sidebar.width,
+            },
+            notifications,
+            workspace_statuses,
+        }
+    }
+}
+
+/// Simple ISO 8601 timestamp without a chrono dependency.
+fn chrono_now() -> String {
+    let dur = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = dur.as_secs();
+    // Approximate UTC datetime (good enough for session metadata)
+    let days = secs / 86400;
+    let time_secs = secs % 86400;
+    let hours = time_secs / 3600;
+    let mins = (time_secs % 3600) / 60;
+    let s = time_secs % 60;
+    // Simple days-since-epoch to date (approximate, ignoring leap seconds)
+    let mut y = 1970i64;
+    let mut remaining_days = days as i64;
+    loop {
+        let year_days = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if remaining_days < year_days {
+            break;
+        }
+        remaining_days -= year_days;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut m = 0;
+    for (i, &md) in month_days.iter().enumerate() {
+        if remaining_days < md as i64 {
+            m = i + 1;
+            break;
+        }
+        remaining_days -= md as i64;
+    }
+    let d = remaining_days + 1;
+    format!("{y:04}-{m:02}-{d:02}T{hours:02}:{mins:02}:{s:02}Z")
 }
 
 impl eframe::App for AmuxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.wants_exit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
         // Drain PTY output from all surfaces in all panes
         let mut got_data = false;
         for managed in self.panes.values_mut() {
@@ -442,6 +903,22 @@ impl eframe::App for AmuxApp {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
     }
+
+    fn on_exit(&mut self) {
+        if self.wants_exit {
+            // User explicitly closed everything — clear session so next
+            // launch starts fresh instead of restoring an empty state.
+            if let Err(e) = amux_session::clear() {
+                tracing::error!("Session clear failed: {}", e);
+            }
+        } else {
+            self.flush_pending_io();
+            let data = self.build_session_data();
+            if let Err(e) = amux_session::save(&data) {
+                tracing::error!("Session save failed: {}", e);
+            }
+        }
+    }
 }
 
 impl AmuxApp {
@@ -480,15 +957,16 @@ impl AmuxApp {
 
             for (idx, surface) in managed.surfaces.iter().enumerate() {
                 let is_active = idx == active_idx;
-                let label = surface.pane.title();
-                let label = if label.is_empty() {
+                let raw_title = surface.pane.title();
+                let label = if raw_title.is_empty() {
                     format!("tab {}", idx + 1)
                 } else {
-                    // Truncate long titles
-                    if label.len() > 20 {
-                        format!("{}...", &label[..17])
+                    // Truncate long titles (char-safe for UTF-8)
+                    if raw_title.chars().count() > 20 {
+                        let prefix: String = raw_title.chars().take(17).collect();
+                        format!("{prefix}...")
                     } else {
-                        label.to_string()
+                        raw_title.to_string()
                     }
                 };
 
@@ -542,7 +1020,7 @@ impl AmuxApp {
                 // Hit testing
                 if ui.input(|i| i.pointer.any_pressed()) {
                     if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                        if close_rect.contains(pos) && managed.surfaces.len() > 1 {
+                        if close_rect.contains(pos) {
                             close_tab = Some(idx);
                         } else if this_tab.contains(pos) && !is_active {
                             switch_to = Some(idx);
@@ -571,9 +1049,16 @@ impl AmuxApp {
                         let ws_id = self.active_workspace().id;
                         let sf_id = self.next_surface_id;
                         self.next_surface_id += 1;
-                        if let Ok(surface) =
-                            spawn_surface(80, 24, &self.socket_addr, &self.config, ws_id, sf_id)
-                        {
+                        if let Ok(surface) = spawn_surface(
+                            80,
+                            24,
+                            &self.socket_addr,
+                            &self.config,
+                            ws_id,
+                            sf_id,
+                            None,
+                            None,
+                        ) {
                             // Re-borrow managed after spawn_surface
                             if let Some(m) = self.panes.get_mut(&pane_id) {
                                 m.surfaces.push(surface);
@@ -586,15 +1071,23 @@ impl AmuxApp {
             }
 
             // Apply tab switch/close (need to re-borrow managed)
-            let managed = self.panes.get_mut(&pane_id).unwrap();
-            if let Some(idx) = switch_to {
-                managed.active_surface_idx = idx;
-            }
             if let Some(idx) = close_tab {
+                let is_last = self
+                    .panes
+                    .get(&pane_id)
+                    .is_some_and(|m| m.surfaces.len() <= 1);
+                if is_last {
+                    self.close_pane(pane_id);
+                    return;
+                }
+                let managed = self.panes.get_mut(&pane_id).unwrap();
                 managed.surfaces.remove(idx);
                 if managed.active_surface_idx >= managed.surfaces.len() {
                     managed.active_surface_idx = managed.surfaces.len() - 1;
                 }
+            } else if let Some(idx) = switch_to {
+                let managed = self.panes.get_mut(&pane_id).unwrap();
+                managed.active_surface_idx = idx;
             }
         }
 
@@ -857,7 +1350,16 @@ impl AmuxApp {
 
         let ws_id = self.active_workspace().id;
 
-        match spawn_surface(80, 24, &self.socket_addr, &self.config, ws_id, sf_id) {
+        match spawn_surface(
+            80,
+            24,
+            &self.socket_addr,
+            &self.config,
+            ws_id,
+            sf_id,
+            None,
+            None,
+        ) {
             Ok(surface) => {
                 self.panes.insert(
                     pane_id,
@@ -879,14 +1381,23 @@ impl AmuxApp {
         let ws_id = self.next_workspace_id;
         self.next_workspace_id += 1;
 
-        let title = title.unwrap_or_else(|| format!("workspace-{}", ws_id));
+        let title = title.unwrap_or_else(|| format!("Terminal {}", self.workspaces.len() + 1));
 
         let pane_id = self.next_pane_id;
         self.next_pane_id += 1;
         let sf_id = self.next_surface_id;
         self.next_surface_id += 1;
 
-        match spawn_surface(80, 24, &self.socket_addr, &self.config, ws_id, sf_id) {
+        match spawn_surface(
+            80,
+            24,
+            &self.socket_addr,
+            &self.config,
+            ws_id,
+            sf_id,
+            None,
+            None,
+        ) {
             Ok(surface) => {
                 self.panes.insert(
                     pane_id,
@@ -924,7 +1435,16 @@ impl AmuxApp {
         let ws_id = self.active_workspace().id;
         let focused = self.focused_pane_id();
 
-        match spawn_surface(80, 24, &self.socket_addr, &self.config, ws_id, sf_id) {
+        match spawn_surface(
+            80,
+            24,
+            &self.socket_addr,
+            &self.config,
+            ws_id,
+            sf_id,
+            None,
+            None,
+        ) {
             Ok(surface) => {
                 if let Some(managed) = self.panes.get_mut(&focused) {
                     managed.surfaces.push(surface);
@@ -942,10 +1462,18 @@ impl AmuxApp {
     }
 
     fn close_workspace_at(&mut self, ws_idx: usize) {
+        let ws_id = self.workspaces[ws_idx].id;
         if self.workspaces.len() <= 1 {
+            // Last workspace — clean up and signal exit
+            let pane_ids: Vec<PaneId> = self.workspaces[ws_idx].tree.iter_panes();
+            for id in &pane_ids {
+                self.panes.remove(id);
+                self.notifications.remove_pane(*id);
+            }
+            self.notifications.remove_workspace(ws_id);
+            self.wants_exit = true;
             return;
         }
-        let ws_id = self.workspaces[ws_idx].id;
         let pane_ids: Vec<PaneId> = self.workspaces[ws_idx].tree.iter_panes();
         for id in &pane_ids {
             self.panes.remove(id);
@@ -1215,20 +1743,38 @@ impl AmuxApp {
             }
         }
 
-        // Mouse wheel scrolling
+        // Mouse wheel scrolling — scroll the pane under the cursor
         let scroll_delta = ctx.input(|i| i.smooth_scroll_delta.y);
         if scroll_delta != 0.0 {
-            let focused_id = self.focused_pane_id();
-            if let Some(managed) = self.panes.get_mut(&focused_id) {
-                let surface = managed.active_surface_mut();
-                let font_id = egui::FontId::monospace(FONT_SIZE);
-                let cell_height = ctx.fonts(|f| f.row_height(&font_id));
+            let hover_pos = ctx.input(|i| i.pointer.hover_pos());
+            let target_pane = hover_pos.and_then(|pos| {
+                let panel_rect = self.last_panel_rect?;
+                let ws = self.active_workspace();
+                if let Some(zoomed_id) = ws.zoomed {
+                    // In zoomed mode, only the zoomed pane is visible
+                    if panel_rect.contains(pos) {
+                        return Some(zoomed_id);
+                    }
+                    return None;
+                }
+                let layout = ws.tree.layout(panel_rect);
+                layout
+                    .iter()
+                    .find(|(_, rect)| rect.contains(pos))
+                    .map(|(id, _)| *id)
+            });
+            if let Some(pane_id) = target_pane {
+                if let Some(managed) = self.panes.get_mut(&pane_id) {
+                    let surface = managed.active_surface_mut();
+                    let font_id = egui::FontId::monospace(FONT_SIZE);
+                    let cell_height = ctx.fonts(|f| f.row_height(&font_id));
 
-                surface.scroll_accum += -scroll_delta / cell_height;
-                let whole_lines = surface.scroll_accum.trunc() as isize;
-                if whole_lines != 0 {
-                    surface.scroll_accum -= whole_lines as f32;
-                    self.do_scroll_lines(whole_lines);
+                    surface.scroll_accum += -scroll_delta / cell_height;
+                    let whole_lines = surface.scroll_accum.trunc() as isize;
+                    if whole_lines != 0 {
+                        surface.scroll_accum -= whole_lines as f32;
+                        self.do_scroll_lines_for(pane_id, whole_lines);
+                    }
                 }
             }
         }
@@ -1258,26 +1804,41 @@ impl AmuxApp {
             }
         }
 
-        // Then close pane if >1 pane
-        let pane_count = self.active_workspace().tree.iter_panes().len();
+        self.close_pane(focused_id);
+        true
+    }
+
+    /// Close a pane entirely. Finds the owning workspace (not necessarily the
+    /// active one). If it's the last pane in that workspace, close the workspace.
+    fn close_pane(&mut self, pane_id: PaneId) {
+        // Find the workspace that owns this pane
+        let ws_idx = match self
+            .workspaces
+            .iter()
+            .position(|ws| ws.tree.iter_panes().contains(&pane_id))
+        {
+            Some(idx) => idx,
+            None => return, // pane not in any workspace
+        };
+
+        let pane_count = self.workspaces[ws_idx].tree.iter_panes().len();
         if pane_count > 1 {
-            let ws = self.active_workspace_mut();
-            if let Some(new_focus) = ws.tree.close(focused_id) {
-                ws.last_pane_sizes.remove(&focused_id);
-                if ws.zoomed == Some(focused_id) {
+            let ws = &mut self.workspaces[ws_idx];
+            if let Some(new_focus) = ws.tree.close(pane_id) {
+                ws.last_pane_sizes.remove(&pane_id);
+                if ws.zoomed == Some(pane_id) {
                     ws.zoomed = None;
                 }
-                self.panes.remove(&focused_id);
-                self.notifications.remove_pane(focused_id);
-                self.set_focus(new_focus);
+                self.panes.remove(&pane_id);
+                self.notifications.remove_pane(pane_id);
+                if ws_idx == self.active_workspace_idx {
+                    self.set_focus(new_focus);
+                }
             }
-            return true;
+        } else {
+            // Last pane in workspace -> close workspace
+            self.close_workspace_at(ws_idx);
         }
-
-        // Last pane in workspace -> close workspace
-        let ws_idx = self.active_workspace_idx;
-        self.close_workspace_at(ws_idx);
-        true
     }
 
     fn do_navigate(&mut self, dir: NavDirection) -> bool {
@@ -1317,9 +1878,8 @@ impl AmuxApp {
         true
     }
 
-    fn do_scroll_lines(&mut self, lines: isize) {
-        let focused_id = self.focused_pane_id();
-        if let Some(managed) = self.panes.get_mut(&focused_id) {
+    fn do_scroll_lines_for(&mut self, pane_id: PaneId, lines: isize) {
+        if let Some(managed) = self.panes.get_mut(&pane_id) {
             let surface = managed.active_surface_mut();
             let (_, rows) = surface.pane.dimensions();
             let total = surface.pane.screen().scrollback_rows();
@@ -2158,24 +2718,44 @@ impl AmuxApp {
                             .and_then(|s| s.parse::<PaneId>().ok())
                             .unwrap_or(self.focused_pane_id());
 
-                        let sf_id = self.next_surface_id;
-                        self.next_surface_id += 1;
-                        let ws_id = self.active_workspace().id;
+                        // Validate pane exists before spawning a surface
+                        if !self.panes.contains_key(&target_pane) {
+                            Response::err(req.id.clone(), "not_found", "pane not found")
+                        } else {
+                            // Find the workspace that owns this pane
+                            let ws_id = self
+                                .workspaces
+                                .iter()
+                                .find(|ws| ws.tree.iter_panes().contains(&target_pane))
+                                .map(|ws| ws.id)
+                                .unwrap_or_else(|| self.active_workspace().id);
 
-                        match spawn_surface(80, 24, &self.socket_addr, &self.config, ws_id, sf_id) {
-                            Ok(surface) => {
-                                if let Some(managed) = self.panes.get_mut(&target_pane) {
+                            let sf_id = self.next_surface_id;
+                            self.next_surface_id += 1;
+
+                            match spawn_surface(
+                                80,
+                                24,
+                                &self.socket_addr,
+                                &self.config,
+                                ws_id,
+                                sf_id,
+                                None,
+                                None,
+                            ) {
+                                Ok(surface) => {
+                                    let managed = self.panes.get_mut(&target_pane).unwrap();
                                     managed.surfaces.push(surface);
                                     managed.active_surface_idx = managed.surfaces.len() - 1;
                                     Response::ok(
                                         req.id.clone(),
                                         serde_json::json!({"surface_id": sf_id.to_string()}),
                                     )
-                                } else {
-                                    Response::err(req.id.clone(), "not_found", "pane not found")
+                                }
+                                Err(e) => {
+                                    Response::err(req.id.clone(), "spawn_error", &e.to_string())
                                 }
                             }
-                            Err(e) => Response::err(req.id.clone(), "spawn_error", &e.to_string()),
                         }
                     }
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
@@ -2193,25 +2773,27 @@ impl AmuxApp {
                         if let Some(sf_id_str) = params.surface_id {
                             // Find and close the specific surface
                             if let Ok(sf_id) = sf_id_str.parse::<u64>() {
-                                for managed in self.panes.values_mut() {
-                                    if let Some(idx) =
-                                        managed.surfaces.iter().position(|s| s.id == sf_id)
-                                    {
-                                        if managed.surfaces.len() <= 1 {
-                                            return Response::err(
-                                                req.id.clone(),
-                                                "last_surface",
-                                                "cannot close the last surface in a pane",
-                                            );
-                                        }
+                                // Find which pane owns this surface
+                                let target = self.panes.iter().find_map(|(&pid, m)| {
+                                    m.surfaces
+                                        .iter()
+                                        .position(|s| s.id == sf_id)
+                                        .map(|idx| (pid, idx))
+                                });
+                                if let Some((pane_id, idx)) = target {
+                                    let managed = self.panes.get_mut(&pane_id).unwrap();
+                                    if managed.surfaces.len() <= 1 {
+                                        self.close_pane(pane_id);
+                                    } else {
                                         managed.surfaces.remove(idx);
                                         if managed.active_surface_idx >= managed.surfaces.len() {
                                             managed.active_surface_idx = managed.surfaces.len() - 1;
                                         }
-                                        return Response::ok(req.id.clone(), serde_json::json!({}));
                                     }
+                                    Response::ok(req.id.clone(), serde_json::json!({}))
+                                } else {
+                                    Response::err(req.id.clone(), "not_found", "surface not found")
                                 }
-                                Response::err(req.id.clone(), "not_found", "surface not found")
                             } else {
                                 Response::err(
                                     req.id.clone(),
@@ -2223,15 +2805,12 @@ impl AmuxApp {
                             // Close active surface in focused pane
                             if let Some(managed) = self.panes.get_mut(&focused) {
                                 if managed.surfaces.len() <= 1 {
-                                    return Response::err(
-                                        req.id.clone(),
-                                        "last_surface",
-                                        "cannot close the last surface in a pane",
-                                    );
-                                }
-                                managed.surfaces.remove(managed.active_surface_idx);
-                                if managed.active_surface_idx >= managed.surfaces.len() {
-                                    managed.active_surface_idx = managed.surfaces.len() - 1;
+                                    self.close_pane(focused);
+                                } else {
+                                    managed.surfaces.remove(managed.active_surface_idx);
+                                    if managed.active_surface_idx >= managed.surfaces.len() {
+                                        managed.active_surface_idx = managed.surfaces.len() - 1;
+                                    }
                                 }
                                 Response::ok(req.id.clone(), serde_json::json!({}))
                             } else {
@@ -2340,6 +2919,17 @@ impl AmuxApp {
             "notify.clear" => {
                 self.notifications.clear_all();
                 Response::ok(req.id.clone(), serde_json::json!({}))
+            }
+            "session.save" => {
+                self.flush_pending_io();
+                let data = self.build_session_data();
+                match amux_session::save(&data) {
+                    Ok(()) => Response::ok(
+                        req.id.clone(),
+                        serde_json::json!({"path": amux_session::session_path().to_string_lossy()}),
+                    ),
+                    Err(e) => Response::err(req.id.clone(), "save_failed", &e.to_string()),
+                }
             }
             _ => Response::err(
                 req.id.clone(),

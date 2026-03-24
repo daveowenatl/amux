@@ -19,5 +19,7 @@ portable-pty = { workspace = true }
 amux-ipc = { workspace = true }
 amux-layout = { workspace = true }
 amux-notify = { workspace = true }
+amux-session = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+dirs = { workspace = true }

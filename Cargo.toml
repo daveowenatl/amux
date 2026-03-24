@@ -55,6 +55,9 @@ dirs = "6"
 # Error handling
 anyhow = "1"
 
+# Testing
+tempfile = "3"
+
 # Logging
 tracing = "0.1"
 tracing-subscriber = "0.3"

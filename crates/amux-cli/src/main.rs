@@ -131,11 +131,42 @@ enum Command {
     /// Clear all notifications
     #[command(name = "clear-notifications")]
     ClearNotifications,
+    /// Save the current session
+    #[command(name = "session-save")]
+    SessionSave,
+    /// Clear saved session data
+    #[command(name = "session-clear")]
+    SessionClear,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    // SessionClear is a direct filesystem operation — handle before IPC connection
+    // so it works even when the server isn't running.
+    if matches!(cli.command, Command::SessionClear) {
+        match amux_session::clear() {
+            Ok(()) => {
+                if cli.json {
+                    println!("{}", serde_json::json!({"ok": true}));
+                } else {
+                    println!("Session cleared");
+                }
+            }
+            Err(e) => {
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"ok": false, "error": e.to_string()})
+                    );
+                } else {
+                    eprintln!("Error: {}", e);
+                }
+            }
+        }
+        return Ok(());
+    }
 
     let addr = resolve_addr(&cli)?;
     let mut client = IpcClient::connect(&addr).await?;
@@ -453,6 +484,25 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 print_response(&resp, false);
             }
+        }
+        Command::SessionSave => {
+            let resp = client.call("session.save", serde_json::json!({})).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                let path = resp
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.get("path"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(unknown)");
+                println!("Session saved to {}", path);
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::SessionClear => {
+            unreachable!("handled before IPC connection");
         }
     }
     Ok(())
