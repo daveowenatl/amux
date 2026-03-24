@@ -114,6 +114,13 @@ pub fn load() -> anyhow::Result<Option<SessionData>> {
         anyhow::bail!("unsupported session version: {}", data.version);
     }
 
+    // Reject empty sessions (no workspaces, or all workspaces have no panes)
+    if data.workspaces.is_empty()
+        || data.workspaces.iter().all(|ws| ws.panes.is_empty())
+    {
+        return Ok(None);
+    }
+
     Ok(Some(data))
 }
 

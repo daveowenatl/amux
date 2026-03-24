@@ -94,6 +94,10 @@ impl TerminalPane {
             Box::new(terminal_writer),
         );
 
+        // Override wezterm-term's default "wezterm" title with empty string.
+        // The shell will set the real title via OSC 0/2 once it starts.
+        terminal.advance_bytes(b"\x1b]2;\x07");
+
         let (tx, rx) = mpsc::channel();
         terminal.set_notification_handler(Box::new(ChannelAlertHandler::new(tx)));
 
@@ -286,30 +290,142 @@ impl TerminalPane {
         result
     }
 
-    /// Read scrollback + visible screen as text, up to `max_lines` lines.
-    /// Unlike `read_screen_text` which only reads the visible viewport,
-    /// this captures the full scrollback buffer for session persistence.
+    /// Read scrollback + visible screen as text with ANSI escape sequences,
+    /// up to `max_lines` lines. Preserves colors and formatting for session
+    /// persistence. Trailing empty lines are trimmed.
     pub fn read_scrollback_text(&self, max_lines: usize) -> String {
+        use wezterm_term::{CellAttributes, Intensity, Underline};
+
         let (cols, _) = self.dimensions();
         let screen = self.terminal.screen();
         let total = screen.scrollback_rows();
         let start = total.saturating_sub(max_lines);
         let lines = screen.lines_in_phys_range(start..total);
 
-        let mut result = String::new();
-        for (i, line) in lines.iter().enumerate() {
-            if i > 0 {
-                result.push('\n');
-            }
-            let mut line_text = String::new();
+        // Build lines with ANSI formatting, collecting into a Vec
+        // so we can trim trailing empty lines.
+        let mut output_lines: Vec<String> = Vec::with_capacity(lines.len());
+        let default_attrs = CellAttributes::blank();
+
+        for line in &lines {
+            let mut line_buf = String::new();
+            let mut prev_attrs = default_attrs.clone();
+
             for cell in line.visible_cells() {
                 if cell.cell_index() >= cols {
                     break;
                 }
-                line_text.push_str(cell.str());
+                let attrs = cell.attrs();
+                // Emit SGR sequences when attributes change
+                if attrs != &prev_attrs {
+                    let mut sgr_params: Vec<u8> = Vec::new();
+
+                    // Reset first, then set active attributes.
+                    // This is simpler and more reliable than computing diffs.
+                    sgr_params.push(0);
+
+                    // Intensity (bold/dim)
+                    match attrs.intensity() {
+                        Intensity::Bold => sgr_params.push(1),
+                        Intensity::Half => sgr_params.push(2),
+                        Intensity::Normal => {}
+                    }
+
+                    if attrs.italic() {
+                        sgr_params.push(3);
+                    }
+
+                    match attrs.underline() {
+                        Underline::Single => sgr_params.push(4),
+                        Underline::Double => sgr_params.push(21),
+                        Underline::Curly => { /* CSI 4:3 m - handle below */ }
+                        Underline::Dotted => { /* CSI 4:4 m */ }
+                        Underline::Dashed => { /* CSI 4:5 m */ }
+                        Underline::None => {}
+                    }
+
+                    if attrs.reverse() {
+                        sgr_params.push(7);
+                    }
+
+                    if attrs.invisible() {
+                        sgr_params.push(8);
+                    }
+
+                    if attrs.strikethrough() {
+                        sgr_params.push(9);
+                    }
+
+                    if attrs.overline() {
+                        sgr_params.push(53);
+                    }
+
+                    // Build the SGR sequence
+                    line_buf.push_str("\x1b[");
+                    for (i, p) in sgr_params.iter().enumerate() {
+                        if i > 0 {
+                            line_buf.push(';');
+                        }
+                        line_buf.push_str(&p.to_string());
+                    }
+
+                    // Foreground color
+                    emit_color_sgr(&mut line_buf, attrs.foreground(), true);
+
+                    // Background color
+                    emit_color_sgr(&mut line_buf, attrs.background(), false);
+
+                    line_buf.push('m');
+
+                    prev_attrs = attrs.clone();
+                }
+                line_buf.push_str(cell.str());
             }
-            result.push_str(line_text.trim_end());
+
+            // Reset at end of line if we had non-default attributes
+            if prev_attrs != default_attrs {
+                line_buf.push_str("\x1b[0m");
+            }
+
+            // Trim trailing whitespace from the plain-text portion
+            // (but preserve escape sequences)
+            let trimmed = line_buf.trim_end();
+            output_lines.push(trimmed.to_string());
         }
-        result
+
+        // Trim trailing empty lines
+        while output_lines.last().is_some_and(|l| l.is_empty()) {
+            output_lines.pop();
+        }
+
+        output_lines.join("\n")
+    }
+}
+
+/// Append an SGR color parameter to an in-progress SGR sequence.
+/// `is_fg` selects foreground (38) vs background (48).
+fn emit_color_sgr(buf: &mut String, color: wezterm_term::color::ColorAttribute, is_fg: bool) {
+    use wezterm_term::color::ColorAttribute;
+    match color {
+        ColorAttribute::Default => {}
+        ColorAttribute::PaletteIndex(idx) => {
+            // Standard 16 colors use compact codes; 256-color uses extended form
+            let base = if is_fg { 30 } else { 40 };
+            if idx < 8 {
+                buf.push_str(&format!(";{}", base + idx as u16));
+            } else if idx < 16 {
+                buf.push_str(&format!(";{}", base + 60 + (idx - 8) as u16));
+            } else {
+                buf.push_str(&format!(";{};5;{}", if is_fg { 38 } else { 48 }, idx));
+            }
+        }
+        ColorAttribute::TrueColorWithDefaultFallback(srgba) => {
+            let (r, g, b, _) = srgba.to_srgb_u8();
+            buf.push_str(&format!(";{};2;{};{};{}", if is_fg { 38 } else { 48 }, r, g, b));
+        }
+        ColorAttribute::TrueColorWithPaletteFallback(srgba, _) => {
+            let (r, g, b, _) = srgba.to_srgb_u8();
+            buf.push_str(&format!(";{};2;{};{};{}", if is_fg { 38 } else { 48 }, r, g, b));
+        }
     }
 }

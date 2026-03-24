@@ -115,6 +115,7 @@ fn main() -> anyhow::Result<()> {
                 last_click_time: Instant::now(),
                 last_click_pos: egui::Pos2::ZERO,
                 click_count: 0,
+                wants_exit: false,
             }))
         }),
     )
@@ -154,7 +155,7 @@ fn fresh_startup(
 
     let workspace = Workspace {
         id: 0,
-        title: "default".to_string(),
+        title: "Terminal 1".to_string(),
         tree: PaneTree::new(initial_pane_id),
         focused_pane: initial_pane_id,
         zoomed: None,
@@ -534,6 +535,7 @@ struct AmuxApp {
     last_click_time: Instant,
     last_click_pos: egui::Pos2,
     click_count: u32,
+    wants_exit: bool,
 }
 
 impl AmuxApp {
@@ -736,6 +738,11 @@ fn chrono_now() -> String {
 
 impl eframe::App for AmuxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.wants_exit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
         // Drain PTY output from all surfaces in all panes
         let mut got_data = false;
         for managed in self.panes.values_mut() {
@@ -863,9 +870,17 @@ impl eframe::App for AmuxApp {
     }
 
     fn on_exit(&mut self) {
-        let data = self.build_session_data();
-        if let Err(e) = amux_session::save(&data) {
-            tracing::error!("Session save failed: {}", e);
+        if self.wants_exit {
+            // User explicitly closed everything — clear session so next
+            // launch starts fresh instead of restoring an empty state.
+            if let Err(e) = amux_session::clear() {
+                tracing::error!("Session clear failed: {}", e);
+            }
+        } else {
+            let data = self.build_session_data();
+            if let Err(e) = amux_session::save(&data) {
+                tracing::error!("Session save failed: {}", e);
+            }
         }
     }
 }
@@ -906,15 +921,15 @@ impl AmuxApp {
 
             for (idx, surface) in managed.surfaces.iter().enumerate() {
                 let is_active = idx == active_idx;
-                let label = surface.pane.title();
-                let label = if label.is_empty() {
+                let raw_title = surface.pane.title();
+                let label = if raw_title.is_empty() {
                     format!("tab {}", idx + 1)
                 } else {
                     // Truncate long titles
-                    if label.len() > 20 {
-                        format!("{}...", &label[..17])
+                    if raw_title.len() > 20 {
+                        format!("{}...", &raw_title[..17])
                     } else {
-                        label.to_string()
+                        raw_title.to_string()
                     }
                 };
 
@@ -968,7 +983,7 @@ impl AmuxApp {
                 // Hit testing
                 if ui.input(|i| i.pointer.any_pressed()) {
                     if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                        if close_rect.contains(pos) && managed.surfaces.len() > 1 {
+                        if close_rect.contains(pos) {
                             close_tab = Some(idx);
                         } else if this_tab.contains(pos) && !is_active {
                             switch_to = Some(idx);
@@ -1019,15 +1034,21 @@ impl AmuxApp {
             }
 
             // Apply tab switch/close (need to re-borrow managed)
-            let managed = self.panes.get_mut(&pane_id).unwrap();
-            if let Some(idx) = switch_to {
-                managed.active_surface_idx = idx;
-            }
             if let Some(idx) = close_tab {
+                let is_last = self.panes.get(&pane_id)
+                    .is_some_and(|m| m.surfaces.len() <= 1);
+                if is_last {
+                    self.close_pane(pane_id);
+                    return;
+                }
+                let managed = self.panes.get_mut(&pane_id).unwrap();
                 managed.surfaces.remove(idx);
                 if managed.active_surface_idx >= managed.surfaces.len() {
                     managed.active_surface_idx = managed.surfaces.len() - 1;
                 }
+            } else if let Some(idx) = switch_to {
+                let managed = self.panes.get_mut(&pane_id).unwrap();
+                managed.active_surface_idx = idx;
             }
         }
 
@@ -1321,7 +1342,7 @@ impl AmuxApp {
         let ws_id = self.next_workspace_id;
         self.next_workspace_id += 1;
 
-        let title = title.unwrap_or_else(|| format!("workspace-{}", ws_id));
+        let title = title.unwrap_or_else(|| format!("Terminal {}", self.workspaces.len() + 1));
 
         let pane_id = self.next_pane_id;
         self.next_pane_id += 1;
@@ -1402,10 +1423,18 @@ impl AmuxApp {
     }
 
     fn close_workspace_at(&mut self, ws_idx: usize) {
+        let ws_id = self.workspaces[ws_idx].id;
         if self.workspaces.len() <= 1 {
+            // Last workspace — clean up and signal exit
+            let pane_ids: Vec<PaneId> = self.workspaces[ws_idx].tree.iter_panes();
+            for id in &pane_ids {
+                self.panes.remove(id);
+                self.notifications.remove_pane(*id);
+            }
+            self.notifications.remove_workspace(ws_id);
+            self.wants_exit = true;
             return;
         }
-        let ws_id = self.workspaces[ws_idx].id;
         let pane_ids: Vec<PaneId> = self.workspaces[ws_idx].tree.iter_panes();
         for id in &pane_ids {
             self.panes.remove(id);
@@ -1675,20 +1704,35 @@ impl AmuxApp {
             }
         }
 
-        // Mouse wheel scrolling
+        // Mouse wheel scrolling — scroll the pane under the cursor
         let scroll_delta = ctx.input(|i| i.smooth_scroll_delta.y);
         if scroll_delta != 0.0 {
-            let focused_id = self.focused_pane_id();
-            if let Some(managed) = self.panes.get_mut(&focused_id) {
-                let surface = managed.active_surface_mut();
-                let font_id = egui::FontId::monospace(FONT_SIZE);
-                let cell_height = ctx.fonts(|f| f.row_height(&font_id));
+            let hover_pos = ctx.input(|i| i.pointer.hover_pos());
+            let target_pane = hover_pos.and_then(|pos| {
+                let panel_rect = self.last_panel_rect?;
+                let ws = self.active_workspace();
+                if let Some(zoomed_id) = ws.zoomed {
+                    // In zoomed mode, only the zoomed pane is visible
+                    if panel_rect.contains(pos) {
+                        return Some(zoomed_id);
+                    }
+                    return None;
+                }
+                let layout = ws.tree.layout(panel_rect);
+                layout.iter().find(|(_, rect)| rect.contains(pos)).map(|(id, _)| *id)
+            });
+            if let Some(pane_id) = target_pane {
+                if let Some(managed) = self.panes.get_mut(&pane_id) {
+                    let surface = managed.active_surface_mut();
+                    let font_id = egui::FontId::monospace(FONT_SIZE);
+                    let cell_height = ctx.fonts(|f| f.row_height(&font_id));
 
-                surface.scroll_accum += -scroll_delta / cell_height;
-                let whole_lines = surface.scroll_accum.trunc() as isize;
-                if whole_lines != 0 {
-                    surface.scroll_accum -= whole_lines as f32;
-                    self.do_scroll_lines(whole_lines);
+                    surface.scroll_accum += -scroll_delta / cell_height;
+                    let whole_lines = surface.scroll_accum.trunc() as isize;
+                    if whole_lines != 0 {
+                        surface.scroll_accum -= whole_lines as f32;
+                        self.do_scroll_lines_for(pane_id, whole_lines);
+                    }
                 }
             }
         }
@@ -1718,26 +1762,30 @@ impl AmuxApp {
             }
         }
 
-        // Then close pane if >1 pane
+        self.close_pane(focused_id);
+        true
+    }
+
+    /// Close a pane entirely. If it's the last pane in the workspace,
+    /// close the workspace too.
+    fn close_pane(&mut self, pane_id: PaneId) {
         let pane_count = self.active_workspace().tree.iter_panes().len();
         if pane_count > 1 {
             let ws = self.active_workspace_mut();
-            if let Some(new_focus) = ws.tree.close(focused_id) {
-                ws.last_pane_sizes.remove(&focused_id);
-                if ws.zoomed == Some(focused_id) {
+            if let Some(new_focus) = ws.tree.close(pane_id) {
+                ws.last_pane_sizes.remove(&pane_id);
+                if ws.zoomed == Some(pane_id) {
                     ws.zoomed = None;
                 }
-                self.panes.remove(&focused_id);
-                self.notifications.remove_pane(focused_id);
+                self.panes.remove(&pane_id);
+                self.notifications.remove_pane(pane_id);
                 self.set_focus(new_focus);
             }
-            return true;
+        } else {
+            // Last pane in workspace -> close workspace
+            let ws_idx = self.active_workspace_idx;
+            self.close_workspace_at(ws_idx);
         }
-
-        // Last pane in workspace -> close workspace
-        let ws_idx = self.active_workspace_idx;
-        self.close_workspace_at(ws_idx);
-        true
     }
 
     fn do_navigate(&mut self, dir: NavDirection) -> bool {
@@ -1777,9 +1825,8 @@ impl AmuxApp {
         true
     }
 
-    fn do_scroll_lines(&mut self, lines: isize) {
-        let focused_id = self.focused_pane_id();
-        if let Some(managed) = self.panes.get_mut(&focused_id) {
+    fn do_scroll_lines_for(&mut self, pane_id: PaneId, lines: isize) {
+        if let Some(managed) = self.panes.get_mut(&pane_id) {
             let surface = managed.active_surface_mut();
             let (_, rows) = surface.pane.dimensions();
             let total = surface.pane.screen().scrollback_rows();
@@ -2662,25 +2709,24 @@ impl AmuxApp {
                         if let Some(sf_id_str) = params.surface_id {
                             // Find and close the specific surface
                             if let Ok(sf_id) = sf_id_str.parse::<u64>() {
-                                for managed in self.panes.values_mut() {
-                                    if let Some(idx) =
-                                        managed.surfaces.iter().position(|s| s.id == sf_id)
-                                    {
-                                        if managed.surfaces.len() <= 1 {
-                                            return Response::err(
-                                                req.id.clone(),
-                                                "last_surface",
-                                                "cannot close the last surface in a pane",
-                                            );
-                                        }
+                                // Find which pane owns this surface
+                                let target = self.panes.iter().find_map(|(&pid, m)| {
+                                    m.surfaces.iter().position(|s| s.id == sf_id).map(|idx| (pid, idx))
+                                });
+                                if let Some((pane_id, idx)) = target {
+                                    let managed = self.panes.get_mut(&pane_id).unwrap();
+                                    if managed.surfaces.len() <= 1 {
+                                        self.close_pane(pane_id);
+                                    } else {
                                         managed.surfaces.remove(idx);
                                         if managed.active_surface_idx >= managed.surfaces.len() {
                                             managed.active_surface_idx = managed.surfaces.len() - 1;
                                         }
-                                        return Response::ok(req.id.clone(), serde_json::json!({}));
                                     }
+                                    Response::ok(req.id.clone(), serde_json::json!({}))
+                                } else {
+                                    Response::err(req.id.clone(), "not_found", "surface not found")
                                 }
-                                Response::err(req.id.clone(), "not_found", "surface not found")
                             } else {
                                 Response::err(
                                     req.id.clone(),
@@ -2692,15 +2738,12 @@ impl AmuxApp {
                             // Close active surface in focused pane
                             if let Some(managed) = self.panes.get_mut(&focused) {
                                 if managed.surfaces.len() <= 1 {
-                                    return Response::err(
-                                        req.id.clone(),
-                                        "last_surface",
-                                        "cannot close the last surface in a pane",
-                                    );
-                                }
-                                managed.surfaces.remove(managed.active_surface_idx);
-                                if managed.active_surface_idx >= managed.surfaces.len() {
-                                    managed.active_surface_idx = managed.surfaces.len() - 1;
+                                    self.close_pane(focused);
+                                } else {
+                                    managed.surfaces.remove(managed.active_surface_idx);
+                                    if managed.active_surface_idx >= managed.surfaces.len() {
+                                        managed.active_surface_idx = managed.surfaces.len() - 1;
+                                    }
                                 }
                                 Response::ok(req.id.clone(), serde_json::json!({}))
                             } else {
