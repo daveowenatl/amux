@@ -818,12 +818,44 @@ fn render_pane(
     {
         let cx = origin.x + cursor.x as f32 * cell_width;
         let cy = origin.y + cursor.y as f32 * cell_height;
-        let cursor_color = srgba_to_egui(palette.cursor_bg);
-        painter.rect_filled(
-            egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(cell_width, cell_height)),
-            0.0,
-            cursor_color,
-        );
+        let cursor_rect =
+            egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(cell_width, cell_height));
+
+        if is_focused {
+            // Block cursor: fill background, re-draw character in cursor_fg
+            let cursor_bg = srgba_to_egui(palette.cursor_bg);
+            let cursor_fg = srgba_to_egui(palette.cursor_fg);
+            painter.rect_filled(cursor_rect, 0.0, cursor_bg);
+
+            // Re-draw the character under the cursor
+            let cursor_line_idx = cursor.y as usize;
+            if cursor_line_idx < lines.len() {
+                let line = &lines[cursor_line_idx];
+                for cell_ref in line.visible_cells() {
+                    if cell_ref.cell_index() == cursor.x {
+                        let text = cell_ref.str();
+                        if !text.is_empty() && text != " " {
+                            painter.text(
+                                egui::pos2(cx, cy),
+                                egui::Align2::LEFT_TOP,
+                                text,
+                                font_id.clone(),
+                                cursor_fg,
+                            );
+                        }
+                        break;
+                    }
+                }
+            }
+        } else {
+            // Unfocused: hollow rectangle outline
+            painter.rect_stroke(
+                cursor_rect,
+                0.0,
+                egui::Stroke::new(1.0, srgba_to_egui(palette.cursor_bg)),
+                egui::StrokeKind::Inside,
+            );
+        }
     }
 
     // Focus indicator: subtle border on focused pane
