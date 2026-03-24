@@ -100,7 +100,7 @@ fn main() -> anyhow::Result<()> {
         Box::new(move |_cc| {
             Ok(Box::new(AmuxApp {
                 workspaces: state.workspaces,
-                active_workspace_idx: 0,
+                active_workspace_idx: state.active_workspace_idx,
                 panes: state.panes,
                 next_pane_id: state.next_pane_id,
                 next_workspace_id: state.next_workspace_id,
@@ -128,6 +128,7 @@ fn main() -> anyhow::Result<()> {
 /// Bundled startup state to avoid complex return tuples.
 struct StartupState {
     workspaces: Vec<Workspace>,
+    active_workspace_idx: usize,
     panes: HashMap<PaneId, ManagedPane>,
     next_pane_id: PaneId,
     next_workspace_id: u64,
@@ -165,6 +166,7 @@ fn fresh_startup(
 
     Ok(StartupState {
         workspaces: vec![workspace],
+        active_workspace_idx: 0,
         panes,
         next_pane_id: 1,
         next_workspace_id: 1,
@@ -187,8 +189,6 @@ fn restore_session(
     let mut panes: HashMap<PaneId, ManagedPane> = HashMap::new();
 
     for saved_ws in &session.workspaces {
-        let mut ws_ok = true;
-
         for (&pane_id, saved_pane) in &saved_ws.panes {
             let mut surfaces = Vec::new();
             for saved_sf in &saved_pane.surfaces {
@@ -223,7 +223,6 @@ fn restore_session(
 
             if surfaces.is_empty() {
                 tracing::warn!("All surfaces failed for pane {}, skipping", pane_id);
-                ws_ok = false;
                 continue;
             }
 
@@ -240,17 +239,33 @@ fn restore_session(
             );
         }
 
-        if !ws_ok && saved_ws.panes.len() == 1 {
-            tracing::warn!("Skipping workspace {} (no panes restored)", saved_ws.title);
+        // Verify all pane IDs in the tree were actually restored
+        let tree_pane_ids = saved_ws.tree.iter_panes();
+        let all_panes_restored = tree_pane_ids.iter().all(|id| panes.contains_key(id));
+        if !all_panes_restored {
+            tracing::warn!(
+                "Skipping workspace {} (tree references missing panes)",
+                saved_ws.title
+            );
+            // Clean up any panes we did restore for this workspace
+            for id in &tree_pane_ids {
+                panes.remove(id);
+            }
             continue;
         }
+
+        let focused = if panes.contains_key(&saved_ws.focused_pane) {
+            saved_ws.focused_pane
+        } else {
+            *tree_pane_ids.first().unwrap_or(&0)
+        };
 
         workspaces.push(Workspace {
             id: saved_ws.id,
             title: saved_ws.title.clone(),
             tree: saved_ws.tree.clone(),
-            focused_pane: saved_ws.focused_pane,
-            zoomed: saved_ws.zoomed,
+            focused_pane: focused,
+            zoomed: saved_ws.zoomed.filter(|z| panes.contains_key(z)),
             dragging_divider: None,
             last_pane_sizes: HashMap::new(),
         });
@@ -312,8 +327,13 @@ fn restore_session(
         store.set_status(*ws_id, state, saved_status.label.clone());
     }
 
+    let active_idx = session
+        .active_workspace_idx
+        .min(workspaces.len().saturating_sub(1));
+
     StartupState {
         workspaces,
+        active_workspace_idx: active_idx,
         panes,
         next_pane_id: session.next_pane_id,
         next_workspace_id: session.next_workspace_id,
@@ -482,9 +502,12 @@ fn spawn_surface(
     // feed_bytes writes directly to the terminal state machine, not through the PTY.
     if let Some(text) = scrollback {
         if !text.is_empty() {
-            // Convert newlines to \r\n for proper terminal processing
-            for line in text.split('\n') {
-                pane.feed_bytes(line.as_bytes());
+            // Convert \n to \r\n for terminal processing, avoiding extra trailing blank line.
+            let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+            let trimmed = normalized.trim_end_matches('\n');
+            let buffer = trimmed.replace('\n', "\r\n");
+            if !buffer.is_empty() {
+                pane.feed_bytes(buffer.as_bytes());
                 pane.feed_bytes(b"\r\n");
             }
         }
@@ -570,6 +593,18 @@ impl AmuxApp {
 
     fn focused_pane_id(&self) -> PaneId {
         self.active_workspace().focused_pane
+    }
+
+    /// Drain any pending PTY bytes into the terminal state machine so that
+    /// title, working directory, and scrollback are up to date before save.
+    fn flush_pending_io(&mut self) {
+        for managed in self.panes.values_mut() {
+            for surface in &mut managed.surfaces {
+                while let Ok(bytes) = surface.byte_rx.try_recv() {
+                    surface.pane.feed_bytes(&bytes);
+                }
+            }
+        }
     }
 
     fn build_session_data(&self) -> SessionData {
@@ -877,6 +912,7 @@ impl eframe::App for AmuxApp {
                 tracing::error!("Session clear failed: {}", e);
             }
         } else {
+            self.flush_pending_io();
             let data = self.build_session_data();
             if let Err(e) = amux_session::save(&data) {
                 tracing::error!("Session save failed: {}", e);
@@ -2854,6 +2890,7 @@ impl AmuxApp {
                 Response::ok(req.id.clone(), serde_json::json!({}))
             }
             "session.save" => {
+                self.flush_pending_io();
                 let data = self.build_session_data();
                 match amux_session::save(&data) {
                     Ok(()) => Response::ok(

@@ -85,29 +85,34 @@ pub fn session_path() -> PathBuf {
     base.join("amux").join("session.json")
 }
 
-/// Save session data to disk using atomic write (write to .tmp, then rename).
-pub fn save(data: &SessionData) -> anyhow::Result<()> {
-    let path = session_path();
+/// Save session data to the given path using atomic write (write to .tmp, then rename).
+fn save_to_path(data: &SessionData, path: &std::path::Path) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
 
     let json = serde_json::to_string_pretty(data)?;
     let tmp_path = path.with_extension("json.tmp");
-    fs::write(&tmp_path, json)?;
-    fs::rename(&tmp_path, &path)?;
+    fs::write(&tmp_path, &json)?;
+
+    // On Windows, fs::rename fails if the destination exists.
+    #[cfg(windows)]
+    {
+        let _ = fs::remove_file(path);
+    }
+
+    fs::rename(&tmp_path, path)?;
 
     Ok(())
 }
 
-/// Load session data from disk. Returns `None` if the file does not exist.
-pub fn load() -> anyhow::Result<Option<SessionData>> {
-    let path = session_path();
+/// Load session data from the given path. Returns `None` if the file does not exist.
+fn load_from_path(path: &std::path::Path) -> anyhow::Result<Option<SessionData>> {
     if !path.exists() {
         return Ok(None);
     }
 
-    let content = fs::read_to_string(&path)?;
+    let content = fs::read_to_string(path)?;
     let data: SessionData = serde_json::from_str(&content)?;
 
     if data.version != 1 {
@@ -124,13 +129,27 @@ pub fn load() -> anyhow::Result<Option<SessionData>> {
     Ok(Some(data))
 }
 
-/// Delete the session file.
-pub fn clear() -> anyhow::Result<()> {
-    let path = session_path();
+/// Delete the given session file.
+fn clear_path(path: &std::path::Path) -> anyhow::Result<()> {
     if path.exists() {
-        fs::remove_file(&path)?;
+        fs::remove_file(path)?;
     }
     Ok(())
+}
+
+/// Save session data to the default session file.
+pub fn save(data: &SessionData) -> anyhow::Result<()> {
+    save_to_path(data, &session_path())
+}
+
+/// Load session data from the default session file.
+pub fn load() -> anyhow::Result<Option<SessionData>> {
+    load_from_path(&session_path())
+}
+
+/// Delete the default session file.
+pub fn clear() -> anyhow::Result<()> {
+    clear_path(&session_path())
 }
 
 #[cfg(test)]
@@ -196,12 +215,10 @@ mod tests {
 
     #[test]
     fn load_missing_file_returns_none() {
-        // Use a temporary directory to ensure no session file exists
-        let _dir = tempfile::tempdir().unwrap();
-        // Since session_path() uses dirs::data_dir(), this test just verifies
-        // the function handles non-existent paths correctly by testing the logic
-        let path = PathBuf::from("/tmp/amux-test-nonexistent/session.json");
-        assert!(!path.exists());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let result = load_from_path(&path).unwrap();
+        assert!(result.is_none());
     }
 
     #[test]
@@ -210,12 +227,14 @@ mod tests {
         let path = dir.path().join("session.json");
 
         let session = minimal_session();
-        let json = serde_json::to_string_pretty(&session).unwrap();
-        fs::write(&path, &json).unwrap();
+        save_to_path(&session, &path).unwrap();
 
-        let content = fs::read_to_string(&path).unwrap();
-        let restored: SessionData = serde_json::from_str(&content).unwrap();
+        let restored = load_from_path(&path).unwrap().unwrap();
         assert_eq!(restored.workspaces[0].panes.len(), 1);
+        assert_eq!(
+            restored.workspaces[0].panes[&0].surfaces[0].scrollback,
+            "$ echo hello\nhello\n"
+        );
     }
 
     #[test]
@@ -224,8 +243,32 @@ mod tests {
         let path = dir.path().join("session.json");
         fs::write(&path, "not valid json").unwrap();
 
-        let content = fs::read_to_string(&path).unwrap();
-        let result = serde_json::from_str::<SessionData>(&content);
+        let result = load_from_path(&path);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn clear_removes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+
+        save_to_path(&minimal_session(), &path).unwrap();
+        assert!(path.exists());
+
+        clear_path(&path).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn load_rejects_empty_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+
+        let mut session = minimal_session();
+        session.workspaces.clear();
+        save_to_path(&session, &path).unwrap();
+
+        let result = load_from_path(&path).unwrap();
+        assert!(result.is_none());
     }
 }

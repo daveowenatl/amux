@@ -143,6 +143,31 @@ enum Command {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    // SessionClear is a direct filesystem operation — handle before IPC connection
+    // so it works even when the server isn't running.
+    if matches!(cli.command, Command::SessionClear) {
+        match amux_session::clear() {
+            Ok(()) => {
+                if cli.json {
+                    println!("{}", serde_json::json!({"ok": true}));
+                } else {
+                    println!("Session cleared");
+                }
+            }
+            Err(e) => {
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"ok": false, "error": e.to_string()})
+                    );
+                } else {
+                    eprintln!("Error: {}", e);
+                }
+            }
+        }
+        return Ok(());
+    }
+
     let addr = resolve_addr(&cli)?;
     let mut client = IpcClient::connect(&addr).await?;
 
@@ -477,26 +502,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::SessionClear => {
-            // Direct filesystem operation, no IPC needed
-            match amux_session::clear() {
-                Ok(()) => {
-                    if cli.json {
-                        println!("{{\"ok\":true}}");
-                    } else {
-                        println!("Session cleared");
-                    }
-                }
-                Err(e) => {
-                    if cli.json {
-                        println!(
-                            "{{\"ok\":false,\"error\":\"{}\"}}",
-                            e.to_string().replace('"', "\\\"")
-                        );
-                    } else {
-                        eprintln!("Error: {}", e);
-                    }
-                }
-            }
+            unreachable!("handled before IPC connection");
         }
     }
     Ok(())
