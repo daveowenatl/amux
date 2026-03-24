@@ -10,6 +10,7 @@ use amux_term::color::resolve_color;
 use amux_term::config::AmuxTermConfig;
 use amux_term::pane::TerminalPane;
 use portable_pty::CommandBuilder;
+use wezterm_surface::{CursorShape, CursorVisibility};
 use wezterm_term::color::SrgbaTuple;
 
 const FONT_SIZE: f32 = 14.0;
@@ -810,39 +811,60 @@ fn render_pane(
         }
     }
 
-    // Draw cursor only in the focused pane, and only when not scrolled up
+    // Draw cursor: respect visibility (TUI apps hide it) and shape
     if is_focused
         && scroll_offset == 0
+        && cursor.visibility == CursorVisibility::Visible
         && cursor.y >= 0
         && (cursor.y as usize) < actual_rows
         && cursor.x < actual_cols
     {
         let cx = origin.x + cursor.x as f32 * cell_width;
         let cy = origin.y + cursor.y as f32 * cell_height;
-        let cursor_rect =
-            egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(cell_width, cell_height));
+        let cursor_color = srgba_to_egui(palette.cursor_bg);
 
-        let cursor_bg = srgba_to_egui(palette.cursor_bg);
-        let cursor_fg = srgba_to_egui(palette.cursor_fg);
-        painter.rect_filled(cursor_rect, 0.0, cursor_bg);
+        match cursor.shape {
+            CursorShape::BlinkingBar | CursorShape::SteadyBar => {
+                // Thin vertical bar (2px wide)
+                let bar_rect =
+                    egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(2.0, cell_height));
+                painter.rect_filled(bar_rect, 0.0, cursor_color);
+            }
+            CursorShape::BlinkingUnderline | CursorShape::SteadyUnderline => {
+                // Underline (2px tall at bottom of cell)
+                let underline_rect = egui::Rect::from_min_size(
+                    egui::pos2(cx, cy + cell_height - 2.0),
+                    egui::vec2(cell_width, 2.0),
+                );
+                painter.rect_filled(underline_rect, 0.0, cursor_color);
+            }
+            CursorShape::Default | CursorShape::BlinkingBlock | CursorShape::SteadyBlock => {
+                // Block cursor: fill background, re-draw character in cursor_fg
+                let cursor_rect = egui::Rect::from_min_size(
+                    egui::pos2(cx, cy),
+                    egui::vec2(cell_width, cell_height),
+                );
+                let cursor_fg = srgba_to_egui(palette.cursor_fg);
+                painter.rect_filled(cursor_rect, 0.0, cursor_color);
 
-        // Re-draw the character under the cursor in inverse color
-        let cursor_line_idx = cursor.y as usize;
-        if cursor_line_idx < lines.len() {
-            let line = &lines[cursor_line_idx];
-            for cell_ref in line.visible_cells() {
-                if cell_ref.cell_index() == cursor.x {
-                    let text = cell_ref.str();
-                    if !text.is_empty() && text != " " {
-                        painter.text(
-                            egui::pos2(cx, cy),
-                            egui::Align2::LEFT_TOP,
-                            text,
-                            font_id.clone(),
-                            cursor_fg,
-                        );
+                let cursor_line_idx = cursor.y as usize;
+                if cursor_line_idx < lines.len() {
+                    let line = &lines[cursor_line_idx];
+                    for cell_ref in line.visible_cells() {
+                        if cell_ref.cell_index() == cursor.x {
+                            let text = cell_ref.str();
+                            if !text.is_empty() && text != " " {
+                                painter.text(
+                                    egui::pos2(cx, cy),
+                                    egui::Align2::LEFT_TOP,
+                                    text,
+                                    font_id.clone(),
+                                    cursor_fg,
+                                );
+                            }
+                            break;
+                        }
                     }
-                    break;
                 }
             }
         }

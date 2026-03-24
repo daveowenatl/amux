@@ -8,6 +8,7 @@ description = "amux main binary: GUI + event loop"
 [dependencies]
 amux-term = { workspace = true }
 wezterm-term = { workspace = true }
+wezterm-surface = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 arboard = { workspace = true }
