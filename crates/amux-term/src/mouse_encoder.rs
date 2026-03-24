@@ -40,8 +40,9 @@ impl MouseEncoder {
         Self {
             tracking_mode: MouseTrackingMode::None,
             encoding_format: MouseEncodingFormat::Sgr,
-            cell_width,
-            cell_height,
+            // Guard against zero/negative dimensions to prevent division by zero
+            cell_width: if cell_width > 0.0 { cell_width } else { 1.0 },
+            cell_height: if cell_height > 0.0 { cell_height } else { 1.0 },
         }
     }
 

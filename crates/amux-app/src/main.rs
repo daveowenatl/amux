@@ -514,7 +514,7 @@ fn spawn_surface(
     }
 
     let mut reader = pane.take_reader().expect("reader already taken");
-    let (byte_tx, byte_rx) = mpsc::channel::<Vec<u8>>();
+    let (byte_tx, byte_rx) = mpsc::sync_channel::<Vec<u8>>(64);
 
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -1342,13 +1342,9 @@ impl AmuxApp {
 
     // --- Pane/Workspace management ---
 
-    fn spawn_pane_with_surface(&mut self) -> PaneId {
-        let pane_id = self.next_pane_id;
-        self.next_pane_id += 1;
-        let sf_id = self.next_surface_id;
-        self.next_surface_id += 1;
-
+    fn spawn_pane_with_surface(&mut self) -> Option<PaneId> {
         let ws_id = self.active_workspace().id;
+        let sf_id = self.next_surface_id;
 
         match spawn_surface(
             80,
@@ -1361,6 +1357,9 @@ impl AmuxApp {
             None,
         ) {
             Ok(surface) => {
+                let pane_id = self.next_pane_id;
+                self.next_pane_id += 1;
+                self.next_surface_id += 1;
                 self.panes.insert(
                     pane_id,
                     ManagedPane {
@@ -1369,24 +1368,20 @@ impl AmuxApp {
                         selection: None,
                     },
                 );
+                Some(pane_id)
             }
             Err(e) => {
                 tracing::error!("Failed to spawn pane: {}", e);
+                None
             }
         }
-        pane_id
     }
 
     fn create_workspace(&mut self, title: Option<String>) -> u64 {
         let ws_id = self.next_workspace_id;
-        self.next_workspace_id += 1;
-
         let title = title.unwrap_or_else(|| format!("Terminal {}", self.workspaces.len() + 1));
 
-        let pane_id = self.next_pane_id;
-        self.next_pane_id += 1;
         let sf_id = self.next_surface_id;
-        self.next_surface_id += 1;
 
         match spawn_surface(
             80,
@@ -1399,6 +1394,10 @@ impl AmuxApp {
             None,
         ) {
             Ok(surface) => {
+                self.next_workspace_id += 1;
+                let pane_id = self.next_pane_id;
+                self.next_pane_id += 1;
+                self.next_surface_id += 1;
                 self.panes.insert(
                     pane_id,
                     ManagedPane {
@@ -1407,25 +1406,24 @@ impl AmuxApp {
                         selection: None,
                     },
                 );
+
+                let workspace = Workspace {
+                    id: ws_id,
+                    title,
+                    tree: PaneTree::new(pane_id),
+                    focused_pane: pane_id,
+                    zoomed: None,
+                    dragging_divider: None,
+                    last_pane_sizes: HashMap::new(),
+                };
+
+                self.workspaces.push(workspace);
+                self.active_workspace_idx = self.workspaces.len() - 1;
             }
             Err(e) => {
                 tracing::error!("Failed to spawn pane for workspace: {}", e);
-                return ws_id;
             }
         }
-
-        let workspace = Workspace {
-            id: ws_id,
-            title,
-            tree: PaneTree::new(pane_id),
-            focused_pane: pane_id,
-            zoomed: None,
-            dragging_divider: None,
-            last_pane_sizes: HashMap::new(),
-        };
-
-        self.workspaces.push(workspace);
-        self.active_workspace_idx = self.workspaces.len() - 1;
         ws_id
     }
 
@@ -1673,11 +1671,16 @@ impl AmuxApp {
 
                 // --- Pane shortcuts ---
 
-                // Split right: Cmd+D / Ctrl+Shift+D
+                // Split right: Cmd+D (macOS) / Ctrl+Shift+D (other)
+                #[cfg(target_os = "macos")]
                 if is_cmd && !modifiers.shift && *key == egui::Key::D {
                     return self.do_split(SplitDirection::Horizontal);
                 }
-                // Split down: Cmd+Shift+D / Ctrl+Shift+Down
+                #[cfg(not(target_os = "macos"))]
+                if is_cmd && *key == egui::Key::D {
+                    return self.do_split(SplitDirection::Horizontal);
+                }
+                // Split down: Cmd+Shift+D (macOS) / Ctrl+Shift+Down (other)
                 #[cfg(target_os = "macos")]
                 if is_cmd && modifiers.shift && *key == egui::Key::D {
                     return self.do_split(SplitDirection::Vertical);
@@ -1783,11 +1786,18 @@ impl AmuxApp {
     }
 
     fn do_split(&mut self, direction: SplitDirection) -> bool {
-        let new_id = self.spawn_pane_with_surface();
+        let Some(new_id) = self.spawn_pane_with_surface() else {
+            return false;
+        };
         let ws = self.active_workspace_mut();
-        ws.tree.split(ws.focused_pane, direction, new_id);
-        self.set_focus(new_id);
-        true
+        if ws.tree.split(ws.focused_pane, direction, new_id) {
+            self.set_focus(new_id);
+            true
+        } else {
+            // Split failed — clean up the spawned pane
+            self.panes.remove(&new_id);
+            false
+        }
     }
 
     fn do_close_cascade(&mut self) -> bool {
@@ -2153,8 +2163,8 @@ impl AmuxApp {
             Some(m) => m,
             None => return false,
         };
-        let sel = match managed.selection.take() {
-            Some(s) => s,
+        let sel = match &managed.selection {
+            Some(s) => s.clone(),
             None => return false,
         };
 
@@ -2168,7 +2178,9 @@ impl AmuxApp {
 
         match arboard::Clipboard::new() {
             Ok(mut clipboard) => {
-                let _ = clipboard.set_text(&text);
+                if clipboard.set_text(&text).is_ok() {
+                    managed.selection = None; // Only clear on successful copy
+                }
             }
             Err(e) => {
                 tracing::warn!("Clipboard error: {}", e);
@@ -2234,6 +2246,11 @@ impl AmuxApp {
         if primary_pressed {
             if let Some(pos) = pointer_pos {
                 if !content_rect.contains(pos) {
+                    // Click outside content — clear any existing selection
+                    if let Some(m) = self.panes.get_mut(&pane_id) {
+                        m.selection = None;
+                    }
+                    ui.ctx().request_repaint();
                     return;
                 }
 
@@ -2413,9 +2430,13 @@ impl AmuxApp {
                 egui::Event::Paste(text) => {
                     surface.scroll_offset = 0;
                     surface.scroll_accum = 0.0;
-                    let _ = surface.pane.write_bytes(b"\x1b[200~");
-                    let _ = surface.pane.write_bytes(text.as_bytes());
-                    let _ = surface.pane.write_bytes(b"\x1b[201~");
+                    if surface.pane.bracketed_paste_enabled() {
+                        let _ = surface.pane.write_bytes(b"\x1b[200~");
+                        let _ = surface.pane.write_bytes(text.as_bytes());
+                        let _ = surface.pane.write_bytes(b"\x1b[201~");
+                    } else {
+                        let _ = surface.pane.write_bytes(text.as_bytes());
+                    }
                 }
                 _ => {}
             }
@@ -2529,14 +2550,30 @@ impl AmuxApp {
                             "down" | "vertical" => SplitDirection::Vertical,
                             _ => SplitDirection::Horizontal,
                         };
-                        let new_id = self.spawn_pane_with_surface();
-                        let ws = self.active_workspace_mut();
-                        ws.tree.split(ws.focused_pane, dir, new_id);
-                        self.set_focus(new_id);
-                        Response::ok(
-                            req.id.clone(),
-                            serde_json::json!({"pane_id": new_id.to_string()}),
-                        )
+                        match self.spawn_pane_with_surface() {
+                            Some(new_id) => {
+                                let ws = self.active_workspace_mut();
+                                if ws.tree.split(ws.focused_pane, dir, new_id) {
+                                    self.set_focus(new_id);
+                                    Response::ok(
+                                        req.id.clone(),
+                                        serde_json::json!({"pane_id": new_id.to_string()}),
+                                    )
+                                } else {
+                                    self.panes.remove(&new_id);
+                                    Response::err(
+                                        req.id.clone(),
+                                        "split_failed",
+                                        "failed to split pane tree",
+                                    )
+                                }
+                            }
+                            None => Response::err(
+                                req.id.clone(),
+                                "spawn_failed",
+                                "failed to spawn pane",
+                            ),
+                        }
                     }
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
                 }
@@ -2829,16 +2866,26 @@ impl AmuxApp {
                 match serde_json::from_value::<FocusParams>(req.params.clone()) {
                     Ok(params) => {
                         if let Ok(sf_id) = params.surface_id.parse::<u64>() {
-                            for (pane_id, managed) in &mut self.panes {
-                                if let Some(idx) =
-                                    managed.surfaces.iter().position(|s| s.id == sf_id)
+                            // Find the pane that owns this surface
+                            let found = self.panes.iter_mut().find_map(|(pid, managed)| {
+                                managed
+                                    .surfaces
+                                    .iter()
+                                    .position(|s| s.id == sf_id)
+                                    .map(|idx| (*pid, idx))
+                            });
+                            if let Some((pid, idx)) = found {
+                                self.panes.get_mut(&pid).unwrap().active_surface_idx = idx;
+                                // Switch to the owning workspace before setting focus
+                                if let Some(ws_idx) = self
+                                    .workspaces
+                                    .iter()
+                                    .position(|ws| ws.tree.iter_panes().contains(&pid))
                                 {
-                                    managed.active_surface_idx = idx;
-                                    // Also focus the pane containing this surface
-                                    let pid = *pane_id;
-                                    self.set_focus(pid);
-                                    return Response::ok(req.id.clone(), serde_json::json!({}));
+                                    self.active_workspace_idx = ws_idx;
                                 }
+                                self.set_focus(pid);
+                                return Response::ok(req.id.clone(), serde_json::json!({}));
                             }
                             Response::err(req.id.clone(), "not_found", "surface not found")
                         } else {
@@ -3141,15 +3188,8 @@ fn render_pane(
     let origin = rect.min;
     let bg_default = srgba_to_egui(palette.background);
 
-    let terminal_rect = egui::Rect::from_min_size(
-        origin,
-        egui::vec2(
-            actual_cols as f32 * cell_width,
-            actual_rows as f32 * cell_height,
-        ),
-    );
-    let clipped_rect = terminal_rect.intersect(rect);
-    painter.rect_filled(clipped_rect, 0.0, bg_default);
+    // Fill the full allocated rect first to avoid artifacts when terminal is smaller
+    painter.rect_filled(rect, 0.0, bg_default);
 
     let total = screen.scrollback_rows();
     let end = total.saturating_sub(scroll_offset);

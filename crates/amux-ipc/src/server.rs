@@ -15,12 +15,14 @@ pub struct IpcCommand {
 /// Start the IPC server on a background thread.
 ///
 /// Returns the command receiver (for the main thread to drain) and the IPC address.
+/// The socket path is only written after the bind succeeds, avoiding a race where
+/// clients could discover an address that isn't ready yet.
 pub fn start_server() -> anyhow::Result<(std_mpsc::Receiver<IpcCommand>, IpcAddr)> {
     let addr = default_addr();
     cleanup_stale(&addr);
-    write_last_addr(&addr)?;
 
     let (cmd_tx, cmd_rx) = std_mpsc::channel::<IpcCommand>();
+    let (bind_tx, bind_rx) = std::sync::mpsc::channel::<Result<(), String>>();
     let addr_clone = addr.clone();
 
     std::thread::Builder::new()
@@ -30,10 +32,18 @@ pub fn start_server() -> anyhow::Result<(std_mpsc::Receiver<IpcCommand>, IpcAddr
                 .enable_all()
                 .build()
                 .expect("tokio runtime");
-            rt.block_on(run_server(addr_clone, cmd_tx));
+            rt.block_on(run_server(addr_clone, cmd_tx, bind_tx));
         })?;
 
-    Ok((cmd_rx, addr))
+    // Wait for the server thread to report bind success/failure
+    match bind_rx.recv() {
+        Ok(Ok(())) => {
+            write_last_addr(&addr)?;
+            Ok((cmd_rx, addr))
+        }
+        Ok(Err(e)) => anyhow::bail!("IPC server bind failed: {}", e),
+        Err(_) => anyhow::bail!("IPC server thread exited before binding"),
+    }
 }
 
 /// Remove a stale socket file (Unix only).
@@ -55,10 +65,24 @@ fn cleanup_stale(addr: &IpcAddr) {
 // ---------------------------------------------------------------------------
 
 #[cfg(unix)]
-async fn run_server(addr: IpcAddr, cmd_tx: std_mpsc::Sender<IpcCommand>) {
+async fn run_server(
+    addr: IpcAddr,
+    cmd_tx: std_mpsc::Sender<IpcCommand>,
+    bind_tx: std_mpsc::Sender<Result<(), String>>,
+) {
     let IpcAddr::Unix(ref path) = addr;
-    let listener = tokio::net::UnixListener::bind(path).expect("bind unix socket");
-    tracing::info!("IPC server listening on {}", path.display());
+    let listener = match tokio::net::UnixListener::bind(path) {
+        Ok(l) => {
+            tracing::info!("IPC server listening on {}", path.display());
+            let _ = bind_tx.send(Ok(()));
+            l
+        }
+        Err(e) => {
+            tracing::error!("failed to bind IPC socket at {}: {}", path.display(), e);
+            let _ = bind_tx.send(Err(e.to_string()));
+            return;
+        }
+    };
 
     loop {
         match listener.accept().await {
@@ -79,15 +103,26 @@ async fn run_server(addr: IpcAddr, cmd_tx: std_mpsc::Sender<IpcCommand>) {
 // ---------------------------------------------------------------------------
 
 #[cfg(windows)]
-async fn run_server(addr: IpcAddr, cmd_tx: std_mpsc::Sender<IpcCommand>) {
+async fn run_server(
+    addr: IpcAddr,
+    cmd_tx: std_mpsc::Sender<IpcCommand>,
+    bind_tx: std_mpsc::Sender<Result<(), String>>,
+) {
     use tokio::net::windows::named_pipe::ServerOptions;
 
     let IpcAddr::NamedPipe(ref name) = addr;
-    let mut server = ServerOptions::new()
-        .first_pipe_instance(true)
-        .create(name)
-        .expect("create named pipe");
-    tracing::info!("IPC server listening on {}", name);
+    let mut server = match ServerOptions::new().first_pipe_instance(true).create(name) {
+        Ok(s) => {
+            tracing::info!("IPC server listening on {}", name);
+            let _ = bind_tx.send(Ok(()));
+            s
+        }
+        Err(e) => {
+            tracing::error!("failed to create named pipe {}: {}", name, e);
+            let _ = bind_tx.send(Err(e.to_string()));
+            return;
+        }
+    };
 
     loop {
         // Wait for a client to connect to the current pipe instance.
@@ -98,9 +133,13 @@ async fn run_server(addr: IpcAddr, cmd_tx: std_mpsc::Sender<IpcCommand>) {
 
         let connected = server;
         // Create a new pipe instance for the next client BEFORE handling this one.
-        server = ServerOptions::new()
-            .create(name)
-            .expect("create next named pipe instance");
+        server = match ServerOptions::new().create(name) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("failed to create next named pipe instance: {}", e);
+                return;
+            }
+        };
 
         let tx = cmd_tx.clone();
         let (reader, writer) = tokio::io::split(connected);
