@@ -2,14 +2,16 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use amux_ipc::IpcCommand;
 use amux_layout::{NavDirection, PaneId, PaneTree, SplitDirection};
-use amux_notify::{flash_alpha, FlashReason, NotificationSource, NotificationStore, FLASH_DURATION};
+use amux_notify::{
+    flash_alpha, FlashReason, NotificationSource, NotificationStore, FLASH_DURATION,
+};
 use amux_term::color::resolve_color;
-use amux_term::osc::NotificationEvent;
 use amux_term::config::AmuxTermConfig;
+use amux_term::osc::NotificationEvent;
 use amux_term::pane::TerminalPane;
 use portable_pty::CommandBuilder;
 use wezterm_surface::{CursorShape, CursorVisibility};
@@ -34,6 +36,7 @@ fn main() -> anyhow::Result<()> {
     let managed = ManagedPane {
         surfaces: vec![surface],
         active_surface_idx: 0,
+        selection: None,
     };
 
     let mut panes = HashMap::new();
@@ -78,6 +81,9 @@ fn main() -> anyhow::Result<()> {
                 last_panel_rect: None,
                 notifications: NotificationStore::new(),
                 show_notification_panel: false,
+                last_click_time: Instant::now(),
+                last_click_pos: egui::Pos2::ZERO,
+                click_count: 0,
             }))
         }),
     )
@@ -125,6 +131,7 @@ struct PaneSurface {
 struct ManagedPane {
     surfaces: Vec<PaneSurface>,
     active_surface_idx: usize,
+    selection: Option<SelectionState>,
 }
 
 impl ManagedPane {
@@ -157,6 +164,57 @@ struct DragState {
     node_path: Vec<usize>,
     direction: SplitDirection,
 }
+
+// --- Selection ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionMode {
+    Cell,
+    Word,
+    Line,
+}
+
+#[derive(Debug, Clone)]
+struct SelectionState {
+    anchor: (usize, usize), // (col, stable_row)
+    end: (usize, usize),    // (col, stable_row)
+    mode: SelectionMode,
+    active: bool, // true while mouse is held
+}
+
+impl SelectionState {
+    /// Return (start, end) normalized so start <= end in reading order.
+    fn normalized(&self) -> ((usize, usize), (usize, usize)) {
+        let a = self.anchor;
+        let b = self.end;
+        if a.1 < b.1 || (a.1 == b.1 && a.0 <= b.0) {
+            (a, b)
+        } else {
+            (b, a)
+        }
+    }
+
+    /// Check if a cell at (col, stable_row) is within the selection.
+    fn contains(&self, col: usize, stable_row: usize) -> bool {
+        let (start, end) = self.normalized();
+        if stable_row < start.1 || stable_row > end.1 {
+            return false;
+        }
+        if start.1 == end.1 {
+            // Single line
+            col >= start.0 && col <= end.0
+        } else if stable_row == start.1 {
+            col >= start.0
+        } else if stable_row == end.1 {
+            col <= end.0
+        } else {
+            true // middle line
+        }
+    }
+}
+
+/// Word boundary delimiters for double-click selection.
+const WORD_DELIMITERS: &str = " \t\n()[]{}'\"|<>&;:,.`~!@#$%^*-+=?/\\";
 
 fn spawn_surface(
     cols: u16,
@@ -217,6 +275,9 @@ struct AmuxApp {
     last_panel_rect: Option<egui::Rect>,
     notifications: NotificationStore,
     show_notification_panel: bool,
+    last_click_time: Instant,
+    last_click_pos: egui::Pos2,
+    click_count: u32,
 }
 
 impl AmuxApp {
@@ -236,10 +297,7 @@ impl AmuxApp {
             self.notifications.mark_pane_read(pane_id);
             // Navigation flash — but suppress if other panes have unread
             let pane_ids: Vec<u64> = self.active_workspace().tree.iter_panes();
-            if !self
-                .notifications
-                .has_unread_excluding(&pane_ids, pane_id)
-            {
+            if !self.notifications.has_unread_excluding(&pane_ids, pane_id) {
                 self.notifications
                     .flash_pane(pane_id, FlashReason::Navigation);
             }
@@ -302,6 +360,11 @@ impl eframe::App for AmuxApp {
                 let zoomed = self.active_workspace().zoomed;
                 if let Some(zoomed_id) = zoomed {
                     // Zoomed mode: render single pane fullscreen
+                    let content_rect = egui::Rect::from_min_max(
+                        egui::pos2(panel_rect.min.x, panel_rect.min.y + TAB_BAR_HEIGHT),
+                        panel_rect.max,
+                    );
+                    self.handle_selection_mouse(ui, zoomed_id, content_rect);
                     self.render_single_pane(ui, zoomed_id, panel_rect, true);
                     self.resize_pane_if_needed(zoomed_id, panel_rect, ui);
                 } else {
@@ -309,15 +372,33 @@ impl eframe::App for AmuxApp {
                     let layout = self.active_workspace().tree.layout(panel_rect);
                     let focused = self.focused_pane_id();
 
-                    // Click-to-focus
-                    if ui.input(|i| i.pointer.any_pressed()) {
+                    // Click-to-focus + selection start
+                    if ui.input(|i| i.pointer.primary_pressed()) {
                         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                             for &(id, rect) in &layout {
                                 if rect.contains(pos) && id != focused {
+                                    // Clear selection on old pane
+                                    let old_focused = focused;
+                                    if let Some(m) = self.panes.get_mut(&old_focused) {
+                                        m.selection = None;
+                                    }
                                     self.set_focus(id);
                                     break;
                                 }
                             }
+                        }
+                    }
+
+                    // Handle selection mouse for focused pane
+                    let focused = self.focused_pane_id();
+                    for &(id, rect) in &layout {
+                        if id == focused {
+                            let content_rect = egui::Rect::from_min_max(
+                                egui::pos2(rect.min.x, rect.min.y + TAB_BAR_HEIGHT),
+                                rect.max,
+                            );
+                            self.handle_selection_mouse(ui, id, content_rect);
+                            break;
                         }
                     }
 
@@ -378,10 +459,8 @@ impl AmuxApp {
         };
 
         // Always show tab bar
-        let tab_rect = egui::Rect::from_min_size(
-            rect.min,
-            egui::vec2(rect.width(), TAB_BAR_HEIGHT),
-        );
+        let tab_rect =
+            egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), TAB_BAR_HEIGHT));
         let content_rect = egui::Rect::from_min_max(
             egui::pos2(rect.min.x, rect.min.y + TAB_BAR_HEIGHT),
             rect.max,
@@ -413,11 +492,8 @@ impl AmuxApp {
                     }
                 };
 
-                let text_galley = painter.layout_no_wrap(
-                    label.clone(),
-                    tab_font.clone(),
-                    egui::Color32::WHITE,
-                );
+                let text_galley =
+                    painter.layout_no_wrap(label.clone(), tab_font.clone(), egui::Color32::WHITE);
                 let text_width = text_galley.size().x;
                 let tab_w = text_width + 24.0;
 
@@ -434,11 +510,7 @@ impl AmuxApp {
                         egui::pos2(x, tab_rect.max.y - 2.0),
                         egui::vec2(tab_w, 2.0),
                     );
-                    painter.rect_filled(
-                        underline,
-                        0.0,
-                        egui::Color32::from_rgb(80, 140, 220),
-                    );
+                    painter.rect_filled(underline, 0.0, egui::Color32::from_rgb(80, 140, 220));
                 }
 
                 let text_color = if is_active {
@@ -531,6 +603,7 @@ impl AmuxApp {
             Some(m) => m,
             None => return,
         };
+        let selection = managed.selection.as_ref().cloned();
         let surface = managed.active_surface_mut();
         render_pane(
             ui,
@@ -538,6 +611,7 @@ impl AmuxApp {
             content_rect,
             is_focused,
             surface.scroll_offset,
+            selection.as_ref(),
         );
 
         // Notification ring + flash animation (matching cmux)
@@ -692,9 +766,7 @@ impl AmuxApp {
                             }
 
                             // Status pill
-                            if let Some(status) =
-                                self.notifications.workspace_status(ws.id)
-                            {
+                            if let Some(status) = self.notifications.workspace_status(ws.id) {
                                 let (pill_color, default_text) = match status.state {
                                     amux_notify::AgentState::Active => {
                                         (egui::Color32::from_rgb(50, 180, 80), "active")
@@ -706,10 +778,8 @@ impl AmuxApp {
                                         (egui::Color32::from_gray(100), "idle")
                                     }
                                 };
-                                let label =
-                                    status.label.as_deref().unwrap_or(default_text);
-                                let pill_pos =
-                                    egui::pos2(rect.min.x + 8.0, rect.min.y + 22.0);
+                                let label = status.label.as_deref().unwrap_or(default_text);
+                                let pill_pos = egui::pos2(rect.min.x + 8.0, rect.min.y + 22.0);
                                 let text_width = label.len() as f32 * 5.5 + 8.0;
                                 let pill_rect = egui::Rect::from_min_size(
                                     pill_pos,
@@ -740,8 +810,7 @@ impl AmuxApp {
 
                 if ui
                     .button(
-                        egui::RichText::new("+ New Workspace")
-                            .color(egui::Color32::from_gray(140)),
+                        egui::RichText::new("+ New Workspace").color(egui::Color32::from_gray(140)),
                     )
                     .clicked()
                 {
@@ -795,6 +864,7 @@ impl AmuxApp {
                     ManagedPane {
                         surfaces: vec![surface],
                         active_surface_idx: 0,
+                        selection: None,
                     },
                 );
             }
@@ -823,6 +893,7 @@ impl AmuxApp {
                     ManagedPane {
                         surfaces: vec![surface],
                         active_surface_idx: 0,
+                        selection: None,
                     },
                 );
             }
@@ -904,6 +975,44 @@ impl AmuxApp {
                 let is_cmd = modifiers.mac_cmd || modifiers.command;
                 #[cfg(not(target_os = "macos"))]
                 let is_cmd = modifiers.ctrl && modifiers.shift;
+
+                // Copy: Cmd+C (with selection) / Cmd+Shift+C (always copy)
+                #[cfg(target_os = "macos")]
+                let is_copy = is_cmd && (*key == egui::Key::C);
+                #[cfg(not(target_os = "macos"))]
+                let is_copy = modifiers.ctrl && modifiers.shift && (*key == egui::Key::C);
+
+                // Copy selection if active; otherwise fall through to send Ctrl+C
+                if is_copy && self.copy_selection() {
+                    return true;
+                }
+
+                // Escape: clear selection if active
+                if *key == egui::Key::Escape
+                    && !modifiers.shift
+                    && !modifiers.ctrl
+                    && !modifiers.alt
+                {
+                    let focused = self.focused_pane_id();
+                    if let Some(m) = self.panes.get_mut(&focused) {
+                        if m.selection.is_some() {
+                            m.selection = None;
+                            return true;
+                        }
+                    }
+                }
+
+                // Select all: Cmd+A
+                #[cfg(target_os = "macos")]
+                if is_cmd && !modifiers.shift && *key == egui::Key::A {
+                    self.select_all_visible();
+                    return true;
+                }
+                #[cfg(not(target_os = "macos"))]
+                if modifiers.ctrl && modifiers.shift && *key == egui::Key::A {
+                    self.select_all_visible();
+                    return true;
+                }
 
                 // Toggle sidebar: Cmd+B / Ctrl+B
                 #[cfg(target_os = "macos")]
@@ -1336,11 +1445,8 @@ impl AmuxApp {
                                     egui::vec2(8.0, 8.0),
                                     egui::Sense::hover(),
                                 );
-                                ui.painter().circle_filled(
-                                    dot_rect.0.center(),
-                                    3.0,
-                                    dot_color,
-                                );
+                                ui.painter()
+                                    .circle_filled(dot_rect.0.center(), 3.0, dot_color);
 
                                 ui.vertical(|ui| {
                                     let title = if notif.title.is_empty() {
@@ -1479,11 +1585,245 @@ impl AmuxApp {
         }
     }
 
+    // --- Selection ---
+
+    fn copy_selection(&mut self) -> bool {
+        let focused = self.focused_pane_id();
+        let managed = match self.panes.get_mut(&focused) {
+            Some(m) => m,
+            None => return false,
+        };
+        let sel = match managed.selection.take() {
+            Some(s) => s,
+            None => return false,
+        };
+
+        let (cols, _) = managed.active_surface().pane.dimensions();
+        let (start, end) = sel.normalized();
+        let text = extract_selection_text(&managed.active_surface().pane, start, end, cols);
+
+        if text.is_empty() {
+            return false;
+        }
+
+        match arboard::Clipboard::new() {
+            Ok(mut clipboard) => {
+                let _ = clipboard.set_text(&text);
+            }
+            Err(e) => {
+                tracing::warn!("Clipboard error: {}", e);
+            }
+        }
+        true
+    }
+
+    fn select_all_visible(&mut self) {
+        let focused = self.focused_pane_id();
+        let managed = match self.panes.get_mut(&focused) {
+            Some(m) => m,
+            None => return,
+        };
+        let surface = managed.active_surface();
+        let (cols, visible_rows) = surface.pane.dimensions();
+        let total = surface.pane.screen().scrollback_rows();
+        let scroll_offset = surface.scroll_offset;
+        let end_row = total.saturating_sub(scroll_offset);
+        let start_row = end_row.saturating_sub(visible_rows);
+
+        managed.selection = Some(SelectionState {
+            anchor: (0, start_row),
+            end: (cols.saturating_sub(1), end_row.saturating_sub(1)),
+            mode: SelectionMode::Cell,
+            active: false,
+        });
+    }
+
+    fn clear_selection_on_focused(&mut self) {
+        let focused = self.focused_pane_id();
+        if let Some(m) = self.panes.get_mut(&focused) {
+            m.selection = None;
+        }
+    }
+
+    // --- Selection Mouse ---
+
+    fn handle_selection_mouse(&mut self, ui: &egui::Ui, pane_id: PaneId, content_rect: egui::Rect) {
+        let font_id = egui::FontId::monospace(FONT_SIZE);
+        let cell_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
+        let cell_height = ui.fonts(|f| f.row_height(&font_id));
+
+        let managed = match self.panes.get(&pane_id) {
+            Some(m) => m,
+            None => return,
+        };
+        let surface = managed.active_surface();
+        let (cols, visible_rows) = surface.pane.dimensions();
+        let total_rows = surface.pane.screen().scrollback_rows();
+        let scroll_offset = surface.scroll_offset;
+
+        let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+        let primary_down = ui.input(|i| i.pointer.primary_down());
+        let primary_released = ui.input(|i| i.pointer.primary_released());
+        let pointer_pos = ui.input(|i| i.pointer.hover_pos());
+
+        // Check if we're dragging a divider — skip selection if so
+        if self.active_workspace().dragging_divider.is_some() {
+            return;
+        }
+
+        if primary_pressed {
+            if let Some(pos) = pointer_pos {
+                if !content_rect.contains(pos) {
+                    return;
+                }
+
+                let (col, stable_row) = pointer_to_cell(
+                    pos,
+                    content_rect,
+                    cell_width,
+                    cell_height,
+                    scroll_offset,
+                    total_rows,
+                    visible_rows,
+                );
+                let col = col.min(cols.saturating_sub(1));
+
+                // Click count tracking
+                let now = Instant::now();
+                let dt = now.duration_since(self.last_click_time).as_millis();
+                let dist = (pos - self.last_click_pos).length();
+                if dt < 400 && dist < 5.0 {
+                    self.click_count = (self.click_count + 1).min(3);
+                } else {
+                    self.click_count = 1;
+                }
+                self.last_click_time = now;
+                self.last_click_pos = pos;
+
+                let (anchor, end, mode) = match self.click_count {
+                    2 => {
+                        // Word selection
+                        let text =
+                            line_text_string(&managed.active_surface().pane, stable_row, cols);
+                        let (wstart, wend) = word_bounds_in_line(&text, col);
+                        (
+                            (wstart, stable_row),
+                            (wend, stable_row),
+                            SelectionMode::Word,
+                        )
+                    }
+                    3 => {
+                        // Line selection
+                        (
+                            (0, stable_row),
+                            (cols.saturating_sub(1), stable_row),
+                            SelectionMode::Line,
+                        )
+                    }
+                    _ => {
+                        // Cell selection
+                        ((col, stable_row), (col, stable_row), SelectionMode::Cell)
+                    }
+                };
+
+                if let Some(m) = self.panes.get_mut(&pane_id) {
+                    m.selection = Some(SelectionState {
+                        anchor,
+                        end,
+                        mode,
+                        active: true,
+                    });
+                }
+                ui.ctx().request_repaint();
+            }
+        } else if primary_down {
+            // Drag — update selection end
+            let has_active_selection = self
+                .panes
+                .get(&pane_id)
+                .and_then(|m| m.selection.as_ref())
+                .is_some_and(|s| s.active);
+
+            if has_active_selection {
+                if let Some(pos) = pointer_pos {
+                    let (col, stable_row) = pointer_to_cell(
+                        pos,
+                        content_rect,
+                        cell_width,
+                        cell_height,
+                        scroll_offset,
+                        total_rows,
+                        visible_rows,
+                    );
+                    let col = col.min(cols.saturating_sub(1));
+
+                    if let Some(m) = self.panes.get_mut(&pane_id) {
+                        if let Some(ref mut sel) = m.selection {
+                            match sel.mode {
+                                SelectionMode::Cell => {
+                                    sel.end = (col, stable_row);
+                                }
+                                SelectionMode::Word => {
+                                    let text = line_text_string(
+                                        &m.surfaces[m.active_surface_idx].pane,
+                                        stable_row,
+                                        cols,
+                                    );
+                                    let (_, wend) = word_bounds_in_line(&text, col);
+                                    // Extend: keep anchor word start, update end word boundary
+                                    if stable_row > sel.anchor.1
+                                        || (stable_row == sel.anchor.1 && col >= sel.anchor.0)
+                                    {
+                                        sel.end = (wend, stable_row);
+                                    } else {
+                                        let (wstart, _) = word_bounds_in_line(&text, col);
+                                        sel.end = (wstart, stable_row);
+                                    }
+                                }
+                                SelectionMode::Line => {
+                                    if stable_row >= sel.anchor.1 {
+                                        sel.end = (cols.saturating_sub(1), stable_row);
+                                    } else {
+                                        sel.end = (0, stable_row);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ui.ctx().request_repaint();
+                }
+            }
+        } else if primary_released {
+            if let Some(m) = self.panes.get_mut(&pane_id) {
+                if let Some(ref mut sel) = m.selection {
+                    sel.active = false;
+                    // If no actual drag (anchor == end), clear selection
+                    if sel.anchor == sel.end && sel.mode == SelectionMode::Cell {
+                        m.selection = None;
+                    }
+                }
+            }
+        }
+    }
+
     // --- Input ---
 
     fn handle_input(&mut self, ctx: &egui::Context) {
         let events = ctx.input(|i| i.events.clone());
         let focused_id = self.focused_pane_id();
+
+        // Clear selection when user types
+        let has_input = events.iter().any(|e| {
+            matches!(
+                e,
+                egui::Event::Text(_)
+                    | egui::Event::Paste(_)
+                    | egui::Event::Key { pressed: true, .. }
+            )
+        });
+        if has_input {
+            self.clear_selection_on_focused();
+        }
 
         let managed = match self.panes.get_mut(&focused_id) {
             Some(m) => m,
@@ -1822,14 +2162,7 @@ impl AmuxApp {
                         self.next_surface_id += 1;
                         let ws_id = self.active_workspace().id;
 
-                        match spawn_surface(
-                            80,
-                            24,
-                            &self.socket_addr,
-                            &self.config,
-                            ws_id,
-                            sf_id,
-                        ) {
+                        match spawn_surface(80, 24, &self.socket_addr, &self.config, ws_id, sf_id) {
                             Ok(surface) => {
                                 if let Some(managed) = self.panes.get_mut(&target_pane) {
                                     managed.surfaces.push(surface);
@@ -1839,18 +2172,10 @@ impl AmuxApp {
                                         serde_json::json!({"surface_id": sf_id.to_string()}),
                                     )
                                 } else {
-                                    Response::err(
-                                        req.id.clone(),
-                                        "not_found",
-                                        "pane not found",
-                                    )
+                                    Response::err(req.id.clone(), "not_found", "pane not found")
                                 }
                             }
-                            Err(e) => Response::err(
-                                req.id.clone(),
-                                "spawn_error",
-                                &e.to_string(),
-                            ),
+                            Err(e) => Response::err(req.id.clone(), "spawn_error", &e.to_string()),
                         }
                     }
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
@@ -1881,13 +2206,9 @@ impl AmuxApp {
                                         }
                                         managed.surfaces.remove(idx);
                                         if managed.active_surface_idx >= managed.surfaces.len() {
-                                            managed.active_surface_idx =
-                                                managed.surfaces.len() - 1;
+                                            managed.active_surface_idx = managed.surfaces.len() - 1;
                                         }
-                                        return Response::ok(
-                                            req.id.clone(),
-                                            serde_json::json!({}),
-                                        );
+                                        return Response::ok(req.id.clone(), serde_json::json!({}));
                                     }
                                 }
                                 Response::err(req.id.clone(), "not_found", "surface not found")
@@ -1942,11 +2263,7 @@ impl AmuxApp {
                             }
                             Response::err(req.id.clone(), "not_found", "surface not found")
                         } else {
-                            Response::err(
-                                req.id.clone(),
-                                "invalid_params",
-                                "invalid surface_id",
-                            )
+                            Response::err(req.id.clone(), "invalid_params", "invalid surface_id")
                         }
                     }
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
@@ -1988,10 +2305,7 @@ impl AmuxApp {
                             params.body,
                             NotificationSource::Cli,
                         );
-                        Response::ok(
-                            req.id.clone(),
-                            serde_json::json!({"notification_id": nid}),
-                        )
+                        Response::ok(req.id.clone(), serde_json::json!({"notification_id": nid}))
                     }
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
                 }
@@ -2018,7 +2332,10 @@ impl AmuxApp {
                         })
                     })
                     .collect();
-                Response::ok(req.id.clone(), serde_json::json!({"notifications": entries}))
+                Response::ok(
+                    req.id.clone(),
+                    serde_json::json!({"notifications": entries}),
+                )
             }
             "notify.clear" => {
                 self.notifications.clear_all();
@@ -2035,10 +2352,7 @@ impl AmuxApp {
     fn resolve_surface_mut(&mut self, surface_id: &str) -> Option<&mut PaneSurface> {
         if surface_id == "default" || surface_id.is_empty() {
             let focused = self.focused_pane_id();
-            return self
-                .panes
-                .get_mut(&focused)
-                .map(|m| m.active_surface_mut());
+            return self.panes.get_mut(&focused).map(|m| m.active_surface_mut());
         }
 
         // Try as surface ID first: find which pane contains it
@@ -2050,17 +2364,15 @@ impl AmuxApp {
                 .map(|(pid, _)| *pid);
 
             if let Some(pid) = target_pane {
-                return self.panes.get_mut(&pid).and_then(|m| {
-                    m.surfaces.iter_mut().find(|s| s.id == sf_id)
-                });
+                return self
+                    .panes
+                    .get_mut(&pid)
+                    .and_then(|m| m.surfaces.iter_mut().find(|s| s.id == sf_id));
             }
 
             // Fall back to treating it as a pane ID
             if let Ok(pane_id) = surface_id.parse::<PaneId>() {
-                return self
-                    .panes
-                    .get_mut(&pane_id)
-                    .map(|m| m.active_surface_mut());
+                return self.panes.get_mut(&pane_id).map(|m| m.active_surface_mut());
             }
         }
 
@@ -2088,6 +2400,130 @@ impl AmuxApp {
     }
 }
 
+// --- Selection helpers ---
+
+/// Convert a pointer position to terminal cell coordinates (col, stable_row).
+fn pointer_to_cell(
+    pointer_pos: egui::Pos2,
+    content_rect: egui::Rect,
+    cell_width: f32,
+    cell_height: f32,
+    scroll_offset: usize,
+    total_rows: usize,
+    visible_rows: usize,
+) -> (usize, usize) {
+    let col = ((pointer_pos.x - content_rect.min.x) / cell_width)
+        .floor()
+        .max(0.0) as usize;
+    let visible_row = ((pointer_pos.y - content_rect.min.y) / cell_height)
+        .floor()
+        .max(0.0) as usize;
+    let visible_row = visible_row.min(visible_rows.saturating_sub(1));
+    let stable_row = total_rows
+        .saturating_sub(visible_rows)
+        .saturating_sub(scroll_offset)
+        + visible_row;
+    (col, stable_row)
+}
+
+/// Find word boundaries around a column in a line's text.
+/// Returns (start_col, end_col) inclusive.
+fn word_bounds_in_line(line_text: &str, col: usize) -> (usize, usize) {
+    let chars: Vec<char> = line_text.chars().collect();
+    if chars.is_empty() || col >= chars.len() {
+        return (col, col);
+    }
+
+    let is_delim = |ch: char| WORD_DELIMITERS.contains(ch);
+    let at_delim = is_delim(chars[col]);
+
+    // Walk left
+    let mut start = col;
+    while start > 0 && is_delim(chars[start - 1]) == at_delim {
+        start -= 1;
+    }
+
+    // Walk right
+    let mut end = col;
+    while end + 1 < chars.len() && is_delim(chars[end + 1]) == at_delim {
+        end += 1;
+    }
+
+    (start, end)
+}
+
+/// Extract text from the terminal screen within a selection range.
+fn extract_selection_text(
+    pane: &TerminalPane,
+    start: (usize, usize),
+    end: (usize, usize),
+    cols: usize,
+) -> String {
+    let screen = pane.screen();
+    let lines = screen.lines_in_phys_range(start.1..end.1 + 1);
+    let mut result = String::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let row = start.1 + i;
+        let mut line_text = String::new();
+        for cell in line.visible_cells() {
+            let ci = cell.cell_index();
+            if ci >= cols {
+                break;
+            }
+            // Determine if this cell is in the selection
+            let in_sel = if start.1 == end.1 {
+                ci >= start.0 && ci <= end.0
+            } else if row == start.1 {
+                ci >= start.0
+            } else if row == end.1 {
+                ci <= end.0
+            } else {
+                true
+            };
+            if in_sel {
+                line_text.push_str(cell.str());
+            }
+        }
+
+        if i > 0 {
+            // Check if previous line was wrapped — if so, don't add newline
+            if i > 0 {
+                let prev_line = &lines[i - 1];
+                if !prev_line.last_cell_was_wrapped() {
+                    result.push('\n');
+                }
+            }
+        }
+        result.push_str(line_text.trim_end());
+    }
+
+    result
+}
+
+/// Build a flat string of a line's cell text for word boundary detection.
+fn line_text_string(pane: &TerminalPane, stable_row: usize, cols: usize) -> String {
+    let screen = pane.screen();
+    let lines = screen.lines_in_phys_range(stable_row..stable_row + 1);
+    if lines.is_empty() {
+        return String::new();
+    }
+    let line = &lines[0];
+    let mut text = String::new();
+    for cell in line.visible_cells() {
+        if cell.cell_index() >= cols {
+            break;
+        }
+        let s = cell.str();
+        if s.is_empty() {
+            text.push(' ');
+        } else {
+            text.push_str(s);
+        }
+    }
+    text
+}
+
 // --- Rendering ---
 
 fn render_pane(
@@ -2096,6 +2532,7 @@ fn render_pane(
     rect: egui::Rect,
     is_focused: bool,
     scroll_offset: usize,
+    selection: Option<&SelectionState>,
 ) {
     let font_id = egui::FontId::monospace(FONT_SIZE);
     let cell_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
@@ -2148,8 +2585,22 @@ fn render_pane(
 
             let attrs = cell_ref.attrs();
             let reverse = attrs.reverse();
-            let bg = srgba_to_egui(resolve_color(&attrs.background(), &palette, false, reverse));
-            let fg = srgba_to_egui(resolve_color(&attrs.foreground(), &palette, true, reverse));
+            let mut bg =
+                srgba_to_egui(resolve_color(&attrs.background(), &palette, false, reverse));
+            let mut fg = srgba_to_egui(resolve_color(&attrs.foreground(), &palette, true, reverse));
+
+            // Selection: swap fg/bg for selected cells (reverse video)
+            let stable_row = start + row_idx;
+            if let Some(sel) = selection {
+                if sel.contains(col_idx, stable_row) {
+                    std::mem::swap(&mut fg, &mut bg);
+                    // Ensure selected empty cells have visible bg
+                    if bg == bg_default {
+                        bg = srgba_to_egui(palette.foreground);
+                        fg = bg_default;
+                    }
+                }
+            }
 
             if bg != bg_default {
                 painter.rect_filled(

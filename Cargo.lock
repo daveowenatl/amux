@@ -93,6 +93,7 @@ version = "0.1.0"
 dependencies = [
  "amux-ipc",
  "amux-layout",
+ "amux-notify",
  "amux-term",
  "anyhow",
  "arboard",
@@ -142,6 +143,9 @@ dependencies = [
 [[package]]
 name = "amux-notify"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "amux-render-gpu"

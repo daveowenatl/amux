@@ -147,9 +147,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Tree => {
             // Fetch workspace list and surface list to build full hierarchy
-            let ws_resp = client
-                .call("workspace.list", serde_json::json!({}))
-                .await?;
+            let ws_resp = client.call("workspace.list", serde_json::json!({})).await?;
             let sf_resp = client.call("surface.list", serde_json::json!({})).await?;
             let pane_resp = client.call("pane.list", serde_json::json!({})).await?;
             if cli.json {
@@ -289,9 +287,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::WorkspaceList => {
-            let resp = client
-                .call("workspace.list", serde_json::json!({}))
-                .await?;
+            let resp = client.call("workspace.list", serde_json::json!({})).await?;
             if cli.json {
                 print_response(&resp, true);
             } else if let Some(result) = &resp.result {
@@ -502,10 +498,7 @@ fn print_hierarchy(ws_result: &serde_json::Value, sf_result: &serde_json::Value)
     for (ws_i, ws) in workspaces.iter().enumerate() {
         let ws_id = ws.get("id").and_then(|v| v.as_str()).unwrap_or("?");
         let ws_title = ws.get("title").and_then(|v| v.as_str()).unwrap_or("");
-        let ws_active = ws
-            .get("active")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let ws_active = ws.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
         let active_marker = if ws_active { " [active]" } else { "" };
         let ws_prefix = if ws_i == workspaces.len() - 1 {
             "└──"
@@ -519,7 +512,8 @@ fn print_hierarchy(ws_result: &serde_json::Value, sf_result: &serde_json::Value)
         };
 
         println!(
-            "{} Workspace \"{}\" (id={}){}", ws_prefix, ws_title, ws_id, active_marker
+            "{} Workspace \"{}\" (id={}){}",
+            ws_prefix, ws_title, ws_id, active_marker
         );
 
         // Find surfaces belonging to this workspace
@@ -592,10 +586,7 @@ fn print_workspace_list(result: &serde_json::Value) {
                 .get("surface_count")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let active = ws
-                .get("active")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let active = ws.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
             let marker = if active { " *" } else { "" };
             println!(
                 "workspace:{}{} \"{}\" ({} surface{})",
