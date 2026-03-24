@@ -310,4 +310,25 @@ mod tests {
         // 7.9, 15.9 -> still cell (1,1)
         assert_eq!(enc.pixel_to_cell(7.9, 15.9), (1, 1));
     }
+
+    #[test]
+    fn new_sanitizes_zero_dimensions() {
+        let enc = MouseEncoder::new(0.0, 0.0);
+        assert_eq!(enc.cell_width, 1.0);
+        assert_eq!(enc.cell_height, 1.0);
+    }
+
+    #[test]
+    fn new_sanitizes_negative_dimensions() {
+        let enc = MouseEncoder::new(-5.0, -10.0);
+        assert_eq!(enc.cell_width, 1.0);
+        assert_eq!(enc.cell_height, 1.0);
+    }
+
+    #[test]
+    fn new_preserves_positive_dimensions() {
+        let enc = MouseEncoder::new(8.0, 16.0);
+        assert_eq!(enc.cell_width, 8.0);
+        assert_eq!(enc.cell_height, 16.0);
+    }
 }

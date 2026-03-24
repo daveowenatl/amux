@@ -649,7 +649,7 @@ fn print_workspace_list(result: &serde_json::Value) {
             let active = ws.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
             let marker = if active { " *" } else { "" };
             println!(
-                "workspace:{}{} \"{}\" ({} surface{})",
+                "workspace:{}{} \"{}\" ({} pane{})",
                 id,
                 marker,
                 title,

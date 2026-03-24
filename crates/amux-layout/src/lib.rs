@@ -540,4 +540,19 @@ mod tests {
             pane3_after.width()
         );
     }
+
+    #[test]
+    fn resize_divider_tiny_span_no_panic() {
+        // When the available span is smaller than 2*MIN_PANE_PX,
+        // the min/max clamp guard should prevent a panic.
+        let mut tree = PaneTree::new(1);
+        tree.split(1, SplitDirection::Horizontal, 2);
+        // Rect width (10px) < 2 * MIN_PANE_PX (40px)
+        let tiny_rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(10.0, 600.0));
+        // Should not panic
+        tree.resize_divider(&[], 5.0, tiny_rect);
+        if let PaneTree::Split { ratio, .. } = &tree {
+            assert!(*ratio >= 0.0 && *ratio <= 1.0);
+        }
+    }
 }

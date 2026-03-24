@@ -1377,7 +1377,7 @@ impl AmuxApp {
         }
     }
 
-    fn create_workspace(&mut self, title: Option<String>) -> u64 {
+    fn create_workspace(&mut self, title: Option<String>) -> Option<u64> {
         let ws_id = self.next_workspace_id;
         let title = title.unwrap_or_else(|| format!("Terminal {}", self.workspaces.len() + 1));
 
@@ -1419,12 +1419,13 @@ impl AmuxApp {
 
                 self.workspaces.push(workspace);
                 self.active_workspace_idx = self.workspaces.len() - 1;
+                Some(ws_id)
             }
             Err(e) => {
                 tracing::error!("Failed to spawn pane for workspace: {}", e);
+                None
             }
         }
-        ws_id
     }
 
     fn add_surface_to_focused_pane(&mut self) -> Option<u64> {
@@ -2668,11 +2669,18 @@ impl AmuxApp {
                 }
                 match serde_json::from_value::<CreateParams>(req.params.clone()) {
                     Ok(params) => {
-                        let ws_id = self.create_workspace(params.title);
-                        Response::ok(
-                            req.id.clone(),
-                            serde_json::json!({"workspace_id": ws_id.to_string()}),
-                        )
+                        if let Some(ws_id) = self.create_workspace(params.title) {
+                            Response::ok(
+                                req.id.clone(),
+                                serde_json::json!({"workspace_id": ws_id.to_string()}),
+                            )
+                        } else {
+                            Response::err(
+                                req.id.clone(),
+                                "spawn_failed",
+                                "Failed to spawn pane for workspace",
+                            )
+                        }
                     }
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
                 }
