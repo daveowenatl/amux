@@ -131,6 +131,12 @@ enum Command {
     /// Clear all notifications
     #[command(name = "clear-notifications")]
     ClearNotifications,
+    /// Save the current session
+    #[command(name = "session-save")]
+    SessionSave,
+    /// Clear saved session data
+    #[command(name = "session-clear")]
+    SessionClear,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -452,6 +458,44 @@ async fn main() -> anyhow::Result<()> {
                 println!("Notifications cleared");
             } else {
                 print_response(&resp, false);
+            }
+        }
+        Command::SessionSave => {
+            let resp = client.call("session.save", serde_json::json!({})).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                let path = resp
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.get("path"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(unknown)");
+                println!("Session saved to {}", path);
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::SessionClear => {
+            // Direct filesystem operation, no IPC needed
+            match amux_session::clear() {
+                Ok(()) => {
+                    if cli.json {
+                        println!("{{\"ok\":true}}");
+                    } else {
+                        println!("Session cleared");
+                    }
+                }
+                Err(e) => {
+                    if cli.json {
+                        println!(
+                            "{{\"ok\":false,\"error\":\"{}\"}}",
+                            e.to_string().replace('"', "\\\"")
+                        );
+                    } else {
+                        eprintln!("Error: {}", e);
+                    }
+                }
             }
         }
     }

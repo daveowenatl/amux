@@ -280,4 +280,31 @@ impl TerminalPane {
         }
         result
     }
+
+    /// Read scrollback + visible screen as text, up to `max_lines` lines.
+    /// Unlike `read_screen_text` which only reads the visible viewport,
+    /// this captures the full scrollback buffer for session persistence.
+    pub fn read_scrollback_text(&self, max_lines: usize) -> String {
+        let (cols, _) = self.dimensions();
+        let screen = self.terminal.screen();
+        let total = screen.scrollback_rows();
+        let start = total.saturating_sub(max_lines);
+        let lines = screen.lines_in_phys_range(start..total);
+
+        let mut result = String::new();
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                result.push('\n');
+            }
+            let mut line_text = String::new();
+            for cell in line.visible_cells() {
+                if cell.cell_index() >= cols {
+                    break;
+                }
+                line_text.push_str(cell.str());
+            }
+            result.push_str(line_text.trim_end());
+        }
+        result
+    }
 }

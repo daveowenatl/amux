@@ -23,6 +23,7 @@ pub const METHODS: &[&str] = &[
     "notify.send",
     "notify.list",
     "notify.clear",
+    "session.save",
 ];
 
 // --- Params ---
