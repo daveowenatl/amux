@@ -18,6 +18,9 @@ use portable_pty::CommandBuilder;
 use wezterm_surface::{CursorShape, CursorVisibility};
 use wezterm_term::color::SrgbaTuple;
 
+#[cfg(feature = "gpu-renderer")]
+use amux_render_gpu::GpuRenderer;
+
 /// Try to get the current working directory of a process by PID.
 /// Falls back across platform-specific mechanisms.
 fn get_cwd_from_pid(pid: u32) -> Option<String> {
@@ -98,6 +101,12 @@ fn main() -> anyhow::Result<()> {
         "amux",
         options,
         Box::new(move |_cc| {
+            #[cfg(feature = "gpu-renderer")]
+            let gpu_renderer = _cc.wgpu_render_state.as_ref().map(|rs| {
+                tracing::info!("GPU renderer initialized (wgpu backend)");
+                GpuRenderer::new(rs.clone())
+            });
+
             Ok(Box::new(AmuxApp {
                 workspaces: state.workspaces,
                 active_workspace_idx: state.active_workspace_idx,
@@ -116,6 +125,8 @@ fn main() -> anyhow::Result<()> {
                 last_click_pos: egui::Pos2::ZERO,
                 click_count: 0,
                 wants_exit: false,
+                #[cfg(feature = "gpu-renderer")]
+                gpu_renderer,
             }))
         }),
     )
@@ -559,6 +570,8 @@ struct AmuxApp {
     last_click_pos: egui::Pos2,
     click_count: u32,
     wants_exit: bool,
+    #[cfg(feature = "gpu-renderer")]
+    gpu_renderer: Option<GpuRenderer>,
 }
 
 impl AmuxApp {
@@ -1105,6 +1118,8 @@ impl AmuxApp {
             is_focused,
             surface.scroll_offset,
             selection.as_ref(),
+            #[cfg(feature = "gpu-renderer")]
+            self.gpu_renderer.as_ref(),
         );
 
         // Notification ring + flash animation (matching cmux)
@@ -3178,7 +3193,16 @@ fn render_pane(
     is_focused: bool,
     scroll_offset: usize,
     selection: Option<&SelectionState>,
+    #[cfg(feature = "gpu-renderer")] gpu_renderer: Option<&GpuRenderer>,
 ) {
+    // GPU renderer path: emit a paint callback and return early.
+    #[cfg(feature = "gpu-renderer")]
+    if let Some(gpu) = gpu_renderer {
+        let callback = gpu.paint_callback(rect);
+        ui.painter().add(egui::Shape::Callback(callback));
+        return;
+    }
+
     let font_id = egui::FontId::monospace(FONT_SIZE);
     let cell_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
     let cell_height = ui.fonts(|f| f.row_height(&font_id));
