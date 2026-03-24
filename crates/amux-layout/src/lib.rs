@@ -245,6 +245,56 @@ impl PaneTree {
         }
     }
 
+    /// After a parent resize changed this subtree's allocation from `old_span` to
+    /// `new_span` pixels (in `dir`), adjust ratios so the child on `stable_side`
+    /// (0 = first, 1 = second) keeps its absolute pixel size. The other child
+    /// absorbs the entire size change. Recurses so deeply nested splits also stay put.
+    fn stabilize_after_resize(
+        &mut self,
+        dir: SplitDirection,
+        old_span: f32,
+        new_span: f32,
+        stable_side: usize,
+    ) {
+        if let PaneTree::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } = self
+        {
+            // Only applies to splits in the same direction as the resize.
+            if *direction != dir || old_span <= 0.0 || new_span <= 0.0 {
+                return;
+            }
+            let old_ratio = *ratio;
+            let min_r = MIN_PANE_PX / new_span;
+            let max_r = 1.0 - min_r;
+
+            match stable_side {
+                0 => {
+                    // Keep first child at its original pixel size.
+                    let old_first = old_span * old_ratio;
+                    *ratio = (old_first / new_span).clamp(min_r, max_r);
+                    // Second child absorbed the change — recurse keeping *its* first stable.
+                    let old_second = old_span * (1.0 - old_ratio);
+                    let new_second = new_span * (1.0 - *ratio);
+                    second.stabilize_after_resize(dir, old_second, new_second, 0);
+                }
+                1 => {
+                    // Keep second child at its original pixel size.
+                    let old_second = old_span * (1.0 - old_ratio);
+                    *ratio = (1.0 - old_second / new_span).clamp(min_r, max_r);
+                    // First child absorbed the change — recurse keeping *its* second stable.
+                    let old_first = old_span * old_ratio;
+                    let new_first = new_span * *ratio;
+                    first.stabilize_after_resize(dir, old_first, new_first, 1);
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Resize a divider by adjusting the ratio of the Split node at the given path.
     /// `delta` is in pixels (positive = move right/down).
     /// `total_rect` is the full layout rect (needed to convert delta to ratio).
@@ -267,11 +317,24 @@ impl PaneTree {
                     SplitDirection::Vertical => rect.height(),
                 };
                 if span > 0.0 {
+                    let old_ratio = *ratio;
                     let new_ratio = (*ratio + delta / span).clamp(0.0, 1.0);
-                    // Enforce minimum pane size
                     let min_ratio = MIN_PANE_PX / span;
                     let max_ratio = 1.0 - min_ratio;
                     *ratio = new_ratio.clamp(min_ratio, max_ratio);
+
+                    // Stabilize children: only the two panes directly adjacent
+                    // to this divider should change size. Non-adjacent panes
+                    // keep their absolute pixel size.
+                    let old_first_span = span * old_ratio;
+                    let new_first_span = span * *ratio;
+                    let old_second_span = span * (1.0 - old_ratio);
+                    let new_second_span = span * (1.0 - *ratio);
+
+                    // In first child, keep the far side (first/left/top) stable
+                    first.stabilize_after_resize(*direction, old_first_span, new_first_span, 0);
+                    // In second child, keep the far side (second/right/bottom) stable
+                    second.stabilize_after_resize(*direction, old_second_span, new_second_span, 1);
                 }
                 return;
             }
@@ -429,5 +492,35 @@ mod tests {
             assert!(*ratio < 1.0);
             assert!(*ratio > 0.9);
         }
+    }
+
+    #[test]
+    fn resize_parent_keeps_non_adjacent_pane_stable() {
+        // Tree: Split(H, 0.5, Pane1, Split(H, 0.5, Pane2, Pane3))
+        // Dragging the root divider right should only resize Pane1 and Pane2.
+        // Pane3 (non-adjacent) must keep its pixel size.
+        let mut tree = PaneTree::new(1);
+        tree.split(1, SplitDirection::Horizontal, 2);
+        tree.split(2, SplitDirection::Horizontal, 3);
+
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+
+        // Record Pane3's width before
+        let layout_before = tree.layout(rect);
+        let pane3_before = layout_before.iter().find(|(id, _)| *id == 3).unwrap().1;
+
+        // Drag root divider 100px to the right
+        tree.resize_divider(&[], 100.0, rect);
+
+        let layout_after = tree.layout(rect);
+        let pane3_after = layout_after.iter().find(|(id, _)| *id == 3).unwrap().1;
+
+        // Pane3's width should be unchanged (within floating-point tolerance)
+        assert!(
+            (pane3_after.width() - pane3_before.width()).abs() < 1.0,
+            "Pane3 width changed: {} -> {}",
+            pane3_before.width(),
+            pane3_after.width()
+        );
     }
 }
