@@ -270,12 +270,19 @@ impl PaneTree {
             let old_ratio = *ratio;
             let min_r = MIN_PANE_PX / new_span;
             let max_r = 1.0 - min_r;
+            // When span is too small for two panes, skip min/max enforcement
+            let do_clamp = min_r < max_r;
 
             match stable_side {
                 0 => {
                     // Keep first child at its original pixel size.
                     let old_first = old_span * old_ratio;
-                    *ratio = (old_first / new_span).clamp(min_r, max_r);
+                    let new_r = old_first / new_span;
+                    *ratio = if do_clamp {
+                        new_r.clamp(min_r, max_r)
+                    } else {
+                        new_r.clamp(0.0, 1.0)
+                    };
                     // Second child absorbed the change — recurse keeping *its* first stable.
                     let old_second = old_span * (1.0 - old_ratio);
                     let new_second = new_span * (1.0 - *ratio);
@@ -284,7 +291,12 @@ impl PaneTree {
                 1 => {
                     // Keep second child at its original pixel size.
                     let old_second = old_span * (1.0 - old_ratio);
-                    *ratio = (1.0 - old_second / new_span).clamp(min_r, max_r);
+                    let new_r = 1.0 - old_second / new_span;
+                    *ratio = if do_clamp {
+                        new_r.clamp(min_r, max_r)
+                    } else {
+                        new_r.clamp(0.0, 1.0)
+                    };
                     // First child absorbed the change — recurse keeping *its* second stable.
                     let old_first = old_span * old_ratio;
                     let new_first = new_span * *ratio;
@@ -321,7 +333,12 @@ impl PaneTree {
                     let new_ratio = (*ratio + delta / span).clamp(0.0, 1.0);
                     let min_ratio = MIN_PANE_PX / span;
                     let max_ratio = 1.0 - min_ratio;
-                    *ratio = new_ratio.clamp(min_ratio, max_ratio);
+                    // When span is too small for two panes, skip min/max enforcement
+                    *ratio = if min_ratio < max_ratio {
+                        new_ratio.clamp(min_ratio, max_ratio)
+                    } else {
+                        new_ratio
+                    };
 
                     // Stabilize children: only the two panes directly adjacent
                     // to this divider should change size. Non-adjacent panes
@@ -522,5 +539,20 @@ mod tests {
             pane3_before.width(),
             pane3_after.width()
         );
+    }
+
+    #[test]
+    fn resize_divider_tiny_span_no_panic() {
+        // When the available span is smaller than 2*MIN_PANE_PX,
+        // the min/max clamp guard should prevent a panic.
+        let mut tree = PaneTree::new(1);
+        tree.split(1, SplitDirection::Horizontal, 2);
+        // Rect width (10px) < 2 * MIN_PANE_PX (40px)
+        let tiny_rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(10.0, 600.0));
+        // Should not panic
+        tree.resize_divider(&[], 5.0, tiny_rect);
+        if let PaneTree::Split { ratio, .. } = &tree {
+            assert!(*ratio >= 0.0 && *ratio <= 1.0);
+        }
     }
 }

@@ -33,11 +33,11 @@ struct SharedWriter(Arc<Mutex<Box<dyn Write + Send>>>);
 
 impl Write for SharedWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().write(buf)
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.0.lock().unwrap().flush()
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).flush()
     }
 }
 
@@ -129,6 +129,7 @@ impl TerminalPane {
                 AdvanceResult::Read(n)
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => AdvanceResult::WouldBlock,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => AdvanceResult::WouldBlock,
             Err(_) => AdvanceResult::Eof,
         }
     }
@@ -156,7 +157,7 @@ impl TerminalPane {
 
     /// Write bytes to the PTY (i.e. simulate keyboard input).
     pub fn write_bytes(&mut self, data: &[u8]) -> anyhow::Result<()> {
-        let mut writer = self.writer.lock().unwrap();
+        let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         writer.write_all(data)?;
         Ok(())
     }
@@ -184,6 +185,11 @@ impl TerminalPane {
     /// Whether the alternate screen buffer is active.
     pub fn is_alt_screen_active(&self) -> bool {
         self.terminal.is_alt_screen_active()
+    }
+
+    /// Whether the terminal has enabled bracketed paste mode (DECSET 2004).
+    pub fn bracketed_paste_enabled(&self) -> bool {
+        self.terminal.bracketed_paste_enabled()
     }
 
     /// Get the window title (set by OSC 0/2).

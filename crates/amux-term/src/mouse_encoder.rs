@@ -40,8 +40,9 @@ impl MouseEncoder {
         Self {
             tracking_mode: MouseTrackingMode::None,
             encoding_format: MouseEncodingFormat::Sgr,
-            cell_width,
-            cell_height,
+            // Guard against zero/negative dimensions to prevent division by zero
+            cell_width: if cell_width > 0.0 { cell_width } else { 1.0 },
+            cell_height: if cell_height > 0.0 { cell_height } else { 1.0 },
         }
     }
 
@@ -308,5 +309,26 @@ mod tests {
         assert_eq!(enc.pixel_to_cell(8.0, 16.0), (2, 2));
         // 7.9, 15.9 -> still cell (1,1)
         assert_eq!(enc.pixel_to_cell(7.9, 15.9), (1, 1));
+    }
+
+    #[test]
+    fn new_sanitizes_zero_dimensions() {
+        let enc = MouseEncoder::new(0.0, 0.0);
+        assert_eq!(enc.cell_width, 1.0);
+        assert_eq!(enc.cell_height, 1.0);
+    }
+
+    #[test]
+    fn new_sanitizes_negative_dimensions() {
+        let enc = MouseEncoder::new(-5.0, -10.0);
+        assert_eq!(enc.cell_width, 1.0);
+        assert_eq!(enc.cell_height, 1.0);
+    }
+
+    #[test]
+    fn new_preserves_positive_dimensions() {
+        let enc = MouseEncoder::new(8.0, 16.0);
+        assert_eq!(enc.cell_width, 8.0);
+        assert_eq!(enc.cell_height, 16.0);
     }
 }

@@ -84,9 +84,9 @@ enum Command {
     /// Create a new surface (tab) in a workspace
     #[command(name = "surface-create")]
     SurfaceCreate {
-        /// Workspace ID (defaults to active)
+        /// Pane ID to add the surface to (defaults to focused pane)
         #[arg(long)]
-        workspace: Option<String>,
+        pane: Option<String>,
     },
     /// Close a surface (tab)
     #[command(name = "surface-close")]
@@ -194,6 +194,11 @@ async fn main() -> anyhow::Result<()> {
                 );
             } else if let (Some(ws_result), Some(sf_result)) = (&ws_resp.result, &sf_resp.result) {
                 print_hierarchy(ws_result, sf_result);
+            } else {
+                // Show first error found
+                let all = [&ws_resp, &sf_resp, &pane_resp];
+                let err_resp = all.iter().find(|r| !r.ok).unwrap_or(&all[0]);
+                print_response(err_resp, false);
             }
         }
         Command::Send { text, surface } => {
@@ -225,10 +230,14 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
             if cli.json {
                 print_response(&resp, true);
-            } else if let Some(result) = &resp.result {
-                if let Some(text) = result.get("text").and_then(|t| t.as_str()) {
-                    println!("{}", text);
+            } else if resp.ok {
+                if let Some(result) = &resp.result {
+                    if let Some(text) = result.get("text").and_then(|t| t.as_str()) {
+                        println!("{}", text);
+                    }
                 }
+            } else {
+                print_response(&resp, false);
             }
         }
         Command::Capabilities => {
@@ -294,8 +303,12 @@ async fn main() -> anyhow::Result<()> {
             let resp = client.call("pane.list", serde_json::json!({})).await?;
             if cli.json {
                 print_response(&resp, true);
-            } else if let Some(result) = &resp.result {
-                print_pane_list(result);
+            } else if resp.ok {
+                if let Some(result) = &resp.result {
+                    print_pane_list(result);
+                }
+            } else {
+                print_response(&resp, false);
             }
         }
         // --- Workspace commands ---
@@ -368,10 +381,10 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         // --- Surface commands ---
-        Command::SurfaceCreate { workspace } => {
+        Command::SurfaceCreate { pane } => {
             let mut params = serde_json::json!({});
-            if let Some(ws) = workspace {
-                params["workspace_id"] = serde_json::json!(ws);
+            if let Some(p) = pane {
+                params["pane_id"] = serde_json::json!(p);
             }
             let resp = client.call("surface.create", params).await?;
             if cli.json {
@@ -632,14 +645,11 @@ fn print_workspace_list(result: &serde_json::Value) {
         for ws in workspaces {
             let id = ws.get("id").and_then(|v| v.as_str()).unwrap_or("?");
             let title = ws.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let count = ws
-                .get("surface_count")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            let count = ws.get("pane_count").and_then(|v| v.as_u64()).unwrap_or(0);
             let active = ws.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
             let marker = if active { " *" } else { "" };
             println!(
-                "workspace:{}{} \"{}\" ({} surface{})",
+                "workspace:{}{} \"{}\" ({} pane{})",
                 id,
                 marker,
                 title,
