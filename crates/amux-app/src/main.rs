@@ -91,6 +91,8 @@ struct ManagedPane {
     byte_rx: mpsc::Receiver<Vec<u8>>,
     /// Scrollback offset: 0 = bottom (live), >0 = scrolled up by N lines.
     scroll_offset: usize,
+    /// Accumulated fractional scroll for smooth trackpad scrolling.
+    scroll_accum: f32,
 }
 
 fn spawn_managed_pane(
@@ -129,6 +131,7 @@ fn spawn_managed_pane(
         pane,
         byte_rx,
         scroll_offset: 0,
+        scroll_accum: 0.0,
     })
 }
 
@@ -156,17 +159,9 @@ impl eframe::App for AmuxApp {
         // Drain PTY output from all panes
         let mut got_data = false;
         for managed in self.panes.values_mut() {
-            let mut pane_got_data = false;
             while let Ok(bytes) = managed.byte_rx.try_recv() {
-                pane_got_data = true;
-                managed.pane.feed_bytes(&bytes);
-            }
-            if pane_got_data {
                 got_data = true;
-                // Auto-snap to bottom when new output arrives
-                if managed.scroll_offset > 0 {
-                    managed.scroll_offset = 0;
-                }
+                managed.pane.feed_bytes(&bytes);
             }
         }
 
@@ -375,13 +370,20 @@ impl AmuxApp {
             }
         }
 
-        // Mouse wheel scrolling on focused pane
+        // Mouse wheel scrolling — accumulate fractional lines for smooth trackpad
         let scroll_delta = ctx.input(|i| i.smooth_scroll_delta.y);
         if scroll_delta != 0.0 {
-            // Convert pixel delta to lines (3 lines per scroll notch)
-            let lines = (-scroll_delta / 20.0).round() as isize;
-            if lines != 0 {
-                self.do_scroll_lines(lines);
+            if let Some(managed) = self.panes.get_mut(&self.focused) {
+                let font_id = egui::FontId::monospace(FONT_SIZE);
+                let cell_height = ctx.fonts(|f| f.row_height(&font_id));
+
+                // Accumulate pixel delta, convert to lines when >= 1 line
+                managed.scroll_accum += -scroll_delta / cell_height;
+                let whole_lines = managed.scroll_accum.trunc() as isize;
+                if whole_lines != 0 {
+                    managed.scroll_accum -= whole_lines as f32;
+                    self.do_scroll_lines(whole_lines);
+                }
             }
         }
 
@@ -535,6 +537,9 @@ impl AmuxApp {
         for event in &events {
             match event {
                 egui::Event::Text(text) => {
+                    // Snap to bottom on user input
+                    managed.scroll_offset = 0;
+                    managed.scroll_accum = 0.0;
                     let _ = managed.pane.write_bytes(text.as_bytes());
                 }
                 egui::Event::Key {
@@ -544,10 +549,15 @@ impl AmuxApp {
                     ..
                 } => {
                     if let Some(bytes) = encode_egui_key(key, modifiers) {
+                        // Snap to bottom on user input
+                        managed.scroll_offset = 0;
+                        managed.scroll_accum = 0.0;
                         let _ = managed.pane.write_bytes(&bytes);
                     }
                 }
                 egui::Event::Paste(text) => {
+                    managed.scroll_offset = 0;
+                    managed.scroll_accum = 0.0;
                     let _ = managed.pane.write_bytes(b"\x1b[200~");
                     let _ = managed.pane.write_bytes(text.as_bytes());
                     let _ = managed.pane.write_bytes(b"\x1b[201~");
@@ -896,6 +906,34 @@ fn render_pane(
                 }
             }
         }
+    }
+
+    // Scroll indicator when viewing history
+    if scroll_offset > 0 {
+        let indicator = format!("[+{}]", scroll_offset);
+        let indicator_font = egui::FontId::monospace(FONT_SIZE * 0.8);
+        let text_color = egui::Color32::from_rgba_unmultiplied(255, 200, 50, 200);
+        let bg_color = egui::Color32::from_rgba_unmultiplied(40, 40, 40, 180);
+
+        let galley = painter.layout_no_wrap(indicator, indicator_font, text_color);
+        let text_size = galley.size();
+        let padding = 4.0;
+        let indicator_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                rect.right() - text_size.x - padding * 2.0,
+                rect.top() + padding,
+            ),
+            egui::vec2(text_size.x + padding * 2.0, text_size.y + padding),
+        );
+        painter.rect_filled(indicator_rect, 3.0, bg_color);
+        painter.galley(
+            egui::pos2(
+                indicator_rect.left() + padding,
+                indicator_rect.top() + padding * 0.5,
+            ),
+            galley,
+            text_color,
+        );
     }
 
     // Focus indicator: subtle border on focused pane
