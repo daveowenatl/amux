@@ -810,8 +810,9 @@ fn render_pane(
         }
     }
 
-    // Draw cursor (only when at bottom — not scrolled up)
-    if scroll_offset == 0
+    // Draw cursor only in the focused pane, and only when not scrolled up
+    if is_focused
+        && scroll_offset == 0
         && cursor.y >= 0
         && (cursor.y as usize) < actual_rows
         && cursor.x < actual_cols
@@ -821,40 +822,29 @@ fn render_pane(
         let cursor_rect =
             egui::Rect::from_min_size(egui::pos2(cx, cy), egui::vec2(cell_width, cell_height));
 
-        if is_focused {
-            // Block cursor: fill background, re-draw character in cursor_fg
-            let cursor_bg = srgba_to_egui(palette.cursor_bg);
-            let cursor_fg = srgba_to_egui(palette.cursor_fg);
-            painter.rect_filled(cursor_rect, 0.0, cursor_bg);
+        let cursor_bg = srgba_to_egui(palette.cursor_bg);
+        let cursor_fg = srgba_to_egui(palette.cursor_fg);
+        painter.rect_filled(cursor_rect, 0.0, cursor_bg);
 
-            // Re-draw the character under the cursor
-            let cursor_line_idx = cursor.y as usize;
-            if cursor_line_idx < lines.len() {
-                let line = &lines[cursor_line_idx];
-                for cell_ref in line.visible_cells() {
-                    if cell_ref.cell_index() == cursor.x {
-                        let text = cell_ref.str();
-                        if !text.is_empty() && text != " " {
-                            painter.text(
-                                egui::pos2(cx, cy),
-                                egui::Align2::LEFT_TOP,
-                                text,
-                                font_id.clone(),
-                                cursor_fg,
-                            );
-                        }
-                        break;
+        // Re-draw the character under the cursor in inverse color
+        let cursor_line_idx = cursor.y as usize;
+        if cursor_line_idx < lines.len() {
+            let line = &lines[cursor_line_idx];
+            for cell_ref in line.visible_cells() {
+                if cell_ref.cell_index() == cursor.x {
+                    let text = cell_ref.str();
+                    if !text.is_empty() && text != " " {
+                        painter.text(
+                            egui::pos2(cx, cy),
+                            egui::Align2::LEFT_TOP,
+                            text,
+                            font_id.clone(),
+                            cursor_fg,
+                        );
                     }
+                    break;
                 }
             }
-        } else {
-            // Unfocused: hollow rectangle outline
-            painter.rect_stroke(
-                cursor_rect,
-                0.0,
-                egui::Stroke::new(1.0, srgba_to_egui(palette.cursor_bg)),
-                egui::StrokeKind::Inside,
-            );
         }
     }
 
