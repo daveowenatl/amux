@@ -1,6 +1,5 @@
-use std::io::Read;
-use std::sync::mpsc;
-use std::sync::Arc;
+use std::io::{Read, Write};
+use std::sync::{mpsc, Arc, Mutex};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use url::Url;
@@ -28,11 +27,30 @@ pub enum AdvanceResult {
 ///
 /// Owns the PTY master, child process, and terminal state machine.
 /// The reader is used to pull bytes from the PTY and feed them to the terminal.
+/// Write handle that can be cloned and shared between Terminal (for responses)
+/// and keyboard input. Wraps the single PTY writer via Arc<Mutex>.
+struct SharedWriter(Arc<Mutex<Box<dyn Write + Send>>>);
+
+impl Write for SharedWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap().flush()
+    }
+}
+
+/// A terminal pane wrapping wezterm-term + portable-pty.
+///
+/// Owns the PTY master, child process, and terminal state machine.
+/// The reader is used to pull bytes from the PTY and feed them to the terminal.
 pub struct TerminalPane {
     terminal: Terminal,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
-    reader: Box<dyn Read + Send>,
+    reader: Option<Box<dyn Read + Send>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     seqno: SequenceNo,
     notification_rx: mpsc::Receiver<NotificationEvent>,
 }
@@ -66,7 +84,15 @@ impl TerminalPane {
         };
 
         let writer = pair.master.take_writer()?;
-        let mut terminal = Terminal::new(terminal_size, config, "amux", "0.1.0", writer);
+        let shared = Arc::new(Mutex::new(writer));
+        let terminal_writer = SharedWriter(Arc::clone(&shared));
+        let mut terminal = Terminal::new(
+            terminal_size,
+            config,
+            "amux",
+            "0.1.0",
+            Box::new(terminal_writer),
+        );
 
         let (tx, rx) = mpsc::channel();
         terminal.set_notification_handler(Box::new(ChannelAlertHandler::new(tx)));
@@ -75,7 +101,8 @@ impl TerminalPane {
             terminal,
             master: pair.master,
             child,
-            reader,
+            reader: Some(reader),
+            writer: shared,
             seqno: 0,
             notification_rx: rx,
         })
@@ -86,8 +113,12 @@ impl TerminalPane {
     /// Returns `AdvanceResult::Read(n)` with the number of bytes consumed,
     /// `WouldBlock` if no data was available, or `Eof` if the PTY closed.
     pub fn advance(&mut self) -> AdvanceResult {
+        let reader = match &mut self.reader {
+            Some(r) => r,
+            None => return AdvanceResult::Eof,
+        };
         let mut buf = [0u8; 8192];
-        match self.reader.read(&mut buf) {
+        match reader.read(&mut buf) {
             Ok(0) => AdvanceResult::Eof,
             Ok(n) => {
                 self.terminal.advance_bytes(&buf[..n]);
@@ -121,10 +152,24 @@ impl TerminalPane {
 
     /// Write bytes to the PTY (i.e. simulate keyboard input).
     pub fn write_bytes(&mut self, data: &[u8]) -> anyhow::Result<()> {
-        use std::io::Write;
-        let mut writer = self.master.take_writer()?;
+        let mut writer = self.writer.lock().unwrap();
         writer.write_all(data)?;
         Ok(())
+    }
+
+    /// Take the PTY reader out of the pane for use in a background thread.
+    ///
+    /// After calling this, `advance()` will always return `Eof`.
+    /// Use `feed_bytes()` to feed data from the reader back to the terminal.
+    pub fn take_reader(&mut self) -> Option<Box<dyn Read + Send>> {
+        self.reader.take()
+    }
+
+    /// Feed raw bytes directly into the terminal state machine.
+    ///
+    /// Use this when running the PTY reader in a background thread.
+    pub fn feed_bytes(&mut self, data: &[u8]) {
+        self.terminal.advance_bytes(data);
     }
 
     /// Borrow the current terminal screen.

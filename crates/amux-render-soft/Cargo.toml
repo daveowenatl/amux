@@ -3,6 +3,9 @@ name = "amux-render-soft"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "amux softbuffer renderer"
+description = "amux CPU terminal renderer using cosmic-text"
 
 [dependencies]
+wezterm-term = { workspace = true }
+cosmic-text = { workspace = true }
+tracing = { workspace = true }
