@@ -88,6 +88,8 @@ fn cleanup_addr(addr: &amux_ipc::IpcAddr) {
 struct ManagedPane {
     pane: TerminalPane,
     byte_rx: mpsc::Receiver<Vec<u8>>,
+    /// Scrollback offset: 0 = bottom (live), >0 = scrolled up by N lines.
+    scroll_offset: usize,
 }
 
 fn spawn_managed_pane(
@@ -122,7 +124,11 @@ fn spawn_managed_pane(
         }
     });
 
-    Ok(ManagedPane { pane, byte_rx })
+    Ok(ManagedPane {
+        pane,
+        byte_rx,
+        scroll_offset: 0,
+    })
 }
 
 struct AmuxApp {
@@ -149,9 +155,17 @@ impl eframe::App for AmuxApp {
         // Drain PTY output from all panes
         let mut got_data = false;
         for managed in self.panes.values_mut() {
+            let mut pane_got_data = false;
             while let Ok(bytes) = managed.byte_rx.try_recv() {
-                got_data = true;
+                pane_got_data = true;
                 managed.pane.feed_bytes(&bytes);
+            }
+            if pane_got_data {
+                got_data = true;
+                // Auto-snap to bottom when new output arrives
+                if managed.scroll_offset > 0 {
+                    managed.scroll_offset = 0;
+                }
             }
         }
 
@@ -179,7 +193,13 @@ impl eframe::App for AmuxApp {
                 if let Some(zoomed_id) = self.zoomed {
                     // Zoomed mode: render single pane fullscreen
                     if let Some(managed) = self.panes.get_mut(&zoomed_id) {
-                        render_pane(ui, &mut managed.pane, panel_rect, true);
+                        render_pane(
+                            ui,
+                            &mut managed.pane,
+                            panel_rect,
+                            true,
+                            managed.scroll_offset,
+                        );
                         self.resize_pane_if_needed(zoomed_id, panel_rect, ui);
                     }
                 } else {
@@ -197,7 +217,13 @@ impl eframe::App for AmuxApp {
                     for &(id, rect) in &layout {
                         let is_focused = id == self.focused;
                         if let Some(managed) = self.panes.get_mut(&id) {
-                            render_pane(ui, &mut managed.pane, rect, is_focused);
+                            render_pane(
+                                ui,
+                                &mut managed.pane,
+                                rect,
+                                is_focused,
+                                managed.scroll_offset,
+                            );
                         }
                         self.resize_pane_if_needed(id, rect, ui);
                     }
@@ -325,8 +351,27 @@ impl AmuxApp {
                 if is_zoom {
                     return self.do_toggle_zoom();
                 }
+
+                // Scroll: Shift+PageUp / Shift+PageDown
+                if modifiers.shift && *key == egui::Key::PageUp {
+                    return self.do_scroll(-1);
+                }
+                if modifiers.shift && *key == egui::Key::PageDown {
+                    return self.do_scroll(1);
+                }
             }
         }
+
+        // Mouse wheel scrolling on focused pane
+        let scroll_delta = ctx.input(|i| i.smooth_scroll_delta.y);
+        if scroll_delta != 0.0 {
+            // Convert pixel delta to lines (3 lines per scroll notch)
+            let lines = (-scroll_delta / 20.0).round() as isize;
+            if lines != 0 {
+                self.do_scroll_lines(lines);
+            }
+        }
+
         false
     }
 
@@ -370,6 +415,30 @@ impl AmuxApp {
             self.zoomed = Some(self.focused);
         }
         true
+    }
+
+    /// Scroll focused pane by pages (-1 = page up, 1 = page down).
+    fn do_scroll(&mut self, pages: isize) -> bool {
+        if let Some(managed) = self.panes.get_mut(&self.focused) {
+            let (_, rows) = managed.pane.dimensions();
+            let page_size = rows.saturating_sub(1).max(1);
+            let lines = pages * page_size as isize;
+            self.do_scroll_lines(lines);
+        }
+        true
+    }
+
+    /// Scroll focused pane by N lines (positive = scroll down/toward bottom,
+    /// negative = scroll up/toward history).
+    fn do_scroll_lines(&mut self, lines: isize) {
+        if let Some(managed) = self.panes.get_mut(&self.focused) {
+            let (_, rows) = managed.pane.dimensions();
+            let total = managed.pane.screen().scrollback_rows();
+            let max_offset = total.saturating_sub(rows);
+
+            let new_offset = managed.scroll_offset as isize - lines;
+            managed.scroll_offset = (new_offset.max(0) as usize).min(max_offset);
+        }
     }
 
     fn handle_divider_drag(&mut self, ui: &egui::Ui, panel_rect: egui::Rect) {
@@ -653,7 +722,13 @@ impl AmuxApp {
     }
 }
 
-fn render_pane(ui: &mut egui::Ui, pane: &mut TerminalPane, rect: egui::Rect, is_focused: bool) {
+fn render_pane(
+    ui: &mut egui::Ui,
+    pane: &mut TerminalPane,
+    rect: egui::Rect,
+    is_focused: bool,
+    scroll_offset: usize,
+) {
     let font_id = egui::FontId::monospace(FONT_SIZE);
     let cell_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
     let cell_height = ui.fonts(|f| f.row_height(&font_id));
@@ -683,10 +758,11 @@ fn render_pane(ui: &mut egui::Ui, pane: &mut TerminalPane, rect: egui::Rect, is_
     let clipped_rect = terminal_rect.intersect(rect);
     painter.rect_filled(clipped_rect, 0.0, bg_default);
 
-    // Draw cells
+    // Draw cells — apply scroll offset (0 = bottom/live view)
     let total = screen.scrollback_rows();
-    let start = total.saturating_sub(actual_rows);
-    let lines = screen.lines_in_phys_range(start..total);
+    let end = total.saturating_sub(scroll_offset);
+    let start = end.saturating_sub(actual_rows);
+    let lines = screen.lines_in_phys_range(start..end);
 
     for (row_idx, line) in lines.iter().enumerate() {
         let y = origin.y + row_idx as f32 * cell_height;
@@ -734,8 +810,12 @@ fn render_pane(ui: &mut egui::Ui, pane: &mut TerminalPane, rect: egui::Rect, is_
         }
     }
 
-    // Draw cursor
-    if cursor.y >= 0 && (cursor.y as usize) < actual_rows && cursor.x < actual_cols {
+    // Draw cursor (only when at bottom — not scrolled up)
+    if scroll_offset == 0
+        && cursor.y >= 0
+        && (cursor.y as usize) < actual_rows
+        && cursor.x < actual_cols
+    {
         let cx = origin.x + cursor.x as f32 * cell_width;
         let cy = origin.y + cursor.y as f32 * cell_height;
         let cursor_color = srgba_to_egui(palette.cursor_bg);
