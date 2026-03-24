@@ -3195,10 +3195,30 @@ fn render_pane(
     selection: Option<&SelectionState>,
     #[cfg(feature = "gpu-renderer")] gpu_renderer: Option<&GpuRenderer>,
 ) {
-    // GPU renderer path: emit a paint callback and return early.
+    // GPU renderer path: build snapshot, emit a paint callback, and return early.
     #[cfg(feature = "gpu-renderer")]
     if let Some(gpu) = gpu_renderer {
-        let callback = gpu.paint_callback(rect);
+        let (actual_cols, actual_rows) = pane.dimensions();
+        if actual_cols == 0 || actual_rows == 0 {
+            return;
+        }
+        let font_id = egui::FontId::monospace(FONT_SIZE);
+        let cell_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
+        let cell_height = ui.fonts(|f| f.row_height(&font_id));
+        let palette = pane.palette();
+        let cursor = pane.cursor();
+        let screen = pane.screen();
+        let snapshot = amux_render_gpu::TerminalSnapshot::from_screen(
+            screen,
+            &palette,
+            &cursor,
+            actual_cols,
+            actual_rows,
+            scroll_offset,
+        );
+        let pixels_per_point = ui.ctx().pixels_per_point();
+        let callback =
+            gpu.paint_callback(rect, snapshot, cell_width, cell_height, pixels_per_point);
         ui.painter().add(egui::Shape::Callback(callback));
         return;
     }
