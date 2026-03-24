@@ -41,6 +41,16 @@ cosmic-text = "0.12"
 # Clipboard
 arboard = "3"
 
+# Async runtime
+tokio = { version = "1", features = ["rt", "net", "io-util", "sync", "macros", "time"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+dirs = "6"
+
 # Error handling
 anyhow = "1"
 

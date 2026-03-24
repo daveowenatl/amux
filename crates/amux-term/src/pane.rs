@@ -255,4 +255,29 @@ impl TerminalPane {
     pub fn rendered_seqno(&self) -> SequenceNo {
         self.seqno
     }
+
+    /// Read the visible screen content as a string (lines joined by newlines).
+    pub fn read_screen_text(&self) -> String {
+        let (cols, rows) = self.dimensions();
+        let screen = self.terminal.screen();
+        let total = screen.scrollback_rows();
+        let start = total.saturating_sub(rows);
+        let lines = screen.lines_in_phys_range(start..total);
+
+        let mut result = String::new();
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                result.push('\n');
+            }
+            let mut line_text = String::new();
+            for cell in line.visible_cells() {
+                if cell.cell_index() >= cols {
+                    break;
+                }
+                line_text.push_str(cell.str());
+            }
+            result.push_str(line_text.trim_end());
+        }
+        result
+    }
 }
