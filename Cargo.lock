@@ -92,12 +92,14 @@ name = "amux-app"
 version = "0.1.0"
 dependencies = [
  "amux-ipc",
+ "amux-layout",
  "amux-term",
  "anyhow",
  "arboard",
  "eframe",
  "egui",
  "portable-pty",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
@@ -131,6 +133,10 @@ dependencies = [
 [[package]]
 name = "amux-layout"
 version = "0.1.0"
+dependencies = [
+ "egui",
+ "serde",
+]
 
 [[package]]
 name = "amux-notify"

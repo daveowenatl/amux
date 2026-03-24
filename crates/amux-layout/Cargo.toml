@@ -6,3 +6,5 @@ license.workspace = true
 description = "amux PaneTree binary tree layout engine"
 
 [dependencies]
+serde = { workspace = true }
+egui = { workspace = true }
