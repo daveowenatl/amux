@@ -40,6 +40,25 @@ enum Command {
     Capabilities,
     /// Identify focused workspace/surface
     Identify,
+    /// Split the focused pane
+    Split {
+        /// Split direction: right or down
+        #[arg(long, default_value = "right")]
+        direction: String,
+    },
+    /// Close a pane
+    ClosePane {
+        /// Pane ID to close (defaults to focused)
+        #[arg(long)]
+        pane: Option<String>,
+    },
+    /// Focus a specific pane
+    FocusPane {
+        /// Pane ID to focus
+        pane_id: String,
+    },
+    /// List all panes
+    ListPanes,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -109,6 +128,61 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
             print_response(&resp, cli.json);
         }
+        Command::Split { direction } => {
+            let resp = client
+                .call(
+                    "pane.split",
+                    serde_json::json!({
+                        "direction": direction,
+                    }),
+                )
+                .await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                if let Some(result) = &resp.result {
+                    if let Some(id) = result.get("pane_id").and_then(|v| v.as_str()) {
+                        println!("Split pane created: {}", id);
+                    }
+                }
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::ClosePane { pane } => {
+            let params = match pane {
+                Some(id) => serde_json::json!({"pane_id": id}),
+                None => serde_json::json!({}),
+            };
+            let resp = client.call("pane.close", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("Pane closed");
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::FocusPane { pane_id } => {
+            let resp = client
+                .call("pane.focus", serde_json::json!({"pane_id": pane_id}))
+                .await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("Focused pane {}", pane_id);
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::ListPanes => {
+            let resp = client.call("pane.list", serde_json::json!({})).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if let Some(result) = &resp.result {
+                print_pane_list(result);
+            }
+        }
     }
     Ok(())
 }
@@ -118,12 +192,10 @@ fn resolve_addr(cli: &Cli) -> anyhow::Result<IpcAddr> {
         return Ok(IpcAddr::from_stored(socket));
     }
 
-    // Check environment variable
     if let Ok(path) = std::env::var("AMUX_SOCKET_PATH") {
         return Ok(IpcAddr::from_stored(&path));
     }
 
-    // Fall back to last-known address
     read_last_addr()
 }
 
@@ -162,6 +234,24 @@ fn print_tree(result: &serde_json::Value) {
                 "  {} surface:{} \"{}\" {}x{} [{}]",
                 prefix, id, title, cols, rows, status
             );
+        }
+    }
+}
+
+fn print_pane_list(result: &serde_json::Value) {
+    if let Some(panes) = result.get("panes").and_then(|p| p.as_array()) {
+        for pane in panes {
+            let id = pane.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+            let focused = pane
+                .get("focused")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let cols = pane.get("cols").and_then(|v| v.as_u64()).unwrap_or(0);
+            let rows = pane.get("rows").and_then(|v| v.as_u64()).unwrap_or(0);
+            let alive = pane.get("alive").and_then(|v| v.as_bool()).unwrap_or(false);
+            let focus_marker = if focused { " *" } else { "" };
+            let status = if alive { "running" } else { "exited" };
+            println!("pane:{}{} {}x{} [{}]", id, focus_marker, cols, rows, status);
         }
     }
 }

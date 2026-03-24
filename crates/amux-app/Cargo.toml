@@ -8,6 +8,7 @@ description = "amux main binary: GUI + event loop"
 [dependencies]
 amux-term = { workspace = true }
 wezterm-term = { workspace = true }
+wezterm-surface = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 arboard = { workspace = true }
@@ -16,4 +17,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 portable-pty = { workspace = true }
 amux-ipc = { workspace = true }
+amux-layout = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }

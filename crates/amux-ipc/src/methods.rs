@@ -8,6 +8,10 @@ pub const METHODS: &[&str] = &[
     "surface.send_text",
     "surface.read_text",
     "surface.list",
+    "pane.split",
+    "pane.close",
+    "pane.focus",
+    "pane.list",
 ];
 
 // --- Params ---
