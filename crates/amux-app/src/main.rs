@@ -207,6 +207,18 @@ impl eframe::App for AmuxApp {
                     // Normal mode: render all panes at computed rects
                     let layout = self.tree.layout(panel_rect);
 
+                    // Click-to-focus: switch focus when clicking inside a pane
+                    if ui.input(|i| i.pointer.any_pressed()) {
+                        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                            for &(id, rect) in &layout {
+                                if rect.contains(pos) && id != self.focused {
+                                    self.focused = id;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
                     // Render dividers
                     let dividers = self.tree.dividers(panel_rect);
                     let painter = ui.painter();
