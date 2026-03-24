@@ -459,28 +459,33 @@ impl AmuxApp {
             return;
         }
 
-        let response = ui.interact(panel_rect, ui.id().with("dividers"), egui::Sense::drag());
+        let dividers = self.tree.dividers(panel_rect);
         let pointer_pos = ui.input(|i| i.pointer.hover_pos());
+        let primary_down = ui.input(|i| i.pointer.primary_down());
+        let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+        let primary_released = ui.input(|i| i.pointer.primary_released());
 
+        // Hover cursor feedback
         if let Some(pos) = pointer_pos {
-            let dividers = self.tree.dividers(panel_rect);
-
-            // Hit test for hover cursor
-            let hovering_divider = dividers.iter().find(|d| d.rect.contains(pos));
-            if let Some(div) = hovering_divider {
-                match div.direction {
-                    SplitDirection::Horizontal => {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                    }
-                    SplitDirection::Vertical => {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            if self.dragging_divider.is_none() {
+                if let Some(div) = dividers.iter().find(|d| d.rect.contains(pos)) {
+                    match div.direction {
+                        SplitDirection::Horizontal => {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                        }
+                        SplitDirection::Vertical => {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                        }
                     }
                 }
             }
+        }
 
-            // Start drag
-            if response.drag_started() {
-                if let Some(div) = hovering_divider {
+        // Start drag on click over a divider
+        if primary_pressed && self.dragging_divider.is_none() {
+            if let Some(pos) = pointer_pos {
+                // Use a slightly expanded hit area for easier grabbing
+                if let Some(div) = dividers.iter().find(|d| d.rect.expand(4.0).contains(pos)) {
                     self.dragging_divider = Some(DragState {
                         node_path: div.node_path.clone(),
                         direction: div.direction,
@@ -489,20 +494,31 @@ impl AmuxApp {
             }
         }
 
-        // Continue drag
-        if response.dragged() {
+        // Continue drag using pointer delta
+        if primary_down {
             if let Some(ref drag) = self.dragging_divider {
-                let delta = response.drag_delta();
+                let delta = ui.input(|i| i.pointer.delta());
                 let px_delta = match drag.direction {
                     SplitDirection::Horizontal => delta.x,
                     SplitDirection::Vertical => delta.y,
                 };
-                self.tree
-                    .resize_divider(&drag.node_path, px_delta, panel_rect);
+                if px_delta != 0.0 {
+                    self.tree
+                        .resize_divider(&drag.node_path, px_delta, panel_rect);
+                }
+                // Show resize cursor while dragging
+                match drag.direction {
+                    SplitDirection::Horizontal => {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                    }
+                    SplitDirection::Vertical => {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                    }
+                }
             }
         }
 
-        if response.drag_stopped() {
+        if primary_released {
             self.dragging_divider = None;
         }
     }
