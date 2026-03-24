@@ -3218,6 +3218,10 @@ fn render_pane(
         let palette = pane.palette();
         let cursor = pane.cursor();
         let screen = pane.screen();
+        let gpu_selection = selection.map(|sel| {
+            let (start, end) = sel.normalized();
+            amux_render_gpu::snapshot::SelectionRange { start, end }
+        });
         let snapshot = amux_render_gpu::TerminalSnapshot::from_screen(
             screen,
             &palette,
@@ -3225,6 +3229,8 @@ fn render_pane(
             actual_cols,
             actual_rows,
             scroll_offset,
+            is_focused,
+            gpu_selection,
         );
         let pixels_per_point = ui.ctx().pixels_per_point();
         let callback = gpu.paint_callback(rect, snapshot, pixels_per_point);

@@ -11,7 +11,14 @@ pub struct TerminalSnapshot {
     pub cells: Vec<CellData>,
     pub cursor: CursorPosition,
     pub default_bg: [f32; 4],
-    pub cursor_color: [f32; 4],
+    pub default_fg: [f32; 4],
+    pub cursor_bg: [f32; 4],
+    pub cursor_fg: [f32; 4],
+    pub is_focused: bool,
+    pub scroll_offset: usize,
+    /// Text under the cursor (for block cursor rendering).
+    pub cursor_text: String,
+    pub cursor_text_bold: bool,
 }
 
 /// Data for a single terminal cell.
@@ -25,10 +32,36 @@ pub struct CellData {
     pub italic: bool,
 }
 
+/// Selection range for highlight rendering.
+pub struct SelectionRange {
+    pub start: (usize, usize), // (col, stable_row)
+    pub end: (usize, usize),   // (col, stable_row)
+}
+
+impl SelectionRange {
+    fn contains(&self, col: usize, stable_row: usize) -> bool {
+        if stable_row < self.start.1 || stable_row > self.end.1 {
+            return false;
+        }
+        if stable_row == self.start.1 && stable_row == self.end.1 {
+            return col >= self.start.0 && col <= self.end.0;
+        }
+        if stable_row == self.start.1 {
+            return col >= self.start.0;
+        }
+        if stable_row == self.end.1 {
+            return col <= self.end.0;
+        }
+        true
+    }
+}
+
 impl TerminalSnapshot {
     /// Extract a snapshot from the terminal screen.
     ///
     /// `scroll_offset` is the number of lines scrolled back from the bottom.
+    /// `selection` is an optional normalized selection range for highlight rendering.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_screen(
         screen: &wezterm_term::screen::Screen,
         palette: &ColorPalette,
@@ -36,9 +69,13 @@ impl TerminalSnapshot {
         cols: usize,
         rows: usize,
         scroll_offset: usize,
+        is_focused: bool,
+        selection: Option<SelectionRange>,
     ) -> Self {
         let default_bg = srgba_to_f32(palette.background);
-        let cursor_color = srgba_to_f32(palette.cursor_bg);
+        let default_fg = srgba_to_f32(palette.foreground);
+        let cursor_bg = srgba_to_f32(palette.cursor_bg);
+        let cursor_fg = srgba_to_f32(palette.cursor_fg);
 
         let total = screen.scrollback_rows();
         let end = total.saturating_sub(scroll_offset);
@@ -46,6 +83,8 @@ impl TerminalSnapshot {
         let lines = screen.lines_in_phys_range(start..end);
 
         let mut cells = Vec::with_capacity(cols * rows);
+        let mut cursor_text = String::new();
+        let mut cursor_text_bold = false;
 
         for (row_idx, line) in lines.iter().enumerate() {
             for cell_ref in line.visible_cells() {
@@ -57,18 +96,42 @@ impl TerminalSnapshot {
                 let attrs = cell_ref.attrs();
                 let reverse = attrs.reverse();
 
-                let fg_attr = attrs.foreground();
-                let bg_attr = attrs.background();
+                let mut fg = resolve_color(&attrs.foreground(), palette, true, reverse);
+                let mut bg = resolve_color(&attrs.background(), palette, false, reverse);
 
-                let fg_color = resolve_color(&fg_attr, palette, true, reverse);
-                let bg_color = resolve_color(&bg_attr, palette, false, reverse);
+                // Apply selection highlighting (swap fg/bg)
+                let stable_row = start + row_idx;
+                if let Some(ref sel) = selection {
+                    if sel.contains(col_idx, stable_row) {
+                        std::mem::swap(&mut fg, &mut bg);
+                        // Ensure selected empty cells have visible bg
+                        let fg_f32 = srgba_to_f32(fg);
+                        let bg_f32 = srgba_to_f32(bg);
+                        if bg_f32 == default_bg {
+                            bg = palette.foreground;
+                            fg = palette.background;
+                        } else {
+                            // Use already-swapped values
+                            let _ = (fg_f32, bg_f32);
+                        }
+                    }
+                }
+
+                // Capture text under cursor for block cursor rendering
+                if row_idx == cursor.y as usize && col_idx == cursor.x {
+                    let text = cell_ref.str();
+                    if !text.is_empty() && text != " " {
+                        cursor_text = text.to_string();
+                        cursor_text_bold = attrs.intensity() == wezterm_term::Intensity::Bold;
+                    }
+                }
 
                 cells.push(CellData {
                     col: col_idx,
                     row: row_idx,
                     text: cell_ref.str().to_string(),
-                    fg: srgba_to_f32(fg_color),
-                    bg: srgba_to_f32(bg_color),
+                    fg: srgba_to_f32(fg),
+                    bg: srgba_to_f32(bg),
                     bold: attrs.intensity() == wezterm_term::Intensity::Bold,
                     italic: attrs.italic(),
                 });
@@ -81,7 +144,13 @@ impl TerminalSnapshot {
             cells,
             cursor: *cursor,
             default_bg,
-            cursor_color,
+            default_fg,
+            cursor_bg,
+            cursor_fg,
+            is_focused,
+            scroll_offset,
+            cursor_text,
+            cursor_text_bold,
         }
     }
 }
