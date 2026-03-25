@@ -59,9 +59,7 @@ fn get_cwd_from_pid(pid: u32) -> Option<String> {
     None
 }
 
-const DEFAULT_FONT_SIZE: f32 = 14.0;
-const MIN_FONT_SIZE: f32 = 8.0;
-const MAX_FONT_SIZE: f32 = 36.0;
+const FONT_SIZE: f32 = 14.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
 const TAB_BAR_HEIGHT: f32 = 24.0;
 
@@ -107,7 +105,7 @@ fn main() -> anyhow::Result<()> {
             #[cfg(feature = "gpu-renderer")]
             let gpu_renderer = _cc.wgpu_render_state.as_ref().map(|rs| {
                 tracing::info!("GPU renderer initialized (wgpu backend)");
-                GpuRenderer::new(rs.clone(), DEFAULT_FONT_SIZE)
+                GpuRenderer::new(rs.clone(), FONT_SIZE)
             });
 
             Ok(Box::new(AmuxApp {
@@ -128,7 +126,7 @@ fn main() -> anyhow::Result<()> {
                 last_click_pos: egui::Pos2::ZERO,
                 click_count: 0,
                 wants_exit: false,
-                font_size: DEFAULT_FONT_SIZE,
+                font_size: FONT_SIZE,
                 find_state: None,
                 copy_mode: None,
                 hovered_hyperlink: None,
@@ -625,22 +623,10 @@ impl AmuxApp {
                 return (cw, ch);
             }
         }
-        let font_id = egui::FontId::monospace(self.font_size);
+        let font_id = egui::FontId::monospace(FONT_SIZE);
         let cell_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
         let cell_height = ui.fonts(|f| f.row_height(&font_id));
         (cell_width, cell_height)
-    }
-
-    fn change_font_size(&mut self, delta: f32) {
-        self.font_size = (self.font_size + delta).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
-        self.apply_font_size_change();
-    }
-
-    fn apply_font_size_change(&mut self) {
-        #[cfg(feature = "gpu-renderer")]
-        if let Some(gpu) = &mut self.gpu_renderer {
-            gpu.set_font_size(self.font_size);
-        }
     }
 
     fn active_workspace(&self) -> &Workspace {
@@ -1971,26 +1957,6 @@ impl AmuxApp {
                 if modifiers.shift && *key == egui::Key::PageDown {
                     return self.do_scroll(1);
                 }
-
-                // Font size: Cmd+Plus / Cmd+Minus / Cmd+0
-                if is_cmd && !modifiers.shift && *key == egui::Key::Plus {
-                    self.change_font_size(1.0);
-                    return true;
-                }
-                if is_cmd && !modifiers.shift && *key == egui::Key::Equals {
-                    // Equals key often sends Plus on some keyboards
-                    self.change_font_size(1.0);
-                    return true;
-                }
-                if is_cmd && !modifiers.shift && *key == egui::Key::Minus {
-                    self.change_font_size(-1.0);
-                    return true;
-                }
-                if is_cmd && !modifiers.shift && *key == egui::Key::Num0 {
-                    self.font_size = DEFAULT_FONT_SIZE;
-                    self.apply_font_size_change();
-                    return true;
-                }
             }
         }
 
@@ -2017,7 +1983,7 @@ impl AmuxApp {
             if let Some(pane_id) = target_pane {
                 if let Some(managed) = self.panes.get_mut(&pane_id) {
                     let surface = managed.active_surface_mut();
-                    let font_id = egui::FontId::monospace(self.font_size);
+                    let font_id = egui::FontId::monospace(FONT_SIZE);
                     let cell_height = ctx.fonts(|f| f.row_height(&font_id));
 
                     surface.scroll_accum += -scroll_delta / cell_height;
@@ -4179,7 +4145,7 @@ fn render_pane(
     // Scroll indicator
     if scroll_offset > 0 {
         let indicator = format!("[+{}]", scroll_offset);
-        let indicator_font = egui::FontId::monospace(font_size * 0.8);
+        let indicator_font = egui::FontId::monospace(FONT_SIZE * 0.8);
         let text_color = egui::Color32::from_rgba_unmultiplied(255, 200, 50, 200);
         let bg_color = egui::Color32::from_rgba_unmultiplied(40, 40, 40, 180);
 
