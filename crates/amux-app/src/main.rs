@@ -490,6 +490,8 @@ struct FindState {
     current_match: usize,
     /// The pane this search applies to.
     pane_id: PaneId,
+    /// True on the first frame after opening, for initial focus.
+    just_opened: bool,
 }
 
 /// State for vi-style copy mode (scrollback navigation + visual selection).
@@ -1726,6 +1728,7 @@ impl AmuxApp {
                         matches: Vec::new(),
                         current_match: 0,
                         pane_id,
+                        just_opened: true,
                     });
                     return true;
                 }
@@ -2228,9 +2231,11 @@ impl AmuxApp {
         if let Some(managed) = self.panes.get(&focused_id) {
             let surface = managed.active_surface();
             let cursor = surface.pane.cursor();
-            let font_id = egui::FontId::monospace(self.font_size);
-            let (cell_w, cell_h) =
-                ctx.fonts(|f| (f.glyph_width(&font_id, 'M'), f.row_height(&font_id)));
+            let (dim_cols, dim_rows) = surface.pane.dimensions();
+            let cols = dim_cols.max(1) as f32;
+            let rows = dim_rows.max(1) as f32;
+            let cell_w = pane_rect.width() / cols;
+            let cell_h = (pane_rect.height() - TAB_BAR_HEIGHT) / rows;
             let x = pane_rect.min.x + cursor.x as f32 * cell_w;
             let y = pane_rect.min.y + TAB_BAR_HEIGHT + cursor.y as f32 * cell_h;
             ctx.send_viewport_cmd(egui::ViewportCommand::IMERect(egui::Rect::from_min_size(
@@ -2264,9 +2269,11 @@ impl AmuxApp {
         if let Some(managed) = self.panes.get(&focused_id) {
             let surface = managed.active_surface();
             let cursor = surface.pane.cursor();
-            let font_id = egui::FontId::monospace(self.font_size);
-            let (cell_w, cell_h) =
-                ctx.fonts(|f| (f.glyph_width(&font_id, 'M'), f.row_height(&font_id)));
+            let (dim_cols, dim_rows) = surface.pane.dimensions();
+            let cols = dim_cols.max(1) as f32;
+            let rows = dim_rows.max(1) as f32;
+            let cell_w = pane_rect.width() / cols;
+            let cell_h = (pane_rect.height() - TAB_BAR_HEIGHT) / rows;
             let x = pane_rect.min.x + cursor.x as f32 * cell_w;
             let y = pane_rect.min.y + TAB_BAR_HEIGHT + cursor.y as f32 * cell_h;
 
@@ -2394,7 +2401,13 @@ impl AmuxApp {
                                 }
                             });
                             if cmd_held && ctx.input(|i| i.pointer.primary_clicked()) {
-                                let _ = open::that(&url);
+                                // Only open safe URL schemes.
+                                if url.starts_with("http://")
+                                    || url.starts_with("https://")
+                                    || url.starts_with("mailto:")
+                                {
+                                    let _ = open::that(&url);
+                                }
                             }
                         }
                         break;
@@ -2608,9 +2621,12 @@ impl AmuxApp {
                     let response =
                         ui.text_edit_singleline(&mut self.find_state.as_mut().unwrap().query);
 
-                    // Auto-focus the text field
-                    if response.gained_focus() || !response.has_focus() {
-                        response.request_focus();
+                    // Auto-focus the text field on first show
+                    if let Some(fs) = self.find_state.as_mut() {
+                        if fs.just_opened {
+                            response.request_focus();
+                            fs.just_opened = false;
+                        }
                     }
 
                     // Enter = next, Shift+Enter = prev
@@ -3177,6 +3193,7 @@ impl AmuxApp {
                     egui::ImeEvent::Commit(text) => {
                         surface.scroll_offset = 0;
                         surface.scroll_accum = 0.0;
+                        self.ime_preedit = None;
                         let _ = surface.pane.write_bytes(text.as_bytes());
                     }
                     egui::ImeEvent::Preedit(text) => {

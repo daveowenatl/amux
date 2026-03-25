@@ -383,25 +383,61 @@ impl CallbackTrait for TerminalPaintCallback {
                         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                         view_formats: &[],
                     });
-                    queue.write_texture(
-                        wgpu::TexelCopyTextureInfo {
-                            texture: &texture,
-                            mip_level: 0,
-                            origin: wgpu::Origin3d::ZERO,
-                            aspect: wgpu::TextureAspect::All,
-                        },
-                        &decoded.data,
-                        wgpu::TexelCopyBufferLayout {
-                            offset: 0,
-                            bytes_per_row: Some(4 * decoded.width),
-                            rows_per_image: Some(decoded.height),
-                        },
-                        wgpu::Extent3d {
-                            width: decoded.width,
-                            height: decoded.height,
-                            depth_or_array_layers: 1,
-                        },
-                    );
+                    // Pad rows to wgpu's required alignment if needed.
+                    let unpadded_bpr = 4 * decoded.width;
+                    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+                    let padded_bpr = unpadded_bpr.div_ceil(align) * align;
+
+                    if unpadded_bpr == padded_bpr {
+                        queue.write_texture(
+                            wgpu::TexelCopyTextureInfo {
+                                texture: &texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d::ZERO,
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            &decoded.data,
+                            wgpu::TexelCopyBufferLayout {
+                                offset: 0,
+                                bytes_per_row: Some(unpadded_bpr),
+                                rows_per_image: Some(decoded.height),
+                            },
+                            wgpu::Extent3d {
+                                width: decoded.width,
+                                height: decoded.height,
+                                depth_or_array_layers: 1,
+                            },
+                        );
+                    } else {
+                        let mut padded = vec![0u8; (padded_bpr * decoded.height) as usize];
+                        let src_stride = unpadded_bpr as usize;
+                        let dst_stride = padded_bpr as usize;
+                        for row in 0..decoded.height as usize {
+                            padded[row * dst_stride..row * dst_stride + src_stride]
+                                .copy_from_slice(
+                                    &decoded.data[row * src_stride..row * src_stride + src_stride],
+                                );
+                        }
+                        queue.write_texture(
+                            wgpu::TexelCopyTextureInfo {
+                                texture: &texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d::ZERO,
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            &padded,
+                            wgpu::TexelCopyBufferLayout {
+                                offset: 0,
+                                bytes_per_row: Some(padded_bpr),
+                                rows_per_image: Some(decoded.height),
+                            },
+                            wgpu::Extent3d {
+                                width: decoded.width,
+                                height: decoded.height,
+                                depth_or_array_layers: 1,
+                            },
+                        );
+                    }
                     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
                     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("image_bind_group"),

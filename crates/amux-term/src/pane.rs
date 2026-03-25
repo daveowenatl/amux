@@ -281,8 +281,7 @@ impl TerminalPane {
         self.seqno
     }
 
-    /// Read the visible screen content as a string (lines joined by newlines).
-    /// Read lines from the terminal with optional ANSI formatting.
+    /// Read lines from the scrollback or visible screen, with optional ANSI formatting.
     ///
     /// `line_spec` formats:
     /// - `"1-50"` — lines 1 through 50 (1-based, from top of scrollback)
@@ -293,8 +292,10 @@ impl TerminalPane {
         let total = screen.scrollback_rows();
         let (cols, _) = self.dimensions();
 
-        // Parse line spec into (start_phys, end_phys) range (0-based)
-        let (start, end) = if let Some(rest) = line_spec.strip_prefix('-') {
+        // Parse line spec into (start_phys, end_phys) range (0-based), clamped to valid bounds.
+        let (start, end) = if total == 0 {
+            (0, 0)
+        } else if let Some(rest) = line_spec.strip_prefix('-') {
             // "-N" means last N lines
             let n: usize = rest.parse().unwrap_or(total);
             (total.saturating_sub(n), total)
@@ -302,12 +303,19 @@ impl TerminalPane {
             // "A-B" means lines A through B (1-based)
             let a: usize = a.parse().unwrap_or(1);
             let b: usize = b.parse().unwrap_or(total);
-            ((a.saturating_sub(1)).min(total), b.min(total))
+            let s = (a.saturating_sub(1)).min(total);
+            let e = b.min(total);
+            // Normalize reversed ranges
+            if s >= e {
+                (0, 0)
+            } else {
+                (s, e)
+            }
         } else {
             // Single line number
             let n: usize = line_spec.parse().unwrap_or(1);
             let idx = (n.saturating_sub(1)).min(total.saturating_sub(1));
-            (idx, idx + 1)
+            (idx, (idx + 1).min(total))
         };
 
         if ansi {
