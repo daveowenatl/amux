@@ -6,6 +6,8 @@ use wezterm_term::CursorPosition;
 /// Built on the main thread (where the terminal screen borrow is held),
 /// then moved into the paint callback which must be `Send + Sync`.
 pub struct TerminalSnapshot {
+    pub pane_id: u64,
+    pub seqno: usize,
     pub cols: usize,
     pub rows: usize,
     pub cells: Vec<CellData>,
@@ -19,6 +21,8 @@ pub struct TerminalSnapshot {
     /// Text under the cursor (for block cursor rendering).
     pub cursor_text: String,
     pub cursor_text_bold: bool,
+    /// Whether a selection is active (used for dirty tracking).
+    pub has_selection: bool,
 }
 
 /// Data for a single terminal cell.
@@ -71,7 +75,10 @@ impl TerminalSnapshot {
         scroll_offset: usize,
         is_focused: bool,
         selection: Option<SelectionRange>,
+        pane_id: u64,
+        seqno: usize,
     ) -> Self {
+        let has_selection = selection.is_some();
         let default_bg = srgba_to_f32(palette.background);
         let default_fg = srgba_to_f32(palette.foreground);
         let cursor_bg = srgba_to_f32(palette.cursor_bg);
@@ -139,6 +146,8 @@ impl TerminalSnapshot {
         }
 
         Self {
+            pane_id,
+            seqno,
             cols,
             rows,
             cells,
@@ -151,6 +160,7 @@ impl TerminalSnapshot {
             scroll_offset,
             cursor_text,
             cursor_text_bold,
+            has_selection,
         }
     }
 }

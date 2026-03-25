@@ -1137,6 +1137,8 @@ impl AmuxApp {
             selection.as_ref(),
             #[cfg(feature = "gpu-renderer")]
             self.gpu_renderer.as_ref(),
+            #[cfg(feature = "gpu-renderer")]
+            pane_id,
         );
 
         // Notification ring + flash animation (matching cmux)
@@ -3199,6 +3201,7 @@ fn line_text_string(pane: &TerminalPane, stable_row: usize, cols: usize) -> Stri
 
 // --- Rendering ---
 
+#[allow(clippy::too_many_arguments)]
 fn render_pane(
     ui: &mut egui::Ui,
     pane: &mut TerminalPane,
@@ -3207,6 +3210,7 @@ fn render_pane(
     scroll_offset: usize,
     selection: Option<&SelectionState>,
     #[cfg(feature = "gpu-renderer")] gpu_renderer: Option<&GpuRenderer>,
+    #[cfg(feature = "gpu-renderer")] pane_id: u64,
 ) {
     // GPU renderer path: build snapshot, emit a paint callback, and return early.
     #[cfg(feature = "gpu-renderer")]
@@ -3222,6 +3226,7 @@ fn render_pane(
             let (start, end) = sel.normalized();
             amux_render_gpu::snapshot::SelectionRange { start, end }
         });
+        let seqno = pane.current_seqno();
         let snapshot = amux_render_gpu::TerminalSnapshot::from_screen(
             screen,
             &palette,
@@ -3231,6 +3236,8 @@ fn render_pane(
             scroll_offset,
             is_focused,
             gpu_selection,
+            pane_id,
+            seqno,
         );
         let pixels_per_point = ui.ctx().pixels_per_point();
         let callback = gpu.paint_callback(rect, snapshot, pixels_per_point);

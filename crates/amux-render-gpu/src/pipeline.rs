@@ -30,14 +30,15 @@ struct QuadVertex {
 }
 
 /// Background rendering pipeline: instanced colored quads for cell backgrounds.
+///
+/// Instance buffers are stored per-pane in `PaneRenderState`, not here.
+/// This struct holds the shared render pipeline, vertex/index buffers, and viewport uniform.
 pub struct BackgroundPipeline {
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     viewport_buffer: wgpu::Buffer,
     viewport_bind_group: wgpu::BindGroup,
-    instance_buffer: wgpu::Buffer,
-    instance_capacity: usize,
 }
 
 impl BackgroundPipeline {
@@ -154,36 +155,17 @@ impl BackgroundPipeline {
             }],
         });
 
-        // Pre-allocate instance buffer for a typical terminal (200 cols × 50 rows)
-        let initial_capacity = 10_000;
-        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bg_instance_buffer"),
-            size: (initial_capacity * std::mem::size_of::<CellBgInstance>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
         Self {
             pipeline,
             vertex_buffer,
             index_buffer,
             viewport_buffer,
             viewport_bind_group,
-            instance_buffer,
-            instance_capacity: initial_capacity,
         }
     }
 
-    /// Upload instance data and viewport size. Returns the number of instances.
-    pub fn upload(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        instances: &[CellBgInstance],
-        viewport_width: f32,
-        viewport_height: f32,
-    ) -> u32 {
-        // Update viewport uniform
+    /// Update the viewport uniform.
+    pub fn upload_viewport(&self, queue: &wgpu::Queue, viewport_width: f32, viewport_height: f32) {
         queue.write_buffer(
             &self.viewport_buffer,
             0,
@@ -192,39 +174,22 @@ impl BackgroundPipeline {
                 _pad: [0.0; 2],
             }]),
         );
-
-        if instances.is_empty() {
-            return 0;
-        }
-
-        // Grow instance buffer if needed
-        if instances.len() > self.instance_capacity {
-            self.instance_capacity = instances.len().next_power_of_two();
-            self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("bg_instance_buffer"),
-                size: (self.instance_capacity * std::mem::size_of::<CellBgInstance>()) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-
-        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
-        instances.len() as u32
     }
 
-    /// Record draw commands into a render pass.
-    ///
-    /// The `'static` lifetime on the render pass is required by egui_wgpu's
-    /// `CallbackTrait::paint()`. We use `wgpu::RenderPass::set_pipeline` etc.
-    /// which internally hold references via `Arc`, so this is safe.
-    pub fn draw(&self, render_pass: &mut wgpu::RenderPass<'static>, instance_count: u32) {
+    /// Record draw commands using a per-pane instance buffer.
+    pub fn draw(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        instance_buffer: &wgpu::Buffer,
+        instance_count: u32,
+    ) {
         if instance_count == 0 {
             return;
         }
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, &self.viewport_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+        render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         render_pass.draw_indexed(0..6, 0, 0..instance_count);
     }
@@ -251,6 +216,8 @@ pub struct CellFgInstance {
 }
 
 /// Foreground rendering pipeline: instanced textured quads for glyphs.
+///
+/// Instance buffers are stored per-pane in `PaneRenderState`, not here.
 pub struct ForegroundPipeline {
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
@@ -259,8 +226,6 @@ pub struct ForegroundPipeline {
     viewport_bind_group: wgpu::BindGroup,
     atlas_bind_group_layout: wgpu::BindGroupLayout,
     atlas_bind_group: Option<wgpu::BindGroup>,
-    instance_buffer: wgpu::Buffer,
-    instance_capacity: usize,
 }
 
 impl ForegroundPipeline {
@@ -404,14 +369,6 @@ impl ForegroundPipeline {
             }],
         });
 
-        let initial_capacity = 10_000;
-        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("fg_instance_buffer"),
-            size: (initial_capacity * std::mem::size_of::<CellFgInstance>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
         Self {
             pipeline,
             vertex_buffer,
@@ -420,8 +377,6 @@ impl ForegroundPipeline {
             viewport_bind_group,
             atlas_bind_group_layout,
             atlas_bind_group: None,
-            instance_buffer,
-            instance_capacity: initial_capacity,
         }
     }
 
@@ -448,15 +403,8 @@ impl ForegroundPipeline {
         }));
     }
 
-    /// Upload instance data and viewport size. Returns the number of instances.
-    pub fn upload(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        instances: &[CellFgInstance],
-        viewport_width: f32,
-        viewport_height: f32,
-    ) -> u32 {
+    /// Update the viewport uniform.
+    pub fn upload_viewport(&self, queue: &wgpu::Queue, viewport_width: f32, viewport_height: f32) {
         queue.write_buffer(
             &self.viewport_buffer,
             0,
@@ -465,27 +413,15 @@ impl ForegroundPipeline {
                 _pad: [0.0; 2],
             }]),
         );
-
-        if instances.is_empty() {
-            return 0;
-        }
-
-        if instances.len() > self.instance_capacity {
-            self.instance_capacity = instances.len().next_power_of_two();
-            self.instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("fg_instance_buffer"),
-                size: (self.instance_capacity * std::mem::size_of::<CellFgInstance>()) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-
-        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
-        instances.len() as u32
     }
 
-    /// Record draw commands into a render pass.
-    pub fn draw(&self, render_pass: &mut wgpu::RenderPass<'static>, instance_count: u32) {
+    /// Record draw commands using a per-pane instance buffer.
+    pub fn draw(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        instance_buffer: &wgpu::Buffer,
+        instance_count: u32,
+    ) {
         if instance_count == 0 {
             return;
         }
@@ -496,8 +432,29 @@ impl ForegroundPipeline {
         render_pass.set_bind_group(0, &self.viewport_bind_group, &[]);
         render_pass.set_bind_group(1, atlas_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+        render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         render_pass.draw_indexed(0..6, 0, 0..instance_count);
     }
+}
+
+/// Create or grow an instance buffer if needed. Returns the buffer and its capacity.
+pub fn ensure_instance_buffer<T: Pod>(
+    device: &wgpu::Device,
+    existing: Option<&wgpu::Buffer>,
+    existing_capacity: usize,
+    required: usize,
+    label: &str,
+) -> Option<(wgpu::Buffer, usize)> {
+    if required <= existing_capacity && existing.is_some() {
+        return None; // existing buffer is fine
+    }
+    let new_capacity = required.max(1024).next_power_of_two();
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: (new_capacity * std::mem::size_of::<T>()) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    Some((buffer, new_capacity))
 }

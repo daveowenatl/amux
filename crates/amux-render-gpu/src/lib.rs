@@ -59,9 +59,8 @@ impl GpuRenderer {
                 font_system,
                 swash_cache,
                 metrics,
-                bg_instance_count: 0,
-                fg_instance_count: 0,
                 atlas_bind_group_dirty: true,
+                pane_states: std::collections::HashMap::new(),
             });
 
         Self {
@@ -85,7 +84,9 @@ impl GpuRenderer {
         let phys_cell_w = self.cell_width * pixels_per_point;
         let phys_cell_h = self.cell_height * pixels_per_point;
 
+        let pane_id = snapshot.pane_id;
         let callback = TerminalPaintCallback {
+            pane_id,
             snapshot,
             phys_rect: PhysRect {
                 x: rect.min.x * pixels_per_point,

@@ -1,11 +1,86 @@
+use std::collections::HashMap;
+
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};
 use egui_wgpu::wgpu;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use wezterm_surface::{CursorShape, CursorVisibility};
 
 use crate::atlas::GlyphAtlas;
-use crate::pipeline::{BackgroundPipeline, CellBgInstance, CellFgInstance, ForegroundPipeline};
+use crate::pipeline::{
+    ensure_instance_buffer, BackgroundPipeline, CellBgInstance, CellFgInstance, ForegroundPipeline,
+};
 use crate::snapshot::TerminalSnapshot;
+
+/// Per-pane GPU state: instance buffers and dirty-tracking fingerprint.
+pub struct PaneRenderState {
+    // Dirty-tracking fields
+    seqno: usize,
+    cursor_x: usize,
+    cursor_y: i64,
+    scroll_offset: usize,
+    is_focused: bool,
+    has_selection: bool,
+
+    // Per-pane GPU instance buffers
+    pub bg_buffer: wgpu::Buffer,
+    pub bg_capacity: usize,
+    pub bg_count: u32,
+    pub fg_buffer: wgpu::Buffer,
+    pub fg_capacity: usize,
+    pub fg_count: u32,
+}
+
+impl PaneRenderState {
+    fn new(device: &wgpu::Device) -> Self {
+        let initial_capacity = 1024;
+        let bg_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pane_bg_instance_buffer"),
+            size: (initial_capacity * std::mem::size_of::<CellBgInstance>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let fg_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pane_fg_instance_buffer"),
+            size: (initial_capacity * std::mem::size_of::<CellFgInstance>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Self {
+            seqno: 0,
+            cursor_x: 0,
+            cursor_y: 0,
+            scroll_offset: 0,
+            is_focused: false,
+            has_selection: false,
+            bg_buffer,
+            bg_capacity: initial_capacity,
+            bg_count: 0,
+            fg_buffer,
+            fg_capacity: initial_capacity,
+            fg_count: 0,
+        }
+    }
+
+    /// Check if the pane content has changed since last render.
+    fn is_dirty(&self, snap: &TerminalSnapshot) -> bool {
+        self.seqno != snap.seqno
+            || self.cursor_x != snap.cursor.x
+            || self.cursor_y != snap.cursor.y
+            || self.scroll_offset != snap.scroll_offset
+            || self.is_focused != snap.is_focused
+            || self.has_selection != snap.has_selection
+    }
+
+    /// Update the fingerprint to match the current snapshot.
+    fn update_fingerprint(&mut self, snap: &TerminalSnapshot) {
+        self.seqno = snap.seqno;
+        self.cursor_x = snap.cursor.x;
+        self.cursor_y = snap.cursor.y;
+        self.scroll_offset = snap.scroll_offset;
+        self.is_focused = snap.is_focused;
+        self.has_selection = snap.has_selection;
+    }
+}
 
 /// Resources stored in egui's `CallbackResources` for the terminal renderer.
 pub struct TerminalGpuResources {
@@ -15,13 +90,14 @@ pub struct TerminalGpuResources {
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
     pub metrics: Metrics,
-    pub bg_instance_count: u32,
-    pub fg_instance_count: u32,
     pub atlas_bind_group_dirty: bool,
+    /// Per-pane render state (instance buffers + dirty tracking).
+    pub pane_states: HashMap<u64, PaneRenderState>,
 }
 
 /// Paint callback for a single terminal pane.
 pub struct TerminalPaintCallback {
+    pub pane_id: u64,
     pub snapshot: TerminalSnapshot,
     pub phys_rect: PhysRect,
     pub cell_width: f32,
@@ -48,6 +124,26 @@ impl CallbackTrait for TerminalPaintCallback {
         let resources = callback_resources
             .get_mut::<TerminalGpuResources>()
             .expect("TerminalGpuResources not initialized");
+
+        let viewport_width = screen_descriptor.size_in_pixels[0] as f32;
+        let viewport_height = screen_descriptor.size_in_pixels[1] as f32;
+        resources
+            .bg_pipeline
+            .upload_viewport(queue, viewport_width, viewport_height);
+        resources
+            .fg_pipeline
+            .upload_viewport(queue, viewport_width, viewport_height);
+
+        // Get or create per-pane state.
+        let pane_state = resources
+            .pane_states
+            .entry(self.pane_id)
+            .or_insert_with(|| PaneRenderState::new(device));
+
+        // Skip expensive instance rebuild if nothing changed.
+        if !pane_state.is_dirty(&self.snapshot) {
+            return Vec::new();
+        }
 
         let snap = &self.snapshot;
 
@@ -125,13 +221,11 @@ impl CallbackTrait for TerminalPaintCallback {
                     });
                 }
                 CursorShape::Default | CursorShape::BlinkingBlock | CursorShape::SteadyBlock => {
-                    // Block cursor background
                     bg_instances.push(CellBgInstance {
                         pos: [cx, cy],
                         size: [self.cell_width, self.cell_height],
                         color: snap.cursor_bg,
                     });
-                    // Re-draw the character under cursor with cursor foreground color
                     if !snap.cursor_text.is_empty() {
                         shape_and_rasterize(
                             &snap.cursor_text,
@@ -161,24 +255,51 @@ impl CallbackTrait for TerminalPaintCallback {
             resources.atlas_bind_group_dirty = false;
         }
 
-        let viewport_width = screen_descriptor.size_in_pixels[0] as f32;
-        let viewport_height = screen_descriptor.size_in_pixels[1] as f32;
+        // --- Upload to per-pane buffers ---
+        // Re-borrow pane_state after releasing the mutable borrow on resources.
+        let pane_state = resources.pane_states.get_mut(&self.pane_id).unwrap();
 
-        resources.bg_instance_count = resources.bg_pipeline.upload(
+        // Grow bg buffer if needed.
+        if let Some((buf, cap)) = ensure_instance_buffer::<CellBgInstance>(
             device,
-            queue,
-            &bg_instances,
-            viewport_width,
-            viewport_height,
-        );
+            Some(&pane_state.bg_buffer),
+            pane_state.bg_capacity,
+            bg_instances.len(),
+            "pane_bg_instance_buffer",
+        ) {
+            pane_state.bg_buffer = buf;
+            pane_state.bg_capacity = cap;
+        }
+        if !bg_instances.is_empty() {
+            queue.write_buffer(
+                &pane_state.bg_buffer,
+                0,
+                bytemuck::cast_slice(&bg_instances),
+            );
+        }
+        pane_state.bg_count = bg_instances.len() as u32;
 
-        resources.fg_instance_count = resources.fg_pipeline.upload(
+        // Grow fg buffer if needed.
+        if let Some((buf, cap)) = ensure_instance_buffer::<CellFgInstance>(
             device,
-            queue,
-            &fg_instances,
-            viewport_width,
-            viewport_height,
-        );
+            Some(&pane_state.fg_buffer),
+            pane_state.fg_capacity,
+            fg_instances.len(),
+            "pane_fg_instance_buffer",
+        ) {
+            pane_state.fg_buffer = buf;
+            pane_state.fg_capacity = cap;
+        }
+        if !fg_instances.is_empty() {
+            queue.write_buffer(
+                &pane_state.fg_buffer,
+                0,
+                bytemuck::cast_slice(&fg_instances),
+            );
+        }
+        pane_state.fg_count = fg_instances.len() as u32;
+
+        pane_state.update_fingerprint(&self.snapshot);
 
         Vec::new()
     }
@@ -193,12 +314,16 @@ impl CallbackTrait for TerminalPaintCallback {
             .get::<TerminalGpuResources>()
             .expect("TerminalGpuResources not initialized");
 
+        let Some(pane_state) = resources.pane_states.get(&self.pane_id) else {
+            return;
+        };
+
         resources
             .bg_pipeline
-            .draw(render_pass, resources.bg_instance_count);
+            .draw(render_pass, &pane_state.bg_buffer, pane_state.bg_count);
         resources
             .fg_pipeline
-            .draw(render_pass, resources.fg_instance_count);
+            .draw(render_pass, &pane_state.fg_buffer, pane_state.fg_count);
     }
 }
 
