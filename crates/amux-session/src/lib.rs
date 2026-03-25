@@ -32,6 +32,8 @@ pub struct SavedWorkspace {
     #[serde(default)]
     pub zoomed: Option<u64>,
     pub panes: HashMap<u64, SavedManagedPane>,
+    #[serde(default)]
+    pub color: Option<[u8; 4]>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -183,6 +185,7 @@ mod tests {
                 focused_pane: 0,
                 zoomed: None,
                 panes,
+                color: None,
             }],
             active_workspace_idx: 0,
             next_pane_id: 1,

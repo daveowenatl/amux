@@ -61,12 +61,136 @@ fn get_cwd_from_pid(pid: u32) -> Option<String> {
     None
 }
 
-const FONT_SIZE: f32 = 14.0;
+const DEFAULT_FONT_SIZE: f32 = 12.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
 const TAB_BAR_HEIGHT: f32 = 24.0;
 
+// ---------------------------------------------------------------------------
+// App config (loaded from ~/.config/amux/config.toml)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(default)]
+struct AppConfig {
+    font_size: f32,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            font_size: DEFAULT_FONT_SIZE,
+        }
+    }
+}
+
+fn load_app_config() -> AppConfig {
+    let config_path = if cfg!(target_os = "windows") {
+        dirs::config_dir().map(|d| d.join("amux").join("config.toml"))
+    } else {
+        dirs::home_dir().map(|d| d.join(".config").join("amux").join("config.toml"))
+    };
+
+    if let Some(path) = config_path {
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => match toml::from_str::<AppConfig>(&contents) {
+                Ok(config) => {
+                    tracing::info!("Loaded config from {}", path.display());
+                    return config;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to parse {}: {}", path.display(), e);
+                }
+            },
+            Err(_) => {
+                tracing::debug!("No config file at {}", path.display());
+            }
+        }
+    }
+
+    AppConfig::default()
+}
+
+/// Load system fonts as fallbacks to egui's font families.
+/// This provides coverage for braille patterns, geometric shapes, and other symbols
+/// that egui's bundled Hack font doesn't include.
+fn install_system_font_fallback(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let mut loaded = Vec::new();
+
+    // Platform-specific font candidates: (path, name, is_symbol_font)
+    // We try to load a monospace font + a symbols font for maximum coverage.
+    let candidates: &[(&str, &str, bool)] = if cfg!(target_os = "macos") {
+        &[
+            // SF Mono: single .ttf with good Unicode coverage
+            ("/System/Library/Fonts/SFNSMono.ttf", "sf_mono", false),
+            // Apple Symbols: broad Unicode symbol coverage
+            (
+                "/System/Library/Fonts/Apple Symbols.ttf",
+                "apple_symbols",
+                true,
+            ),
+            // Supplemental Andale Mono as another option
+            (
+                "/System/Library/Fonts/Supplemental/Andale Mono.ttf",
+                "andale_mono",
+                false,
+            ),
+        ]
+    } else if cfg!(target_os = "windows") {
+        &[
+            ("C:\\Windows\\Fonts\\consola.ttf", "consolas", false),
+            ("C:\\Windows\\Fonts\\segmdl2.ttf", "segoe_symbols", true),
+        ]
+    } else {
+        &[
+            (
+                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                "dejavu_mono",
+                false,
+            ),
+            (
+                "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+                "dejavu_mono",
+                false,
+            ),
+        ]
+    };
+
+    for &(path, name, _is_symbol) in candidates {
+        if fonts.font_data.contains_key(name) {
+            continue;
+        }
+        if let Ok(data) = std::fs::read(path) {
+            fonts
+                .font_data
+                .insert(name.to_owned(), egui::FontData::from_owned(data).into());
+            loaded.push(name);
+        }
+    }
+
+    if loaded.is_empty() {
+        tracing::debug!("No system font fallbacks found");
+        return;
+    }
+
+    // Add all loaded fonts as fallbacks to both families
+    for family_key in [egui::FontFamily::Monospace, egui::FontFamily::Proportional] {
+        if let Some(family) = fonts.families.get_mut(&family_key) {
+            for name in &loaded {
+                family.push((*name).to_owned());
+            }
+        }
+    }
+
+    tracing::info!("Loaded font fallbacks: {:?}", loaded);
+    ctx.set_fonts(fonts);
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+
+    let app_config = load_app_config();
+    let font_size = app_config.font_size;
 
     let (ipc_rx, ipc_addr) = amux_ipc::start_server()?;
     tracing::info!("IPC server: {}", ipc_addr);
@@ -104,10 +228,13 @@ fn main() -> anyhow::Result<()> {
         "amux",
         options,
         Box::new(move |_cc| {
+            // Add system monospace font as fallback for braille/symbol coverage
+            install_system_font_fallback(&_cc.egui_ctx);
+
             #[cfg(feature = "gpu-renderer")]
             let gpu_renderer = _cc.wgpu_render_state.as_ref().map(|rs| {
                 tracing::info!("GPU renderer initialized (wgpu backend)");
-                GpuRenderer::new(rs.clone(), FONT_SIZE)
+                GpuRenderer::new(rs.clone(), font_size)
             });
 
             Ok(Box::new(AmuxApp {
@@ -128,12 +255,13 @@ fn main() -> anyhow::Result<()> {
                 last_click_pos: egui::Pos2::ZERO,
                 click_count: 0,
                 wants_exit: false,
-                font_size: FONT_SIZE,
+                font_size,
                 find_state: None,
                 copy_mode: None,
                 hovered_hyperlink: None,
                 ime_preedit: None,
                 selection_changed: false,
+                tab_drag: None,
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
             }))
@@ -182,6 +310,7 @@ fn fresh_startup(
         zoomed: None,
         dragging_divider: None,
         last_pane_sizes: HashMap::new(),
+        color: None,
     };
 
     Ok(StartupState {
@@ -196,6 +325,7 @@ fn fresh_startup(
             width: DEFAULT_SIDEBAR_WIDTH,
             renaming: None,
             rename_buf: String::new(),
+            drag: None,
         },
         notifications: NotificationStore::new(),
     })
@@ -290,6 +420,7 @@ fn restore_session(
             zoomed: saved_ws.zoomed.filter(|z| panes.contains_key(z)),
             dragging_divider: None,
             last_pane_sizes: HashMap::new(),
+            color: saved_ws.color,
         });
     }
 
@@ -310,6 +441,7 @@ fn restore_session(
         width: session.sidebar.width,
         renaming: None,
         rename_buf: String::new(),
+        drag: None,
     };
 
     // Restore notifications (without Instant-dependent fields)
@@ -427,6 +559,8 @@ pub(crate) struct Workspace {
     pub(crate) zoomed: Option<PaneId>,
     pub(crate) dragging_divider: Option<DragState>,
     pub(crate) last_pane_sizes: HashMap<PaneId, (usize, usize)>,
+    /// Optional workspace color for sidebar indicator.
+    pub(crate) color: Option<[u8; 4]>,
 }
 
 pub(crate) struct SidebarState {
@@ -436,6 +570,19 @@ pub(crate) struct SidebarState {
     pub(crate) renaming: Option<usize>,
     /// Buffer for the in-progress rename text.
     pub(crate) rename_buf: String,
+    /// Drag reorder state.
+    pub(crate) drag: Option<SidebarDragState>,
+}
+
+pub(crate) struct SidebarDragState {
+    /// Index of workspace being dragged.
+    pub(crate) source_idx: usize,
+    /// Current pointer Y position.
+    pub(crate) current_y: f32,
+    /// Computed drop target index.
+    pub(crate) drop_target_idx: usize,
+    /// Y midpoints of each row for computing drop position.
+    pub(crate) row_midpoints: Vec<f32>,
 }
 
 struct DragState {
@@ -617,8 +764,16 @@ struct AmuxApp {
     ime_preedit: Option<String>,
     /// Set during update() when selection changes; used for smart repaint.
     selection_changed: bool,
+    /// Drag state for tab reordering within a pane.
+    tab_drag: Option<TabDragState>,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
+}
+
+struct TabDragState {
+    pane_id: PaneId,
+    source_idx: usize,
+    drop_target_idx: usize,
 }
 
 impl AmuxApp {
@@ -633,7 +788,7 @@ impl AmuxApp {
                 return (cw, ch);
             }
         }
-        let font_id = egui::FontId::monospace(FONT_SIZE);
+        let font_id = egui::FontId::monospace(self.font_size);
         let cell_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
         let cell_height = ui.fonts(|f| f.row_height(&font_id));
         (cell_width, cell_height)
@@ -742,6 +897,7 @@ impl AmuxApp {
                 focused_pane: ws.focused_pane,
                 zoomed: ws.zoomed,
                 panes: saved_panes,
+                color: ws.color,
             });
         }
 
@@ -926,6 +1082,30 @@ impl eframe::App for AmuxApp {
                             self.notifications.mark_workspace_read(&pane_ids);
                         }
                     }
+                    sidebar::SidebarAction::ReorderWorkspace(from, to) => {
+                        if from < self.workspaces.len() && to < self.workspaces.len() {
+                            let ws = self.workspaces.remove(from);
+                            let to = to.min(self.workspaces.len());
+                            self.workspaces.insert(to, ws);
+                            // Adjust active index to follow the moved workspace
+                            if self.active_workspace_idx == from {
+                                self.active_workspace_idx = to;
+                            } else if from < self.active_workspace_idx
+                                && to >= self.active_workspace_idx
+                            {
+                                self.active_workspace_idx -= 1;
+                            } else if from > self.active_workspace_idx
+                                && to <= self.active_workspace_idx
+                            {
+                                self.active_workspace_idx += 1;
+                            }
+                        }
+                    }
+                    sidebar::SidebarAction::SetWorkspaceColor(idx, color) => {
+                        if idx < self.workspaces.len() {
+                            self.workspaces[idx].color = color;
+                        }
+                    }
                 }
             }
         }
@@ -1103,23 +1283,29 @@ impl AmuxApp {
             let tab_font = egui::FontId::proportional(11.0);
             let mut x = tab_rect.min.x + 2.0;
 
+            // Get pointer state for hover detection and drag
+            let hover_pos = ui.input(|i| i.pointer.hover_pos());
+            let any_pressed = ui.input(|i| i.pointer.any_pressed());
+            let any_released = ui.input(|i| i.pointer.any_released());
+            let primary_down = ui.input(|i| i.pointer.primary_down());
+            let interact_pos = ui.input(|i| i.pointer.interact_pos());
+
             // Track actions to apply after rendering
             let mut switch_to: Option<usize> = None;
             let mut close_tab: Option<usize> = None;
+            let mut tab_rects: Vec<egui::Rect> = Vec::new();
+            let mut drag_start: Option<usize> = None;
 
             for (idx, surface) in managed.surfaces.iter().enumerate() {
                 let is_active = idx == active_idx;
                 let raw_title = surface.pane.title();
                 let label = if raw_title.is_empty() {
-                    format!("tab {}", idx + 1)
+                    format!("tab {}", surface.id)
+                } else if raw_title.chars().count() > 20 {
+                    let prefix: String = raw_title.chars().take(17).collect();
+                    format!("{prefix}...")
                 } else {
-                    // Truncate long titles (char-safe for UTF-8)
-                    if raw_title.chars().count() > 20 {
-                        let prefix: String = raw_title.chars().take(17).collect();
-                        format!("{prefix}...")
-                    } else {
-                        raw_title.to_string()
-                    }
+                    raw_title.to_string()
                 };
 
                 let text_galley =
@@ -1131,11 +1317,13 @@ impl AmuxApp {
                     egui::pos2(x, tab_rect.min.y),
                     egui::vec2(tab_w, TAB_BAR_HEIGHT),
                 );
+                tab_rects.push(this_tab);
+
+                let tab_hovered = hover_pos.is_some_and(|p| this_tab.contains(p));
 
                 // Tab background
                 if is_active {
                     painter.rect_filled(this_tab, 0.0, egui::Color32::from_gray(50));
-                    // Active underline
                     let underline = egui::Rect::from_min_size(
                         egui::pos2(x, tab_rect.max.y - 2.0),
                         egui::vec2(tab_w, 2.0),
@@ -1156,31 +1344,106 @@ impl AmuxApp {
                     text_color,
                 );
 
-                // Close button
-                let close_rect = egui::Rect::from_center_size(
-                    egui::pos2(x + tab_w - 10.0, tab_rect.center().y),
-                    egui::vec2(12.0, 12.0),
-                );
-                painter.text(
-                    close_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "x",
-                    egui::FontId::proportional(9.0),
-                    egui::Color32::from_gray(90),
-                );
+                // Close button — only visible on hover
+                let close_center = egui::pos2(x + tab_w - 10.0, tab_rect.center().y);
+                let close_rect = egui::Rect::from_center_size(close_center, egui::vec2(12.0, 12.0));
+                if tab_hovered {
+                    let close_hovered = hover_pos.is_some_and(|p| close_rect.contains(p));
+                    let close_color = if close_hovered {
+                        egui::Color32::WHITE
+                    } else {
+                        egui::Color32::from_gray(90)
+                    };
+                    sidebar::paint_close_x(painter, close_center, 3.5, close_color);
+                }
 
                 // Hit testing
-                if ui.input(|i| i.pointer.any_pressed()) {
-                    if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                        if close_rect.contains(pos) {
+                if any_pressed {
+                    if let Some(pos) = interact_pos {
+                        if tab_hovered && close_rect.contains(pos) {
                             close_tab = Some(idx);
                         } else if this_tab.contains(pos) && !is_active {
                             switch_to = Some(idx);
+                        }
+                        // Start tab drag
+                        if this_tab.contains(pos)
+                            && !close_rect.contains(pos)
+                            && self.tab_drag.is_none()
+                        {
+                            drag_start = Some(idx);
                         }
                     }
                 }
 
                 x += tab_w + 1.0;
+            }
+
+            // Tab drag reorder logic
+            if let Some(src) = drag_start {
+                self.tab_drag = Some(TabDragState {
+                    pane_id,
+                    source_idx: src,
+                    drop_target_idx: src,
+                });
+            }
+
+            if let Some(drag) = &mut self.tab_drag {
+                if drag.pane_id == pane_id {
+                    if any_released || !primary_down {
+                        let from = drag.source_idx;
+                        let to = drag.drop_target_idx;
+                        self.tab_drag = None;
+                        if from != to {
+                            if let Some(m) = self.panes.get_mut(&pane_id) {
+                                let surface = m.surfaces.remove(from);
+                                let to = to.min(m.surfaces.len());
+                                m.surfaces.insert(to, surface);
+                                if m.active_surface_idx == from {
+                                    m.active_surface_idx = to;
+                                } else if from < m.active_surface_idx && to >= m.active_surface_idx
+                                {
+                                    m.active_surface_idx -= 1;
+                                } else if from > m.active_surface_idx && to <= m.active_surface_idx
+                                {
+                                    m.active_surface_idx += 1;
+                                }
+                            }
+                            return;
+                        }
+                    } else if let Some(pos) = hover_pos {
+                        // Compute drop target from X position vs tab midpoints
+                        let tab_midpoints: Vec<f32> =
+                            tab_rects.iter().map(|r| r.center().x).collect();
+                        let mut target = tab_midpoints.len();
+                        for (i, &mid) in tab_midpoints.iter().enumerate() {
+                            if pos.x < mid {
+                                target = i;
+                                break;
+                            }
+                        }
+                        drag.drop_target_idx = target;
+
+                        // Paint drop indicator
+                        let drop_x = if target == 0 {
+                            tab_rects.first().map(|r| r.min.x).unwrap_or(x)
+                        } else if target < tab_rects.len() {
+                            let left = tab_rects[target - 1].max.x;
+                            let right = tab_rects[target].min.x;
+                            (left + right) / 2.0
+                        } else {
+                            tab_rects.last().map(|r| r.max.x).unwrap_or(x)
+                        };
+                        let indicator_rect = egui::Rect::from_min_size(
+                            egui::pos2(drop_x - 1.0, tab_rect.min.y + 2.0),
+                            egui::vec2(2.0, TAB_BAR_HEIGHT - 4.0),
+                        );
+                        painter.rect_filled(
+                            indicator_rect,
+                            1.0,
+                            egui::Color32::from_rgb(0, 145, 255),
+                        );
+                    }
+                }
             }
 
             // "+" button to add tab
@@ -1195,8 +1458,8 @@ impl AmuxApp {
                 egui::FontId::proportional(14.0),
                 egui::Color32::from_gray(100),
             );
-            if ui.input(|i| i.pointer.any_pressed()) {
-                if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+            if any_pressed {
+                if let Some(pos) = interact_pos {
                     if plus_rect.contains(pos) {
                         let ws_id = self.active_workspace().id;
                         let sf_id = self.next_surface_id;
@@ -1494,6 +1757,7 @@ impl AmuxApp {
                     zoomed: None,
                     dragging_divider: None,
                     last_pane_sizes: HashMap::new(),
+                    color: None,
                 };
 
                 self.workspaces.push(workspace);
@@ -1887,7 +2151,7 @@ impl AmuxApp {
             if let Some(pane_id) = target_pane {
                 if let Some(managed) = self.panes.get_mut(&pane_id) {
                     let surface = managed.active_surface_mut();
-                    let font_id = egui::FontId::monospace(FONT_SIZE);
+                    let font_id = egui::FontId::monospace(self.font_size);
                     let cell_height = ctx.fonts(|f| f.row_height(&font_id));
 
                     surface.scroll_accum += -scroll_delta / cell_height;
@@ -2021,9 +2285,14 @@ impl AmuxApp {
         let focused_id = self.focused_pane_id();
         if let Some(managed) = self.panes.get_mut(&focused_id) {
             let surface = managed.active_surface_mut();
+            // 1. Clear visible screen and move cursor home via terminal state machine
+            surface.pane.feed_bytes(b"\x1b[2J\x1b[H");
+            // 2. Erase scrollback buffer
             surface.pane.erase_scrollback();
             surface.scroll_offset = 0;
             surface.scroll_accum = 0.0;
+            // 3. Send Ctrl+L to the PTY so the shell redraws its prompt
+            let _ = surface.pane.write_bytes(b"\x0c");
         }
     }
 
@@ -4080,7 +4349,7 @@ fn render_pane(
     // Scroll indicator
     if scroll_offset > 0 {
         let indicator = format!("[+{}]", scroll_offset);
-        let indicator_font = egui::FontId::monospace(FONT_SIZE * 0.8);
+        let indicator_font = egui::FontId::monospace(font_size * 0.8);
         let text_color = egui::Color32::from_rgba_unmultiplied(255, 200, 50, 200);
         let bg_color = egui::Color32::from_rgba_unmultiplied(40, 40, 40, 180);
 

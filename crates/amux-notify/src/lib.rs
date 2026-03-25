@@ -46,6 +46,8 @@ pub struct WorkspaceStatus {
     pub state: AgentState,
     pub label: Option<String>,
     pub updated_at: Instant,
+    /// Optional progress value (0.0–1.0) for progress bar display.
+    pub progress: Option<f32>,
 }
 
 /// A single notification entry.
@@ -334,14 +336,28 @@ impl NotificationStore {
 
     /// Set workspace agent status.
     pub fn set_status(&mut self, workspace_id: u64, state: AgentState, label: Option<String>) {
+        // Preserve existing progress when updating status without explicit progress.
+        let progress = self
+            .workspace_statuses
+            .get(&workspace_id)
+            .and_then(|s| s.progress);
         self.workspace_statuses.insert(
             workspace_id,
             WorkspaceStatus {
                 state,
                 label,
                 updated_at: Instant::now(),
+                progress,
             },
         );
+    }
+
+    /// Set workspace progress (0.0–1.0). Pass `None` to clear.
+    pub fn set_progress(&mut self, workspace_id: u64, progress: Option<f32>) {
+        if let Some(status) = self.workspace_statuses.get_mut(&workspace_id) {
+            status.progress = progress;
+            status.updated_at = Instant::now();
+        }
     }
 
     /// Get workspace agent status.
