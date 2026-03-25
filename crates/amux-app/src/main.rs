@@ -2609,27 +2609,58 @@ impl AmuxApp {
                     ui.vertical_centered(|ui| {
                         ui.add_space(40.0);
                         ui.label(
-                            egui::RichText::new("No notifications yet")
-                                .color(egui::Color32::from_gray(100)),
+                            egui::RichText::new("\u{1f515}") // 🔕
+                                .size(32.0),
+                        );
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("No notifications")
+                                .color(egui::Color32::from_gray(140))
+                                .size(14.0),
+                        );
+                        ui.label(
+                            egui::RichText::new("Agent notifications will appear here")
+                                .color(egui::Color32::from_gray(80))
+                                .size(11.0),
                         );
                     });
                 } else {
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        // Iterate newest first
+                        // Group by workspace
+                        let mut last_ws_id: Option<u64> = None;
                         for notif in notifications.iter().rev() {
+                            // Workspace section header
+                            if last_ws_id != Some(notif.workspace_id) {
+                                last_ws_id = Some(notif.workspace_id);
+                                if let Some(ws) =
+                                    self.workspaces.iter().find(|w| w.id == notif.workspace_id)
+                                {
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        egui::RichText::new(&ws.title)
+                                            .strong()
+                                            .size(11.0)
+                                            .color(egui::Color32::from_gray(120)),
+                                    );
+                                    ui.add_space(2.0);
+                                }
+                            }
+
                             let response = ui.horizontal(|ui| {
-                                // Unread dot
+                                // Source icon + unread dot
+                                let source_icon = match notif.source {
+                                    NotificationSource::Bell => "\u{1f514}",  // 🔔
+                                    NotificationSource::Toast => "\u{1f4ac}", // 💬
+                                    NotificationSource::Cli => "\u{2328}",    // ⌨
+                                };
                                 let dot_color = if notif.read {
                                     egui::Color32::from_gray(60)
                                 } else {
-                                    egui::Color32::from_rgb(40, 120, 255)
+                                    egui::Color32::from_rgb(0, 145, 255)
                                 };
-                                let dot_rect = ui.allocate_exact_size(
-                                    egui::vec2(8.0, 8.0),
-                                    egui::Sense::hover(),
+                                ui.label(
+                                    egui::RichText::new(source_icon).size(10.0).color(dot_color),
                                 );
-                                ui.painter()
-                                    .circle_filled(dot_rect.0.center(), 3.0, dot_color);
 
                                 ui.vertical(|ui| {
                                     let title = if notif.title.is_empty() {

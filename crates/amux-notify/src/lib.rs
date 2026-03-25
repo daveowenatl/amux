@@ -306,6 +306,14 @@ impl NotificationStore {
         self.notifications.iter().rev().find(|n| !n.read)
     }
 
+    /// Find the most recent notification for a workspace (read or unread).
+    pub fn latest_for_workspace(&self, workspace_id: u64) -> Option<&Notification> {
+        self.notifications
+            .iter()
+            .rev()
+            .find(|n| n.workspace_id == workspace_id)
+    }
+
     /// Set workspace agent status.
     pub fn set_status(&mut self, workspace_id: u64, state: AgentState, label: Option<String>) {
         self.workspace_statuses.insert(

@@ -39,6 +39,8 @@ const PILL_FONT_SIZE: f32 = 9.0;
 const PILL_HEIGHT: f32 = 14.0;
 const PILL_CORNER_RADIUS: f32 = 7.0;
 const COUNT_FONT_SIZE: f32 = 10.0;
+const NOTIF_FONT_SIZE: f32 = 10.0;
+const NOTIF_PREVIEW_HEIGHT: f32 = 24.0; // ~2 lines at 10pt
 #[cfg(target_os = "macos")]
 const TRAFFIC_LIGHT_SPACER: f32 = 28.0;
 
@@ -151,12 +153,17 @@ fn render_workspace_row(
     let unread = notifications.workspace_unread_count(&pane_ids);
     let status = notifications.workspace_status(ws.id);
     let has_status = status.is_some();
+    let latest_notif = notifications.latest_for_workspace(ws.id);
+    let has_notif_text = latest_notif.is_some_and(|n| !n.body.is_empty());
 
     // Dynamic row height
     let title_line_h = TITLE_FONT_SIZE + 2.0; // text + small buffer
     let mut row_h = ROW_V_PAD * 2.0 + title_line_h;
     if has_status {
         row_h += PILL_HEIGHT + 4.0;
+    }
+    if has_notif_text {
+        row_h += NOTIF_PREVIEW_HEIGHT + 2.0;
     }
 
     let avail_w = ui.available_width();
@@ -263,6 +270,38 @@ fn render_workspace_row(
             label,
             pill_font,
             Color32::WHITE,
+        );
+    }
+
+    // --- Notification preview text ---
+    if let Some(notif) = latest_notif.filter(|n| !n.body.is_empty()) {
+        let notif_color = if is_active {
+            Color32::from_rgba_premultiplied(204, 204, 204, 204) // white@0.8
+        } else {
+            TEXT_SECONDARY
+        };
+        // Position below pill or title
+        let notif_y = if has_status {
+            rect.min.y + ROW_V_PAD + title_line_h + 4.0 + PILL_HEIGHT + 2.0
+        } else {
+            rect.min.y + ROW_V_PAD + title_line_h + 2.0
+        };
+        let notif_x = rect.min.x + ROW_H_PAD;
+        let max_w = avail_w - ROW_H_PAD * 2.0;
+        let notif_font = egui::FontId::proportional(NOTIF_FONT_SIZE);
+
+        // Use galley for word-wrap, clip to 2 lines
+        let galley = ui
+            .painter()
+            .layout(notif.body.clone(), notif_font, notif_color, max_w);
+        let clip_rect = egui::Rect::from_min_size(
+            egui::pos2(notif_x, notif_y),
+            egui::vec2(max_w, NOTIF_PREVIEW_HEIGHT),
+        );
+        ui.painter().with_clip_rect(clip_rect).galley(
+            egui::pos2(notif_x, notif_y),
+            galley,
+            notif_color,
         );
     }
 
