@@ -76,6 +76,7 @@ impl GpuRenderer {
                 target_is_srgb,
                 pane_states: std::collections::HashMap::new(),
                 image_cache: std::collections::HashMap::new(),
+                shape_cache: std::collections::HashMap::new(),
                 image_sampler,
             });
 
@@ -142,6 +143,8 @@ impl GpuRenderer {
             r.metrics = metrics;
             // Clear all pane render states to force full rebuild with new metrics.
             r.pane_states.clear();
+            // Clear shape cache since glyph sizes change with font size.
+            r.shape_cache.clear();
             // Mark atlas bind group dirty since glyph sizes will change.
             r.atlas_bind_group_dirty = true;
             self.cell_width = cell_width;

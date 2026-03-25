@@ -12,6 +12,20 @@ use crate::pipeline::{
 };
 use crate::snapshot::TerminalSnapshot;
 
+/// Cached glyph position/UV from a previous full reshape.
+/// Stored per visible glyph so we can rebuild fg instances with new colors
+/// without re-running cosmic-text shaping.
+#[derive(Clone)]
+struct CachedGlyph {
+    col: usize,
+    row: usize,
+    pos: [f32; 2],
+    size: [f32; 2],
+    uv_min: [f32; 2],
+    uv_max: [f32; 2],
+    is_color: f32,
+}
+
 /// Per-pane GPU state: instance buffers and dirty-tracking fingerprint.
 pub struct PaneRenderState {
     /// False until first successful prepare; forces initial rebuild.
@@ -46,6 +60,10 @@ pub struct PaneRenderState {
 
     /// Image draw calls for this frame: (image_hash, instance_buffer, instance_count).
     pub image_draws: Vec<([u8; 32], wgpu::Buffer, u32)>,
+
+    /// Cached glyph layouts from last full reshape. Reused when only colors change
+    /// (e.g., selection or highlight updates) to avoid expensive cosmic-text shaping.
+    cached_glyph_layouts: Vec<CachedGlyph>,
 }
 
 impl PaneRenderState {
@@ -88,11 +106,18 @@ impl PaneRenderState {
             fg_capacity: initial_capacity,
             fg_count: 0,
             image_draws: Vec::new(),
+            cached_glyph_layouts: Vec::new(),
         }
     }
 
-    /// Check if the pane content or geometry has changed since last render.
-    fn is_dirty(&self, snap: &TerminalSnapshot, rect: &PhysRect, cell_w: f32, cell_h: f32) -> bool {
+    /// Check if terminal content or geometry changed (requires full reshape).
+    fn is_content_dirty(
+        &self,
+        snap: &TerminalSnapshot,
+        rect: &PhysRect,
+        cell_w: f32,
+        cell_h: f32,
+    ) -> bool {
         !self.initialized
             || self.seqno != snap.seqno
             || self.cursor_x != snap.cursor.x
@@ -101,15 +126,19 @@ impl PaneRenderState {
             || self.cursor_shape != snap.cursor.shape
             || self.scroll_offset != snap.scroll_offset
             || self.is_focused != snap.is_focused
-            || self.selection_range != snap.selection_range
-            || self.highlight_count != snap.highlight_ranges.len()
-            || self.current_highlight != snap.current_highlight
             || self.rect_x != rect.x
             || self.rect_y != rect.y
             || self.rect_w != rect.width
             || self.rect_h != rect.height
             || self.cell_width != cell_w
             || self.cell_height != cell_h
+    }
+
+    /// Check if only appearance changed (selection/highlights — can reuse cached glyphs).
+    fn is_appearance_dirty(&self, snap: &TerminalSnapshot) -> bool {
+        self.selection_range != snap.selection_range
+            || self.highlight_count != snap.highlight_ranges.len()
+            || self.current_highlight != snap.current_highlight
     }
 
     /// Update the fingerprint to match the current state.
@@ -147,6 +176,23 @@ pub struct ImageTextureEntry {
     pub bind_group: wgpu::BindGroup,
 }
 
+/// Cached result of shaping a single cell's text through cosmic-text.
+/// Avoids re-running the full shaping pipeline on every frame for unchanged glyphs.
+#[derive(Clone)]
+pub(crate) struct ShapedGlyphEntry {
+    /// Physical glyph x offset within the cell.
+    physical_x: i32,
+    /// Physical glyph y offset within the cell.
+    physical_y: i32,
+    /// cosmic-text cache key for atlas lookup.
+    cache_key: cosmic_text::CacheKey,
+    /// Baseline y from layout run.
+    line_y: f32,
+}
+
+/// Key for the shape cache: (text content, bold, italic).
+pub(crate) type ShapeCacheKey = (String, bool, bool);
+
 /// Resources stored in egui's `CallbackResources` for the terminal renderer.
 pub struct TerminalGpuResources {
     pub bg_pipeline: BackgroundPipeline,
@@ -166,6 +212,9 @@ pub struct TerminalGpuResources {
     pub pane_states: HashMap<u64, PaneRenderState>,
     /// Cached GPU textures for inline images, keyed by image hash.
     pub image_cache: HashMap<[u8; 32], ImageTextureEntry>,
+    /// Shape cache: maps (text, bold, italic) → shaped glyph data.
+    /// Avoids re-running cosmic-text shaping for previously seen glyphs.
+    pub shape_cache: HashMap<ShapeCacheKey, Vec<ShapedGlyphEntry>>,
     /// Shared sampler for image textures.
     pub image_sampler: wgpu::Sampler,
 }
@@ -248,20 +297,23 @@ impl CallbackTrait for TerminalPaintCallback {
             .entry(self.pane_id)
             .or_insert_with(|| PaneRenderState::new(device));
 
-        // Skip expensive instance rebuild if nothing changed.
-        if !pane_state.is_dirty(
+        let content_dirty = pane_state.is_content_dirty(
             &self.snapshot,
             &self.phys_rect,
             self.cell_width,
             self.cell_height,
-        ) {
+        );
+        let appearance_dirty = pane_state.is_appearance_dirty(&self.snapshot);
+
+        // Skip if nothing changed at all.
+        if !content_dirty && !appearance_dirty {
             return Vec::new();
         }
 
         let snap = &self.snapshot;
         let linearize = resources.target_is_srgb;
 
-        // --- Background instances ---
+        // --- Background instances (always rebuilt — cheap) ---
         let mut bg_instances = Vec::with_capacity(snap.cells.len() + 1);
 
         // Full-rect background quad (absolute physical pixel positions)
@@ -286,28 +338,89 @@ impl CallbackTrait for TerminalPaintCallback {
         }
 
         // --- Foreground instances (glyphs) ---
-        let mut fg_instances = Vec::with_capacity(snap.cells.len());
+        // When only appearance changed (selection/highlights), reuse cached glyph
+        // layouts and just update colors. This skips expensive cosmic-text shaping.
+        let mut fg_instances = if content_dirty {
+            // Full reshape needed.
+            let mut fg = Vec::with_capacity(snap.cells.len());
+            let mut cached = Vec::new();
 
-        for cell in &snap.cells {
-            if cell.text.is_empty() || cell.text == " " {
-                continue;
+            for cell in &snap.cells {
+                if cell.text.is_empty() || cell.text == " " {
+                    continue;
+                }
+
+                let color = maybe_linearize(cell.fg, linearize);
+                let prev_len = fg.len();
+
+                shape_and_rasterize(
+                    &cell.text,
+                    cell.bold,
+                    cell.italic,
+                    color,
+                    self.phys_rect.x + cell.col as f32 * self.cell_width,
+                    self.phys_rect.y + cell.row as f32 * self.cell_height,
+                    self.cell_width,
+                    self.cell_height,
+                    pixels_per_point,
+                    resources,
+                    queue,
+                    &mut fg,
+                );
+
+                // Cache the glyph layout (position/UV) for color-only rebuilds.
+                for inst in &fg[prev_len..] {
+                    cached.push(CachedGlyph {
+                        col: cell.col,
+                        row: cell.row,
+                        pos: inst.pos,
+                        size: inst.size,
+                        uv_min: inst.uv_min,
+                        uv_max: inst.uv_max,
+                        is_color: inst.is_color,
+                    });
+                }
             }
 
-            shape_and_rasterize(
-                &cell.text,
-                cell.bold,
-                cell.italic,
-                maybe_linearize(cell.fg, linearize),
-                self.phys_rect.x + cell.col as f32 * self.cell_width,
-                self.phys_rect.y + cell.row as f32 * self.cell_height,
-                self.cell_width,
-                self.cell_height,
-                pixels_per_point,
-                resources,
-                queue,
-                &mut fg_instances,
-            );
-        }
+            // Store cache for future appearance-only rebuilds.
+            // Re-borrow pane_state to update the cache.
+            resources
+                .pane_states
+                .get_mut(&self.pane_id)
+                .unwrap()
+                .cached_glyph_layouts = cached;
+
+            fg
+        } else {
+            // Appearance-only change: reuse cached glyph layouts, apply new colors.
+            // Build a color lookup from snapshot cells.
+            let mut color_map: HashMap<(usize, usize), [f32; 4]> = HashMap::new();
+            for cell in &snap.cells {
+                if cell.text.is_empty() || cell.text == " " {
+                    continue;
+                }
+                color_map.insert((cell.col, cell.row), maybe_linearize(cell.fg, linearize));
+            }
+
+            let cached = &pane_state.cached_glyph_layouts;
+            let mut fg = Vec::with_capacity(cached.len());
+            for glyph in cached {
+                let color = color_map
+                    .get(&(glyph.col, glyph.row))
+                    .copied()
+                    .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                fg.push(CellFgInstance {
+                    pos: glyph.pos,
+                    size: glyph.size,
+                    uv_min: glyph.uv_min,
+                    uv_max: glyph.uv_max,
+                    color,
+                    is_color: glyph.is_color,
+                    _pad: [0.0; 3],
+                });
+            }
+            fg
+        };
 
         // --- Cursor ---
         let cursor = &snap.cursor;
@@ -605,9 +718,10 @@ impl CallbackTrait for TerminalPaintCallback {
 /// Shape text with cosmic-text and rasterize glyphs into the atlas,
 /// appending foreground instances for each glyph.
 ///
-/// `pixels_per_point` scales the font metrics so glyphs are rasterized at
-/// physical pixel size (e.g. 2× on Retina), matching the physical coordinate
-/// system used for instance placement.
+/// Uses a shape cache to avoid re-running cosmic-text shaping for
+/// previously seen (text, bold, italic) combinations. The atlas already
+/// caches rasterized bitmaps, but getting the CacheKey requires shaping
+/// which is the expensive part (Buffer alloc + font lookup + shaping).
 #[allow(clippy::too_many_arguments)]
 fn shape_and_rasterize(
     text: &str,
@@ -623,6 +737,39 @@ fn shape_and_rasterize(
     queue: &wgpu::Queue,
     fg_instances: &mut Vec<CellFgInstance>,
 ) {
+    let cache_key = (text.to_string(), bold, italic);
+
+    // Check shape cache first to avoid cosmic-text shaping.
+    if let Some(shaped) = resources.shape_cache.get(&cache_key) {
+        let shaped = shaped.clone(); // Clone to release borrow on resources
+        for sg in &shaped {
+            let (entry, newly_inserted) = resources.atlas.get_or_insert(
+                queue,
+                &mut resources.font_system,
+                &mut resources.swash_cache,
+                sg.cache_key,
+            );
+            if let Some(entry) = entry {
+                let gx = cell_px + sg.physical_x as f32 + entry.placement_left as f32;
+                let gy = cell_py + sg.line_y + sg.physical_y as f32 - entry.placement_top as f32;
+                fg_instances.push(CellFgInstance {
+                    pos: [gx, gy],
+                    size: [entry.width as f32, entry.height as f32],
+                    uv_min: [entry.uv[0], entry.uv[1]],
+                    uv_max: [entry.uv[2], entry.uv[3]],
+                    color,
+                    is_color: if entry.is_color { 1.0 } else { 0.0 },
+                    _pad: [0.0; 3],
+                });
+                if newly_inserted {
+                    resources.atlas_bind_group_dirty = true;
+                }
+            }
+        }
+        return;
+    }
+
+    // Cache miss: run full cosmic-text shaping.
     let weight = if bold {
         cosmic_text::Weight::BOLD
     } else {
@@ -638,9 +785,6 @@ fn shape_and_rasterize(
         .weight(weight)
         .style(style);
 
-    // Scale metrics by pixels_per_point so glyphs are rasterized at physical
-    // pixel size, not logical size. Without this, glyphs on HiDPI displays
-    // would be rasterized at 1× and appear tiny/faint in the 2× coordinate system.
     let phys_metrics = Metrics::new(
         resources.metrics.font_size * pixels_per_point,
         resources.metrics.line_height * pixels_per_point,
@@ -653,9 +797,18 @@ fn shape_and_rasterize(
         borrowed.shape_until_scroll(true);
     }
 
+    let mut shaped_entries = Vec::new();
+
     for run in buffer.layout_runs() {
         for glyph in run.glyphs.iter() {
             let physical = glyph.physical((0.0, 0.0), 1.0);
+
+            shaped_entries.push(ShapedGlyphEntry {
+                physical_x: physical.x,
+                physical_y: physical.y,
+                cache_key: physical.cache_key,
+                line_y: run.line_y,
+            });
 
             let (entry, newly_inserted) = resources.atlas.get_or_insert(
                 queue,
@@ -666,10 +819,6 @@ fn shape_and_rasterize(
 
             if let Some(entry) = entry {
                 let gx = cell_px + physical.x as f32 + entry.placement_left as f32;
-                // Use line_y (baseline position) not line_top (line top edge).
-                // line_y = line_top + centering_offset + max_ascent, which
-                // accounts for the font's ascent so glyphs sit on the baseline
-                // rather than floating above the cell.
                 let gy = cell_py + run.line_y + physical.y as f32 - entry.placement_top as f32;
 
                 fg_instances.push(CellFgInstance {
@@ -688,6 +837,8 @@ fn shape_and_rasterize(
             }
         }
     }
+
+    resources.shape_cache.insert(cache_key, shaped_entries);
 }
 
 /// Convert an sRGB color to linear if the target is sRGB, otherwise pass through.

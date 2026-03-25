@@ -133,6 +133,7 @@ fn main() -> anyhow::Result<()> {
                 copy_mode: None,
                 hovered_hyperlink: None,
                 ime_preedit: None,
+                selection_changed: false,
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
             }))
@@ -606,6 +607,8 @@ struct AmuxApp {
     copy_mode: Option<CopyModeState>,
     hovered_hyperlink: Option<String>,
     ime_preedit: Option<String>,
+    /// Set during update() when selection changes; used for smart repaint.
+    selection_changed: bool,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
 }
@@ -867,6 +870,8 @@ impl eframe::App for AmuxApp {
             return;
         }
 
+        self.selection_changed = false;
+
         // Drain PTY output from all surfaces in all panes
         let mut got_data = false;
         for managed in self.panes.values_mut() {
@@ -916,7 +921,10 @@ impl eframe::App for AmuxApp {
                         egui::pos2(panel_rect.min.x, panel_rect.min.y + TAB_BAR_HEIGHT),
                         panel_rect.max,
                     );
-                    self.handle_selection_mouse(ui, zoomed_id, content_rect);
+                    let sel_changed = self.handle_selection_mouse(ui, zoomed_id, content_rect);
+                    if sel_changed {
+                        self.selection_changed = true;
+                    }
                     self.render_single_pane(ui, zoomed_id, panel_rect, true);
                     self.resize_pane_if_needed(zoomed_id, panel_rect, ui);
                 } else {
@@ -949,7 +957,10 @@ impl eframe::App for AmuxApp {
                                 egui::pos2(rect.min.x, rect.min.y + TAB_BAR_HEIGHT),
                                 rect.max,
                             );
-                            self.handle_selection_mouse(ui, id, content_rect);
+                            let sel_changed = self.handle_selection_mouse(ui, id, content_rect);
+                            if sel_changed {
+                                self.selection_changed = true;
+                            }
                             break;
                         }
                     }
@@ -1012,7 +1023,7 @@ impl eframe::App for AmuxApp {
 
         // Smart repaint: immediate when data arrived or input was sent (to
         // catch the PTY echo on the very next frame), otherwise poll at 50ms.
-        if got_data || sent_input || shortcut_consumed {
+        if got_data || sent_input || shortcut_consumed || self.selection_changed {
             ctx.request_repaint();
         } else {
             ctx.request_repaint_after(Duration::from_millis(50));
@@ -2972,12 +2983,17 @@ impl AmuxApp {
 
     // --- Selection Mouse ---
 
-    fn handle_selection_mouse(&mut self, ui: &egui::Ui, pane_id: PaneId, content_rect: egui::Rect) {
+    fn handle_selection_mouse(
+        &mut self,
+        ui: &egui::Ui,
+        pane_id: PaneId,
+        content_rect: egui::Rect,
+    ) -> bool {
         let (cell_width, cell_height) = self.cell_dimensions(ui);
 
         let managed = match self.panes.get(&pane_id) {
             Some(m) => m,
-            None => return,
+            None => return false,
         };
         let surface = managed.active_surface();
         let (cols, visible_rows) = surface.pane.dimensions();
@@ -2991,7 +3007,7 @@ impl AmuxApp {
 
         // Check if we're dragging a divider — skip selection if so
         if self.active_workspace().dragging_divider.is_some() {
-            return;
+            return false;
         }
 
         if primary_pressed {
@@ -3001,8 +3017,7 @@ impl AmuxApp {
                     if let Some(m) = self.panes.get_mut(&pane_id) {
                         m.selection = None;
                     }
-                    ui.ctx().request_repaint();
-                    return;
+                    return true;
                 }
 
                 let (col, stable_row) = pointer_to_cell(
@@ -3062,7 +3077,7 @@ impl AmuxApp {
                         active: true,
                     });
                 }
-                ui.ctx().request_repaint();
+                return true;
             }
         } else if primary_down {
             // Drag — update selection end
@@ -3118,7 +3133,7 @@ impl AmuxApp {
                             }
                         }
                     }
-                    ui.ctx().request_repaint();
+                    return true;
                 }
             }
         } else if primary_released {
@@ -3132,6 +3147,7 @@ impl AmuxApp {
                 }
             }
         }
+        false
     }
 
     // --- Input ---
