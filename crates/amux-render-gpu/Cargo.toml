@@ -6,3 +6,11 @@ license.workspace = true
 description = "amux wgpu + cosmic-text GPU renderer"
 
 [dependencies]
+wgpu = { workspace = true }
+egui-wgpu = { workspace = true }
+egui = { workspace = true }
+wezterm-term = { workspace = true }
+cosmic-text = { workspace = true }
+bytemuck = { workspace = true }
+tracing = { workspace = true }
+wezterm-surface = { workspace = true }

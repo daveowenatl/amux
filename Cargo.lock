@@ -94,6 +94,7 @@ dependencies = [
  "amux-ipc",
  "amux-layout",
  "amux-notify",
+ "amux-render-gpu",
  "amux-session",
  "amux-term",
  "anyhow",
@@ -153,6 +154,16 @@ dependencies = [
 [[package]]
 name = "amux-render-gpu"
 version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "cosmic-text",
+ "egui",
+ "egui-wgpu",
+ "tracing",
+ "wezterm-surface",
+ "wezterm-term",
+ "wgpu",
+]
 
 [[package]]
 name = "amux-render-soft"
@@ -1504,6 +1515,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98ff03b468aa837d70984d55f5d3f846f6ec31fe34bbb97c4f85219caeee1ca4"
 dependencies = [
  "bitflags 2.11.0",
+]
+
+[[package]]
+name = "gpu-allocator"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c151a2a5ef800297b4e79efa4f4bec035c5f51d5ae587287c9b952bdf734cacd"
+dependencies = [
+ "log",
+ "presser",
+ "thiserror 1.0.69",
+ "windows",
 ]
 
 [[package]]
@@ -2904,6 +2927,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "presser"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
+
+[[package]]
 name = "prettyplease"
 version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3044,6 +3073,12 @@ checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
 ]
+
+[[package]]
+name = "range-alloc"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08"
 
 [[package]]
 name = "rangemap"
@@ -4735,6 +4770,7 @@ dependencies = [
  "android_system_properties",
  "arrayvec",
  "ash",
+ "bit-set",
  "bitflags 2.11.0",
  "block",
  "bytemuck",
@@ -4743,6 +4779,7 @@ dependencies = [
  "glow",
  "glutin_wgl_sys",
  "gpu-alloc",
+ "gpu-allocator",
  "gpu-descriptor",
  "js-sys",
  "khronos-egl",
@@ -4757,6 +4794,7 @@ dependencies = [
  "ordered-float",
  "parking_lot",
  "profiling",
+ "range-alloc",
  "raw-window-handle",
  "renderdoc-sys",
  "rustc-hash 1.1.0",
@@ -4766,6 +4804,7 @@ dependencies = [
  "web-sys",
  "wgpu-types",
  "windows",
+ "windows-core",
 ]
 
 [[package]]
