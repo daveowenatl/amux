@@ -8,6 +8,7 @@ use wezterm_surface::{CursorShape, CursorVisibility};
 use crate::atlas::GlyphAtlas;
 use crate::pipeline::{
     ensure_instance_buffer, BackgroundPipeline, CellBgInstance, CellFgInstance, ForegroundPipeline,
+    ImagePipeline, ImageQuadInstance,
 };
 use crate::snapshot::TerminalSnapshot;
 
@@ -42,6 +43,9 @@ pub struct PaneRenderState {
     pub fg_buffer: wgpu::Buffer,
     pub fg_capacity: usize,
     pub fg_count: u32,
+
+    /// Image draw calls for this frame: (image_hash, instance_buffer, instance_count).
+    pub image_draws: Vec<([u8; 32], wgpu::Buffer, u32)>,
 }
 
 impl PaneRenderState {
@@ -83,6 +87,7 @@ impl PaneRenderState {
             fg_buffer,
             fg_capacity: initial_capacity,
             fg_count: 0,
+            image_draws: Vec::new(),
         }
     }
 
@@ -135,10 +140,18 @@ impl PaneRenderState {
     }
 }
 
+/// Cached GPU texture for an inline terminal image.
+pub struct ImageTextureEntry {
+    #[allow(dead_code)]
+    pub texture: wgpu::Texture,
+    pub bind_group: wgpu::BindGroup,
+}
+
 /// Resources stored in egui's `CallbackResources` for the terminal renderer.
 pub struct TerminalGpuResources {
     pub bg_pipeline: BackgroundPipeline,
     pub fg_pipeline: ForegroundPipeline,
+    pub img_pipeline: ImagePipeline,
     pub atlas: GlyphAtlas,
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
@@ -151,6 +164,10 @@ pub struct TerminalGpuResources {
     pub target_is_srgb: bool,
     /// Per-pane render state (instance buffers + dirty tracking).
     pub pane_states: HashMap<u64, PaneRenderState>,
+    /// Cached GPU textures for inline images, keyed by image hash.
+    pub image_cache: HashMap<[u8; 32], ImageTextureEntry>,
+    /// Shared sampler for image textures.
+    pub image_sampler: wgpu::Sampler,
 }
 
 impl TerminalGpuResources {
@@ -158,6 +175,17 @@ impl TerminalGpuResources {
     pub fn retain_panes(&mut self, live_pane_ids: &[u64]) {
         let live: HashSet<u64> = live_pane_ids.iter().copied().collect();
         self.pane_states.retain(|id, _| live.contains(id));
+    }
+
+    /// Remove image textures not referenced by any current pane's image draws.
+    pub fn evict_unused_images(&mut self) {
+        let mut referenced: HashSet<[u8; 32]> = HashSet::new();
+        for state in self.pane_states.values() {
+            for (hash, _, _) in &state.image_draws {
+                referenced.insert(*hash);
+            }
+        }
+        self.image_cache.retain(|hash, _| referenced.contains(hash));
     }
 }
 
@@ -202,6 +230,12 @@ impl CallbackTrait for TerminalPaintCallback {
             target_is_srgb,
         );
         resources.fg_pipeline.upload_viewport(
+            queue,
+            viewport_width,
+            viewport_height,
+            target_is_srgb,
+        );
+        resources.img_pipeline.upload_viewport(
             queue,
             viewport_width,
             viewport_height,
@@ -329,6 +363,100 @@ impl CallbackTrait for TerminalPaintCallback {
             }
         }
 
+        // --- Image textures and instances ---
+        let mut image_draws: Vec<([u8; 32], wgpu::Buffer, u32)> = Vec::new();
+        if !snap.images.is_empty() {
+            // Upload any new image textures.
+            for decoded in &snap.decoded_images {
+                if !resources.image_cache.contains_key(&decoded.hash) {
+                    let texture = device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("image_texture"),
+                        size: wgpu::Extent3d {
+                            width: decoded.width,
+                            height: decoded.height,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    });
+                    queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        &decoded.data,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(4 * decoded.width),
+                            rows_per_image: Some(decoded.height),
+                        },
+                        wgpu::Extent3d {
+                            width: decoded.width,
+                            height: decoded.height,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("image_bind_group"),
+                        layout: &resources.img_pipeline.image_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(&resources.image_sampler),
+                            },
+                        ],
+                    });
+                    resources.image_cache.insert(
+                        decoded.hash,
+                        ImageTextureEntry {
+                            texture,
+                            bind_group,
+                        },
+                    );
+                }
+            }
+
+            // Group image placements by hash and build instance buffers.
+            let mut grouped: HashMap<[u8; 32], Vec<ImageQuadInstance>> = HashMap::new();
+            for placement in &snap.images {
+                let px = self.phys_rect.x + placement.col as f32 * self.cell_width;
+                let py = self.phys_rect.y + placement.row as f32 * self.cell_height;
+                grouped
+                    .entry(placement.image_hash)
+                    .or_default()
+                    .push(ImageQuadInstance {
+                        pos: [px, py],
+                        size: [self.cell_width, self.cell_height],
+                        uv_min: placement.uv_min,
+                        uv_max: placement.uv_max,
+                    });
+            }
+
+            for (hash, instances) in grouped {
+                if resources.image_cache.contains_key(&hash) {
+                    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("image_instance_buffer"),
+                        size: (instances.len() * std::mem::size_of::<ImageQuadInstance>()) as u64,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    queue.write_buffer(&buf, 0, bytemuck::cast_slice(&instances));
+                    image_draws.push((hash, buf, instances.len() as u32));
+                }
+            }
+        }
+
         // --- Update atlas bind group if glyphs were added ---
         if resources.atlas_bind_group_dirty {
             resources.fg_pipeline.update_atlas_bind_group(
@@ -384,6 +512,8 @@ impl CallbackTrait for TerminalPaintCallback {
         }
         pane_state.fg_count = fg_instances.len() as u32;
 
+        pane_state.image_draws = image_draws;
+
         pane_state.update_fingerprint(
             &self.snapshot,
             &self.phys_rect,
@@ -421,6 +551,18 @@ impl CallbackTrait for TerminalPaintCallback {
         resources
             .fg_pipeline
             .draw(render_pass, &pane_state.fg_buffer, pane_state.fg_count);
+
+        // Render inline images on top of text.
+        for (hash, instance_buffer, count) in &pane_state.image_draws {
+            if let Some(entry) = resources.image_cache.get(hash) {
+                resources.img_pipeline.draw(
+                    render_pass,
+                    &entry.bind_group,
+                    instance_buffer,
+                    *count,
+                );
+            }
+        }
     }
 }
 

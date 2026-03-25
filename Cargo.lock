@@ -160,6 +160,7 @@ dependencies = [
  "cosmic-text",
  "egui",
  "egui-wgpu",
+ "image",
  "tracing",
  "wezterm-surface",
  "wezterm-term",

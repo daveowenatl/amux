@@ -479,6 +479,225 @@ impl ForegroundPipeline {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Image pipeline (inline terminal images via Kitty protocol)
+// ---------------------------------------------------------------------------
+
+/// Per-quad image instance data.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub struct ImageQuadInstance {
+    /// Quad position in physical pixels (top-left corner).
+    pub pos: [f32; 2],
+    /// Quad size in physical pixels.
+    pub size: [f32; 2],
+    /// Texture UV min (top-left).
+    pub uv_min: [f32; 2],
+    /// Texture UV max (bottom-right).
+    pub uv_max: [f32; 2],
+}
+
+/// Image rendering pipeline: instanced textured quads for inline images.
+///
+/// Each draw call binds a single image texture. Instance buffers provide
+/// per-cell position/UV data for cells referencing that image.
+pub struct ImagePipeline {
+    pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    viewport_buffer: wgpu::Buffer,
+    viewport_bind_group: wgpu::BindGroup,
+    pub image_bind_group_layout: wgpu::BindGroupLayout,
+}
+
+impl ImagePipeline {
+    /// Create the image pipeline.
+    pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("image_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/image.wgsl").into()),
+        });
+
+        // Group 0: viewport uniform
+        let viewport_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("img_viewport_bind_group_layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        // Group 1: image texture + sampler
+        let image_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("img_texture_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("img_pipeline_layout"),
+            bind_group_layouts: &[&viewport_bind_group_layout, &image_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("img_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<QuadVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x2],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<ImageQuadInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![
+                            1 => Float32x2, // pos
+                            2 => Float32x2, // size
+                            3 => Float32x2, // uv_min
+                            4 => Float32x2, // uv_max
+                        ],
+                    },
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        let vertices = [
+            QuadVertex { pos: [0.0, 0.0] },
+            QuadVertex { pos: [1.0, 0.0] },
+            QuadVertex { pos: [1.0, 1.0] },
+            QuadVertex { pos: [0.0, 1.0] },
+        ];
+        let indices: [u16; 6] = [0, 1, 2, 0, 2, 3];
+
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("img_vertex_buffer"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("img_index_buffer"),
+            contents: bytemuck::cast_slice(&indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let viewport_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("img_viewport_uniform"),
+            contents: bytemuck::cast_slice(&[ViewportUniform {
+                size: [1.0, 1.0],
+                target_is_srgb: 0.0,
+                _pad: 0.0,
+            }]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let viewport_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("img_viewport_bind_group"),
+            layout: &viewport_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: viewport_buffer.as_entire_binding(),
+            }],
+        });
+
+        Self {
+            pipeline,
+            vertex_buffer,
+            index_buffer,
+            viewport_buffer,
+            viewport_bind_group,
+            image_bind_group_layout,
+        }
+    }
+
+    /// Update the viewport uniform.
+    pub fn upload_viewport(
+        &self,
+        queue: &wgpu::Queue,
+        viewport_width: f32,
+        viewport_height: f32,
+        target_is_srgb: bool,
+    ) {
+        queue.write_buffer(
+            &self.viewport_buffer,
+            0,
+            bytemuck::cast_slice(&[ViewportUniform {
+                size: [viewport_width, viewport_height],
+                target_is_srgb: if target_is_srgb { 1.0 } else { 0.0 },
+                _pad: 0.0,
+            }]),
+        );
+    }
+
+    /// Record draw commands for a single image (one bind group + instance buffer).
+    pub fn draw(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        image_bind_group: &wgpu::BindGroup,
+        instance_buffer: &wgpu::Buffer,
+        instance_count: u32,
+    ) {
+        if instance_count == 0 {
+            return;
+        }
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+        render_pass.set_bind_group(1, image_bind_group, &[]);
+        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
+        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        render_pass.draw_indexed(0..6, 0, 0..instance_count);
+    }
+}
+
 /// Create or grow an instance buffer if needed. Returns the buffer and its capacity.
 pub fn ensure_instance_buffer<T: Pod>(
     device: &wgpu::Device,

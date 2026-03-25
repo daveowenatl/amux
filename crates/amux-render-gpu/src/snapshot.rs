@@ -1,4 +1,8 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use wezterm_term::color::{ColorAttribute, ColorPalette, SrgbaTuple};
+use wezterm_term::image::{ImageData, ImageDataType};
 use wezterm_term::CursorPosition;
 
 /// Pre-extracted terminal state for GPU rendering.
@@ -27,6 +31,10 @@ pub struct TerminalSnapshot {
     /// The current match (if any) uses a distinct color.
     pub highlight_ranges: Vec<(usize, usize, usize)>,
     pub current_highlight: Option<usize>,
+    /// Inline image placements (Kitty image protocol).
+    pub images: Vec<ImagePlacement>,
+    /// Decoded image data, deduplicated by hash.
+    pub decoded_images: Vec<DecodedImage>,
 }
 
 /// Data for a single terminal cell.
@@ -39,6 +47,28 @@ pub struct CellData {
     pub bold: bool,
     pub italic: bool,
     pub hyperlink_url: Option<String>,
+}
+
+/// A single cell's image placement within the terminal grid.
+pub struct ImagePlacement {
+    pub col: usize,
+    pub row: usize,
+    /// Texture UV top-left for this cell's portion of the image.
+    pub uv_min: [f32; 2],
+    /// Texture UV bottom-right for this cell's portion of the image.
+    pub uv_max: [f32; 2],
+    /// Hash of the source image (indexes into `decoded_images`).
+    pub image_hash: [u8; 32],
+    /// Z-index: negative = behind text, >= 0 = above text.
+    pub z_index: i32,
+}
+
+/// Decoded RGBA image data, deduplicated by hash.
+pub struct DecodedImage {
+    pub hash: [u8; 32],
+    pub data: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Selection range for highlight rendering.
@@ -99,6 +129,8 @@ impl TerminalSnapshot {
         let mut cursor_text = String::new();
         let mut cursor_text_bold = false;
         let mut cursor_text_italic = false;
+        let mut images = Vec::new();
+        let mut seen_images: HashMap<[u8; 32], Arc<ImageData>> = HashMap::new();
 
         for (row_idx, line) in lines.iter().enumerate() {
             for cell_ref in line.visible_cells() {
@@ -154,6 +186,28 @@ impl TerminalSnapshot {
 
                 let hyperlink_url = attrs.hyperlink().map(|h| h.uri().to_string());
 
+                // Extract inline images (Kitty protocol)
+                if let Some(image_cells) = attrs.images() {
+                    for image_cell in &image_cells {
+                        let image_data = image_cell.image_data();
+                        let hash = image_data.hash();
+                        seen_images
+                            .entry(hash)
+                            .or_insert_with(|| Arc::clone(image_data));
+
+                        let tl = image_cell.top_left();
+                        let br = image_cell.bottom_right();
+                        images.push(ImagePlacement {
+                            col: col_idx,
+                            row: row_idx,
+                            uv_min: [tl.x.into_inner(), tl.y.into_inner()],
+                            uv_max: [br.x.into_inner(), br.y.into_inner()],
+                            image_hash: hash,
+                            z_index: image_cell.z_index(),
+                        });
+                    }
+                }
+
                 cells.push(CellData {
                     col: col_idx,
                     row: row_idx,
@@ -166,6 +220,9 @@ impl TerminalSnapshot {
                 });
             }
         }
+
+        // Decode collected images to RGBA.
+        let decoded_images = decode_images(seen_images);
 
         // Dim background colors for unfocused panes.
         let dim_factor = if is_focused { 1.0 } else { 0.6 };
@@ -194,8 +251,63 @@ impl TerminalSnapshot {
             selection_range,
             highlight_ranges,
             current_highlight,
+            images,
+            decoded_images,
         }
     }
+}
+
+/// Decode image data from wezterm-term into raw RGBA.
+fn decode_images(seen: HashMap<[u8; 32], Arc<ImageData>>) -> Vec<DecodedImage> {
+    let mut result = Vec::with_capacity(seen.len());
+    for (hash, image_data) in seen {
+        let locked: std::sync::MutexGuard<'_, ImageDataType> = image_data.data();
+        match &*locked {
+            ImageDataType::Rgba8 {
+                data,
+                width,
+                height,
+                ..
+            } => {
+                result.push(DecodedImage {
+                    hash,
+                    data: data.clone(),
+                    width: *width,
+                    height: *height,
+                });
+            }
+            ImageDataType::AnimRgba8 {
+                frames,
+                width,
+                height,
+                ..
+            } => {
+                // Use first frame for static rendering.
+                if let Some(frame) = frames.first() {
+                    result.push(DecodedImage {
+                        hash,
+                        data: frame.clone(),
+                        width: *width,
+                        height: *height,
+                    });
+                }
+            }
+            ImageDataType::EncodedFile(bytes) => {
+                // Decode encoded image (PNG, JPEG, GIF, etc.) to RGBA.
+                if let Ok(img) = image::load_from_memory(bytes) {
+                    let rgba = img.to_rgba8();
+                    result.push(DecodedImage {
+                        hash,
+                        data: rgba.as_raw().clone(),
+                        width: rgba.width(),
+                        height: rgba.height(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    result
 }
 
 fn resolve_color(

@@ -39,6 +39,9 @@ egui = "0.31"
 # Font rendering
 cosmic-text = "0.12"
 
+# Image decoding
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
 # GPU rendering
 wgpu = "24.0"
 egui-wgpu = "0.31"
