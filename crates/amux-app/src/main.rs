@@ -1010,8 +1010,8 @@ impl eframe::App for AmuxApp {
         self.update_ime_position(ctx);
 
         // Render IME preedit overlay
-        if let Some(ref preedit) = self.ime_preedit.clone() {
-            self.render_ime_preedit(ctx, preedit);
+        if let Some(preedit) = self.ime_preedit.clone() {
+            self.render_ime_preedit(ctx, &preedit);
         }
 
         // Clean up GPU resources for closed panes.
@@ -1289,7 +1289,7 @@ impl AmuxApp {
                 if cm.cursor.1 >= start && cm.cursor.1 < end {
                     let row_in_view = cm.cursor.1 - start;
                     let x = content_rect.min.x + cm.cursor.0 as f32 * cell_w;
-                    let y = content_rect.min.y + TAB_BAR_HEIGHT + row_in_view as f32 * cell_h;
+                    let y = content_rect.min.y + row_in_view as f32 * cell_h;
                     let cursor_rect =
                         egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cell_w, cell_h));
                     ui.painter().rect_stroke(
@@ -2153,6 +2153,7 @@ impl AmuxApp {
             let surface = managed.active_surface_mut();
             surface.pane.erase_scrollback();
             surface.scroll_offset = 0;
+            surface.scroll_accum = 0.0;
         }
     }
 
@@ -2374,6 +2375,9 @@ impl AmuxApp {
             }
         };
         let content_top = pane_rect.min.y + TAB_BAR_HEIGHT;
+        if hover_pos.y < content_top || hover_pos.x < pane_rect.min.x {
+            return;
+        }
         let col = ((hover_pos.x - pane_rect.min.x) / cell_w) as usize;
         let row = ((hover_pos.y - content_top) / cell_h) as usize;
 
@@ -2439,7 +2443,7 @@ impl AmuxApp {
             let end = total.saturating_sub(surface.scroll_offset);
             let start = end.saturating_sub(rows);
             // Place copy mode cursor at terminal cursor position in phys coords
-            let phys_row = start + cursor.y as usize;
+            let phys_row = start + (cursor.y.max(0) as usize).min(rows.saturating_sub(1));
             self.copy_mode = Some(CopyModeState {
                 pane_id,
                 cursor: (cursor.x, phys_row),
@@ -2499,11 +2503,12 @@ impl AmuxApp {
                 let half = rows / 2;
                 cm.cursor.1 = (cm.cursor.1 + half).min(total_rows.saturating_sub(1));
             }
-            // Start of scrollback
+            // End of scrollback (Shift+G = vim 'G')
             egui::Key::G if modifiers.shift => {
                 cm.cursor.1 = total_rows.saturating_sub(1);
                 cm.cursor.0 = 0;
             }
+            // Start of scrollback (g = vim 'gg', second g handled by repeat)
             egui::Key::G => {
                 cm.cursor.1 = 0;
                 cm.cursor.0 = 0;

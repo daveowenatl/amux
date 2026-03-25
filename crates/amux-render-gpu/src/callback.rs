@@ -12,6 +12,14 @@ use crate::pipeline::{
 };
 use crate::snapshot::TerminalSnapshot;
 
+/// Compute a simple hash of highlight ranges for dirty tracking.
+fn hash_highlight_ranges(ranges: &[(usize, usize, usize)]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    ranges.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Cached glyph position/UV from a previous full reshape.
 /// Stored per visible glyph so we can rebuild fg instances with new colors
 /// without re-running cosmic-text shaping.
@@ -39,7 +47,7 @@ pub struct PaneRenderState {
     scroll_offset: usize,
     is_focused: bool,
     selection_range: Option<((usize, usize), (usize, usize))>,
-    highlight_count: usize,
+    highlight_hash: u64,
     current_highlight: Option<usize>,
 
     // Dirty-tracking fields — geometry (pane position/size, cell dimensions)
@@ -91,7 +99,7 @@ impl PaneRenderState {
             scroll_offset: 0,
             is_focused: false,
             selection_range: None,
-            highlight_count: 0,
+            highlight_hash: 0,
             current_highlight: None,
             rect_x: 0.0,
             rect_y: 0.0,
@@ -137,7 +145,7 @@ impl PaneRenderState {
     /// Check if only appearance changed (selection/highlights — can reuse cached glyphs).
     fn is_appearance_dirty(&self, snap: &TerminalSnapshot) -> bool {
         self.selection_range != snap.selection_range
-            || self.highlight_count != snap.highlight_ranges.len()
+            || self.highlight_hash != hash_highlight_ranges(&snap.highlight_ranges)
             || self.current_highlight != snap.current_highlight
     }
 
@@ -158,7 +166,7 @@ impl PaneRenderState {
         self.scroll_offset = snap.scroll_offset;
         self.is_focused = snap.is_focused;
         self.selection_range = snap.selection_range;
-        self.highlight_count = snap.highlight_ranges.len();
+        self.highlight_hash = hash_highlight_ranges(&snap.highlight_ranges);
         self.current_highlight = snap.current_highlight;
         self.rect_x = rect.x;
         self.rect_y = rect.y;
