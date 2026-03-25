@@ -87,6 +87,10 @@ pub struct SavedWorkspaceStatus {
     pub state: String,
     #[serde(default)]
     pub label: Option<String>,
+    #[serde(default)]
+    pub task: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 // --- File Operations ---

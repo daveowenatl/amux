@@ -15,6 +15,9 @@ pub const METHODS: &[&str] = &[
     "surface.send_text",
     "surface.read_text",
     "surface.list",
+    "surface.set_cwd",
+    "surface.set_git",
+    "surface.set_pr",
     "pane.split",
     "pane.close",
     "pane.focus",
@@ -90,6 +93,36 @@ pub struct StatusSetParams {
     pub state: String,
     #[serde(default)]
     pub label: Option<String>,
+    #[serde(default)]
+    pub task: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetCwdParams {
+    pub surface_id: String,
+    pub cwd: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetGitParams {
+    pub surface_id: String,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub dirty: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetPrParams {
+    pub surface_id: String,
+    #[serde(default)]
+    pub number: Option<u32>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -106,6 +106,50 @@ enum Command {
         /// Surface ID to focus
         surface_id: String,
     },
+    /// Set the working directory for a surface
+    #[command(name = "set-cwd")]
+    SetCwd {
+        /// Working directory path
+        cwd: String,
+        /// Target surface ID (defaults to AMUX_SURFACE_ID)
+        #[arg(long)]
+        surface: Option<String>,
+    },
+    /// Set git branch info for a surface
+    #[command(name = "set-git")]
+    SetGit {
+        /// Branch name (omit to clear)
+        #[arg(long)]
+        branch: Option<String>,
+        /// Working tree has uncommitted changes
+        #[arg(long)]
+        dirty: bool,
+        /// Clear git info
+        #[arg(long)]
+        clear: bool,
+        /// Target surface ID (defaults to AMUX_SURFACE_ID)
+        #[arg(long)]
+        surface: Option<String>,
+    },
+    /// Set PR info for a surface
+    #[command(name = "set-pr")]
+    SetPr {
+        /// PR number
+        #[arg(long)]
+        number: Option<u32>,
+        /// PR title
+        #[arg(long)]
+        title: Option<String>,
+        /// PR state: open, merged, closed
+        #[arg(long)]
+        state: Option<String>,
+        /// Clear PR info
+        #[arg(long)]
+        clear: bool,
+        /// Target surface ID (defaults to AMUX_SURFACE_ID)
+        #[arg(long)]
+        surface: Option<String>,
+    },
     /// Set workspace agent status (displayed as a sidebar pill)
     #[command(name = "set-status")]
     SetStatus {
@@ -113,6 +157,12 @@ enum Command {
         state: String,
         /// Optional label text
         label: Option<String>,
+        /// Agent's current task description
+        #[arg(long)]
+        task: Option<String>,
+        /// Agent's latest message
+        #[arg(long)]
+        message: Option<String>,
         /// Target workspace ID (defaults to AMUX_WORKSPACE_ID)
         #[arg(long)]
         workspace: Option<String>,
@@ -440,10 +490,94 @@ async fn main() -> anyhow::Result<()> {
                 print_response(&resp, false);
             }
         }
+        // --- Metadata commands ---
+        Command::SetCwd { cwd, surface } => {
+            let surface_id = surface
+                .or_else(|| std::env::var("AMUX_SURFACE_ID").ok())
+                .unwrap_or_else(|| "default".to_string());
+            let resp = client
+                .call(
+                    "surface.set_cwd",
+                    serde_json::json!({
+                        "surface_id": surface_id,
+                        "cwd": cwd,
+                    }),
+                )
+                .await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("CWD set");
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::SetGit {
+            branch,
+            dirty,
+            clear,
+            surface,
+        } => {
+            let surface_id = surface
+                .or_else(|| std::env::var("AMUX_SURFACE_ID").ok())
+                .unwrap_or_else(|| "default".to_string());
+            let params = if clear {
+                serde_json::json!({
+                    "surface_id": surface_id,
+                })
+            } else {
+                serde_json::json!({
+                    "surface_id": surface_id,
+                    "branch": branch,
+                    "dirty": dirty,
+                })
+            };
+            let resp = client.call("surface.set_git", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("Git info set");
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::SetPr {
+            number,
+            title,
+            state,
+            clear,
+            surface,
+        } => {
+            let surface_id = surface
+                .or_else(|| std::env::var("AMUX_SURFACE_ID").ok())
+                .unwrap_or_else(|| "default".to_string());
+            let params = if clear {
+                serde_json::json!({
+                    "surface_id": surface_id,
+                })
+            } else {
+                serde_json::json!({
+                    "surface_id": surface_id,
+                    "number": number,
+                    "title": title,
+                    "state": state,
+                })
+            };
+            let resp = client.call("surface.set_pr", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("PR info set");
+            } else {
+                print_response(&resp, false);
+            }
+        }
         // --- Notification / Status commands ---
         Command::SetStatus {
             state,
             label,
+            task,
+            message,
             workspace,
         } => {
             let ws_id = workspace
@@ -455,6 +589,12 @@ async fn main() -> anyhow::Result<()> {
             });
             if let Some(l) = label {
                 params["label"] = serde_json::json!(l);
+            }
+            if let Some(t) = task {
+                params["task"] = serde_json::json!(t);
+            }
+            if let Some(m) = message {
+                params["message"] = serde_json::json!(m);
             }
             let resp = client.call("status.set", params).await?;
             if cli.json {

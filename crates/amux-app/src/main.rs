@@ -501,7 +501,7 @@ fn restore_session(
             "waiting" => amux_notify::AgentState::Waiting,
             _ => amux_notify::AgentState::Idle,
         };
-        store.set_status(*ws_id, state, saved_status.label.clone());
+        store.set_status(*ws_id, state, saved_status.label.clone(), None, None);
     }
 
     let active_idx = session
@@ -984,6 +984,8 @@ impl AmuxApp {
                                 }
                                 .to_string(),
                                 label: status.label.clone(),
+                                task: status.task.clone(),
+                                message: status.message.clone(),
                             },
                         )
                     })
@@ -3577,6 +3579,56 @@ impl AmuxApp {
                 }
                 Response::ok(req.id.clone(), serde_json::json!({"surfaces": surfaces}))
             }
+            "surface.set_cwd" => {
+                match serde_json::from_value::<amux_ipc::methods::SetCwdParams>(req.params.clone())
+                {
+                    Ok(params) => {
+                        let surface = self.resolve_surface_mut(&params.surface_id);
+                        match surface {
+                            Some(sf) => {
+                                sf.metadata.cwd = Some(params.cwd);
+                                Response::ok(req.id.clone(), serde_json::json!({}))
+                            }
+                            None => Response::err(req.id.clone(), "not_found", "surface not found"),
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "surface.set_git" => {
+                match serde_json::from_value::<amux_ipc::methods::SetGitParams>(req.params.clone())
+                {
+                    Ok(params) => {
+                        let surface = self.resolve_surface_mut(&params.surface_id);
+                        match surface {
+                            Some(sf) => {
+                                sf.metadata.git_branch = params.branch;
+                                sf.metadata.git_dirty = params.dirty;
+                                Response::ok(req.id.clone(), serde_json::json!({}))
+                            }
+                            None => Response::err(req.id.clone(), "not_found", "surface not found"),
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "surface.set_pr" => {
+                match serde_json::from_value::<amux_ipc::methods::SetPrParams>(req.params.clone()) {
+                    Ok(params) => {
+                        let surface = self.resolve_surface_mut(&params.surface_id);
+                        match surface {
+                            Some(sf) => {
+                                sf.metadata.pr_number = params.number;
+                                sf.metadata.pr_title = params.title;
+                                sf.metadata.pr_state = params.state;
+                                Response::ok(req.id.clone(), serde_json::json!({}))
+                            }
+                            None => Response::err(req.id.clone(), "not_found", "surface not found"),
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
             "surface.send_text" => {
                 match serde_json::from_value::<amux_ipc::methods::SendTextParams>(
                     req.params.clone(),
@@ -3998,7 +4050,13 @@ impl AmuxApp {
                             "waiting" => amux_notify::AgentState::Waiting,
                             _ => amux_notify::AgentState::Idle,
                         };
-                        self.notifications.set_status(ws_id, state, params.label);
+                        self.notifications.set_status(
+                            ws_id,
+                            state,
+                            params.label,
+                            params.task,
+                            params.message,
+                        );
                         Response::ok(req.id.clone(), serde_json::json!({}))
                     }
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
