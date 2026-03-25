@@ -373,7 +373,15 @@ fn restore_session(
                     cwd,
                     scrollback,
                 ) {
-                    Ok(surface) => surfaces.push(surface),
+                    Ok(mut surface) => {
+                        // Restore git/PR metadata from session
+                        surface.metadata.git_branch = saved_sf.git_branch.clone();
+                        surface.metadata.git_dirty = saved_sf.git_dirty;
+                        surface.metadata.pr_number = saved_sf.pr_number;
+                        surface.metadata.pr_title = saved_sf.pr_title.clone();
+                        surface.metadata.pr_state = saved_sf.pr_state.clone();
+                        surfaces.push(surface);
+                    }
                     Err(e) => {
                         tracing::warn!(
                             "Failed to restore surface {} in pane {}: {}",
@@ -537,6 +545,17 @@ fn cleanup_addr(addr: &amux_ipc::IpcAddr) {
 // --- Data Model ---
 // Hierarchy: Workspace > PaneTree (splits) > Pane (each has tab bar) > Surface (terminal tab)
 
+/// Per-surface metadata reported by shell integration, agent hooks, or OSC sequences.
+#[derive(Default, Clone)]
+pub(crate) struct SurfaceMetadata {
+    pub(crate) cwd: Option<String>,
+    pub(crate) git_branch: Option<String>,
+    pub(crate) git_dirty: bool,
+    pub(crate) pr_number: Option<u32>,
+    pub(crate) pr_title: Option<String>,
+    pub(crate) pr_state: Option<String>, // "open", "merged", "closed"
+}
+
 /// A terminal tab within a pane. Each pane can have multiple surfaces.
 struct PaneSurface {
     id: u64,
@@ -544,6 +563,7 @@ struct PaneSurface {
     byte_rx: mpsc::Receiver<Vec<u8>>,
     scroll_offset: usize,
     scroll_accum: f32,
+    metadata: SurfaceMetadata,
 }
 
 /// A leaf in the split tree. Each pane has its own tab bar with surfaces.
@@ -743,12 +763,19 @@ fn spawn_surface(
         }
     });
 
+    // Initialize metadata with CWD if provided (e.g. from session restore)
+    let metadata = SurfaceMetadata {
+        cwd: cwd.map(|s| s.to_string()),
+        ..Default::default()
+    };
+
     Ok(PaneSurface {
         id: surface_id,
         pane,
         byte_rx,
         scroll_offset: 0,
         scroll_accum: 0.0,
+        metadata,
     })
 }
 
@@ -893,6 +920,11 @@ impl AmuxApp {
                                 scrollback,
                                 cols: cols as u16,
                                 rows: rows as u16,
+                                git_branch: sf.metadata.git_branch.clone(),
+                                git_dirty: sf.metadata.git_dirty,
+                                pr_number: sf.metadata.pr_number,
+                                pr_title: sf.metadata.pr_title.clone(),
+                                pr_state: sf.metadata.pr_state.clone(),
                             }
                         })
                         .collect();
@@ -2362,8 +2394,25 @@ impl AmuxApp {
                 NotificationEvent::Bell => {
                     (String::new(), "Bell".to_string(), NotificationSource::Bell)
                 }
-                // Title and directory changes are not user-facing notifications
-                NotificationEvent::TitleChanged(_) | NotificationEvent::WorkingDirectoryChanged => {
+                NotificationEvent::TitleChanged(_) => {
+                    continue;
+                }
+                NotificationEvent::WorkingDirectoryChanged => {
+                    // Store the CWD from OSC 7 into surface metadata
+                    if let Some(managed) = self.panes.get_mut(&pane_id) {
+                        for surface in &mut managed.surfaces {
+                            if surface.id == surface_id {
+                                let cwd = surface
+                                    .pane
+                                    .working_dir()
+                                    .and_then(|url| url.to_file_path().ok())
+                                    .map(|p| p.to_string_lossy().to_string());
+                                if cwd.is_some() {
+                                    surface.metadata.cwd = cwd;
+                                }
+                            }
+                        }
+                    }
                     continue;
                 }
             };
@@ -2384,6 +2433,16 @@ impl AmuxApp {
             .iter()
             .find(|ws| ws.tree.iter_panes().contains(&pane_id))
             .map(|ws| ws.id)
+    }
+
+    /// Aggregate metadata from the focused surface of the focused pane in a workspace.
+    /// Used by sidebar rendering in PR 11d.
+    #[allow(dead_code)]
+    fn workspace_metadata(&self, workspace: &Workspace) -> SurfaceMetadata {
+        self.panes
+            .get(&workspace.focused_pane)
+            .map(|mp| mp.active_surface().metadata.clone())
+            .unwrap_or_default()
     }
 
     fn jump_to_latest_unread(&mut self) {
