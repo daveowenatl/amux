@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+
 use amux_notify::NotificationStore;
 use egui::Color32;
 
-use crate::{SidebarDragState, SidebarState, Workspace};
+use crate::{SidebarDragState, SidebarState, SurfaceMetadata, Workspace};
 
 // ---------------------------------------------------------------------------
 // Colors (cmux dark mode equivalents)
@@ -47,6 +49,11 @@ const CLOSE_BTN_SIZE: f32 = 16.0;
 const COLOR_CAPSULE_WIDTH: f32 = 3.0;
 const PROGRESS_BAR_HEIGHT: f32 = 3.0;
 const DROP_INDICATOR_HEIGHT: f32 = 2.0;
+const METADATA_FONT_SIZE: f32 = 10.0;
+const METADATA_LINE_HEIGHT: f32 = 16.0;
+const PR_MERGED_COLOR: Color32 = Color32::from_rgb(130, 80, 223); // purple for merged
+const PR_OPEN_COLOR: Color32 = Color32::from_rgb(0, 145, 255);
+const PR_CLOSED_COLOR: Color32 = Color32::from_gray(100);
 #[cfg(target_os = "macos")]
 const TRAFFIC_LIGHT_SPACER: f32 = 28.0;
 
@@ -115,6 +122,7 @@ pub(crate) fn render_sidebar(
     workspaces: &[Workspace],
     active_workspace_idx: usize,
     notifications: &NotificationStore,
+    workspace_metadata: &HashMap<u64, SurfaceMetadata>,
 ) -> Vec<SidebarAction> {
     let mut actions = Vec::new();
 
@@ -149,6 +157,7 @@ pub(crate) fn render_sidebar(
                         let is_active = idx == active_workspace_idx;
                         let is_being_dragged =
                             state.drag.as_ref().is_some_and(|d| d.source_idx == idx);
+                        let meta = workspace_metadata.get(&ws.id);
                         let (row_actions, row_rect) = render_workspace_row(
                             ui,
                             ws,
@@ -157,6 +166,7 @@ pub(crate) fn render_sidebar(
                             is_being_dragged,
                             notifications,
                             state,
+                            meta,
                         );
                         actions.extend(row_actions);
                         row_rects.push(row_rect);
@@ -282,6 +292,7 @@ fn handle_drag_reorder(
 }
 
 /// Renders a workspace row. Returns (actions, allocated_rect).
+#[allow(clippy::too_many_arguments)]
 fn render_workspace_row(
     ui: &mut egui::Ui,
     ws: &Workspace,
@@ -290,6 +301,7 @@ fn render_workspace_row(
     is_being_dragged: bool,
     notifications: &NotificationStore,
     state: &mut SidebarState,
+    metadata: Option<&SurfaceMetadata>,
 ) -> (Vec<SidebarAction>, egui::Rect) {
     let mut actions = Vec::new();
     let pane_ids: Vec<u64> = ws.tree.iter_panes();
@@ -297,16 +309,28 @@ fn render_workspace_row(
     let status = notifications.workspace_status(ws.id);
     let has_status = status.is_some();
     let has_progress = status.as_ref().and_then(|s| s.progress).is_some();
+    let has_agent_message = status.as_ref().and_then(|s| s.message.as_ref()).is_some();
     let latest_notif = notifications.latest_for_workspace(ws.id);
-    let has_notif_text = latest_notif.is_some_and(|n| !n.body.is_empty());
+    let has_notif_text = !has_agent_message && latest_notif.is_some_and(|n| !n.body.is_empty());
     let is_renaming = state.renaming == Some(idx);
     let has_color = ws.color.is_some();
+    let has_git_or_cwd = metadata.is_some_and(|m| m.git_branch.is_some() || m.cwd.is_some());
+    let has_pr = metadata.is_some_and(|m| m.pr_number.is_some());
 
     // Dynamic row height
     let title_line_h = TITLE_FONT_SIZE + 2.0;
     let mut row_h = ROW_V_PAD * 2.0 + title_line_h;
+    if has_agent_message {
+        row_h += METADATA_LINE_HEIGHT + 2.0;
+    }
     if has_status {
         row_h += PILL_HEIGHT + 4.0;
+    }
+    if has_git_or_cwd {
+        row_h += METADATA_LINE_HEIGHT + 2.0;
+    }
+    if has_pr {
+        row_h += METADATA_LINE_HEIGHT + 2.0;
     }
     if has_notif_text {
         row_h += NOTIF_PREVIEW_HEIGHT + 2.0;
@@ -465,7 +489,13 @@ fn render_workspace_row(
     } else {
         let title_pos = rect.min + egui::vec2(content_left, ROW_V_PAD);
         let title_font = egui::FontId::proportional(TITLE_FONT_SIZE);
-        let truncated_title = truncate_text(ui, &ws.title, &title_font, max_title_w);
+        // Show agent task as title if available, with star prefix like cmux
+        let display_title = if let Some(task) = status.as_ref().and_then(|s| s.task.as_ref()) {
+            format!("\u{2731} {task}")
+        } else {
+            ws.title.clone()
+        };
+        let truncated_title = truncate_text(ui, &display_title, &title_font, max_title_w);
         ui.painter().text(
             title_pos,
             egui::Align2::LEFT_TOP,
@@ -559,8 +589,96 @@ fn render_workspace_row(
         content_bottom += PILL_HEIGHT;
     }
 
-    // --- Notification preview text ---
-    if let Some(notif) = latest_notif.filter(|n| !n.body.is_empty()) {
+    // --- Agent message (subtitle) ---
+    if let Some(message) = status.as_ref().and_then(|s| s.message.as_ref()) {
+        let msg_color = if is_active {
+            Color32::from_rgba_premultiplied(204, 204, 204, 204)
+        } else {
+            TEXT_SECONDARY
+        };
+        content_bottom += 2.0;
+        let msg_x = rect.min.x + content_left;
+        let max_w = avail_w - content_left - ROW_H_PAD;
+        let msg_font = egui::FontId::proportional(METADATA_FONT_SIZE);
+        let galley = ui
+            .painter()
+            .layout(message.clone(), msg_font, msg_color, max_w);
+        let clip_rect = egui::Rect::from_min_size(
+            egui::pos2(msg_x, content_bottom),
+            egui::vec2(max_w, METADATA_LINE_HEIGHT),
+        );
+        ui.painter().with_clip_rect(clip_rect).galley(
+            egui::pos2(msg_x, content_bottom),
+            galley,
+            msg_color,
+        );
+        content_bottom += METADATA_LINE_HEIGHT;
+    }
+
+    // --- Git branch + CWD line ---
+    if let Some(meta) = metadata {
+        if meta.git_branch.is_some() || meta.cwd.is_some() {
+            let line_color = if is_active {
+                Color32::from_rgba_premultiplied(180, 180, 180, 204)
+            } else {
+                TEXT_SECONDARY
+            };
+            content_bottom += 2.0;
+            let line_x = rect.min.x + content_left;
+            let max_w = avail_w - content_left - ROW_H_PAD;
+            let line_font = egui::FontId::monospace(METADATA_FONT_SIZE);
+
+            let mut parts = Vec::new();
+            if let Some(branch) = &meta.git_branch {
+                let dirty = if meta.git_dirty { "*" } else { "" };
+                parts.push(format!("{branch}{dirty}"));
+            }
+            if let Some(cwd) = &meta.cwd {
+                parts.push(shorten_path(cwd));
+            }
+            let text = parts.join(" \u{2022} "); // bullet separator
+
+            let truncated = truncate_text(ui, &text, &line_font, max_w);
+            ui.painter().text(
+                egui::pos2(line_x, content_bottom),
+                egui::Align2::LEFT_TOP,
+                &truncated,
+                line_font,
+                line_color,
+            );
+            content_bottom += METADATA_LINE_HEIGHT;
+        }
+
+        // --- PR badge ---
+        if let Some(pr_num) = meta.pr_number {
+            let pr_state = meta.pr_state.as_deref().unwrap_or("open");
+            let pr_color = match pr_state {
+                "merged" => PR_MERGED_COLOR,
+                "open" => PR_OPEN_COLOR,
+                _ => PR_CLOSED_COLOR,
+            };
+            content_bottom += 2.0;
+            let pr_x = rect.min.x + content_left;
+            let max_w = avail_w - content_left - ROW_H_PAD;
+            let pr_font = egui::FontId::proportional(METADATA_FONT_SIZE);
+            let pr_text = format!("\u{1F517} PR #{pr_num} {pr_state}");
+            let truncated = truncate_text(ui, &pr_text, &pr_font, max_w);
+            ui.painter().text(
+                egui::pos2(pr_x, content_bottom),
+                egui::Align2::LEFT_TOP,
+                &truncated,
+                pr_font,
+                pr_color,
+            );
+            content_bottom += METADATA_LINE_HEIGHT;
+        }
+    }
+
+    // --- Notification preview text (only when no agent message) ---
+    if let Some(notif) = latest_notif
+        .filter(|_| !has_agent_message)
+        .filter(|n| !n.body.is_empty())
+    {
         let notif_color = if is_active {
             Color32::from_rgba_premultiplied(204, 204, 204, 204)
         } else {
@@ -662,4 +780,15 @@ fn truncate_text(ui: &egui::Ui, text: &str, font: &egui::FontId, max_width: f32)
 
     let prefix: String = chars[..lo].iter().collect();
     format!("{prefix}{ellipsis}")
+}
+
+/// Shorten a path for sidebar display: replace $HOME with ~.
+fn shorten_path(path: &str) -> String {
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.to_string_lossy();
+        if let Some(rest) = path.strip_prefix(home_str.as_ref()) {
+            return format!("~{rest}");
+        }
+    }
+    path.to_string()
 }

@@ -1102,12 +1102,19 @@ impl eframe::App for AmuxApp {
 
         // Render sidebar
         if self.sidebar.visible {
+            // Build workspace metadata map for sidebar display
+            let workspace_metadata: std::collections::HashMap<u64, SurfaceMetadata> = self
+                .workspaces
+                .iter()
+                .map(|ws| (ws.id, self.workspace_metadata(ws)))
+                .collect();
             let sidebar_actions = sidebar::render_sidebar(
                 ctx,
                 &mut self.sidebar,
                 &self.workspaces,
                 self.active_workspace_idx,
                 &self.notifications,
+                &workspace_metadata,
             );
             for action in sidebar_actions {
                 match action {
@@ -2438,8 +2445,6 @@ impl AmuxApp {
     }
 
     /// Aggregate metadata from the focused surface of the focused pane in a workspace.
-    /// Used by sidebar rendering in PR 11d.
-    #[allow(dead_code)]
     fn workspace_metadata(&self, workspace: &Workspace) -> SurfaceMetadata {
         self.panes
             .get(&workspace.focused_pane)
