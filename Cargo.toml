@@ -39,6 +39,11 @@ egui = "0.31"
 # Font rendering
 cosmic-text = "0.12"
 
+# GPU rendering
+wgpu = "24.0"
+egui-wgpu = "0.31"
+bytemuck = { version = "1", features = ["derive"] }
+
 # Clipboard
 arboard = "3"
 
