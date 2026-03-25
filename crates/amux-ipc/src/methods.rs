@@ -37,6 +37,12 @@ pub struct SendTextParams {
 #[derive(Debug, Deserialize)]
 pub struct ReadTextParams {
     pub surface_id: String,
+    /// If true, include ANSI escape sequences in the output.
+    #[serde(default)]
+    pub ansi: bool,
+    /// Line range string: "1-50", "-20" (last 20), or None for visible screen.
+    #[serde(default)]
+    pub lines: Option<String>,
 }
 
 // --- Results ---

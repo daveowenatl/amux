@@ -3170,7 +3170,14 @@ impl AmuxApp {
                         let surface = self.resolve_surface(&params.surface_id);
                         match surface {
                             Some(sf) => {
-                                let text = sf.pane.read_screen_text();
+                                let text = if let Some(ref line_spec) = params.lines {
+                                    sf.pane.read_screen_lines(line_spec, params.ansi)
+                                } else if params.ansi {
+                                    let (_, rows) = sf.pane.dimensions();
+                                    sf.pane.read_scrollback_text(rows)
+                                } else {
+                                    sf.pane.read_screen_text()
+                                };
                                 Response::ok(req.id.clone(), serde_json::json!({"text": text}))
                             }
                             None => Response::err(req.id.clone(), "not_found", "surface not found"),

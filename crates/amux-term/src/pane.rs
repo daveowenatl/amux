@@ -282,6 +282,58 @@ impl TerminalPane {
     }
 
     /// Read the visible screen content as a string (lines joined by newlines).
+    /// Read lines from the terminal with optional ANSI formatting.
+    ///
+    /// `line_spec` formats:
+    /// - `"1-50"` — lines 1 through 50 (1-based, from top of scrollback)
+    /// - `"-20"` — last 20 lines
+    /// - `"5"` — just line 5
+    pub fn read_screen_lines(&self, line_spec: &str, ansi: bool) -> String {
+        let screen = self.terminal.screen();
+        let total = screen.scrollback_rows();
+        let (cols, _) = self.dimensions();
+
+        // Parse line spec into (start_phys, end_phys) range (0-based)
+        let (start, end) = if let Some(rest) = line_spec.strip_prefix('-') {
+            // "-N" means last N lines
+            let n: usize = rest.parse().unwrap_or(total);
+            (total.saturating_sub(n), total)
+        } else if let Some((a, b)) = line_spec.split_once('-') {
+            // "A-B" means lines A through B (1-based)
+            let a: usize = a.parse().unwrap_or(1);
+            let b: usize = b.parse().unwrap_or(total);
+            ((a.saturating_sub(1)).min(total), b.min(total))
+        } else {
+            // Single line number
+            let n: usize = line_spec.parse().unwrap_or(1);
+            let idx = (n.saturating_sub(1)).min(total.saturating_sub(1));
+            (idx, idx + 1)
+        };
+
+        if ansi {
+            // Use the existing ANSI-formatted reader, but for the specific range
+            self.read_scrollback_text_range(start, end)
+        } else {
+            let lines = screen.lines_in_phys_range(start..end);
+            let mut result = String::new();
+            for (i, line) in lines.iter().enumerate() {
+                if i > 0 {
+                    result.push('\n');
+                }
+                let mut line_text = String::new();
+                for cell in line.visible_cells() {
+                    if cell.cell_index() >= cols {
+                        break;
+                    }
+                    line_text.push_str(cell.str());
+                }
+                result.push_str(line_text.trim_end());
+            }
+            result
+        }
+    }
+
+    /// Read the visible screen content as a string (lines joined by newlines).
     pub fn read_screen_text(&self) -> String {
         let (cols, rows) = self.dimensions();
         let screen = self.terminal.screen();
@@ -306,17 +358,28 @@ impl TerminalPane {
         result
     }
 
+    /// Read a range of lines as text with ANSI escape sequences.
+    /// `start` and `end` are physical row indices (0-based, end exclusive).
+    pub fn read_scrollback_text_range(&self, start: usize, end: usize) -> String {
+        self.read_scrollback_text_impl(start, end)
+    }
+
     /// Read scrollback + visible screen as text with ANSI escape sequences,
     /// up to `max_lines` lines. Preserves colors and formatting for session
     /// persistence. Trailing empty lines are trimmed.
     pub fn read_scrollback_text(&self, max_lines: usize) -> String {
+        let screen = self.terminal.screen();
+        let total = screen.scrollback_rows();
+        let start = total.saturating_sub(max_lines);
+        self.read_scrollback_text_impl(start, total)
+    }
+
+    fn read_scrollback_text_impl(&self, start: usize, end: usize) -> String {
         use wezterm_term::{CellAttributes, Intensity, Underline};
 
         let (cols, _) = self.dimensions();
         let screen = self.terminal.screen();
-        let total = screen.scrollback_rows();
-        let start = total.saturating_sub(max_lines);
-        let lines = screen.lines_in_phys_range(start..total);
+        let lines = screen.lines_in_phys_range(start..end);
 
         // Build lines with ANSI formatting, collecting into a Vec
         // so we can trim trailing empty lines.
