@@ -113,6 +113,29 @@ impl GpuRenderer {
         self.cell_height
     }
 
+    /// Update font size, re-measure cell dimensions, and invalidate caches.
+    pub fn set_font_size(&mut self, font_size: f32) {
+        let line_height = (font_size * 1.3).ceil();
+        let metrics = Metrics::new(font_size, line_height);
+
+        if let Some(r) = self
+            .render_state
+            .renderer
+            .write()
+            .callback_resources
+            .get_mut::<TerminalGpuResources>()
+        {
+            let cell_width = measure_cell_width(&mut r.font_system, metrics);
+            r.metrics = metrics;
+            // Clear all pane render states to force full rebuild with new metrics.
+            r.pane_states.clear();
+            // Mark atlas bind group dirty since glyph sizes will change.
+            r.atlas_bind_group_dirty = true;
+            self.cell_width = cell_width;
+            self.cell_height = line_height;
+        }
+    }
+
     /// Remove cached render state for panes that no longer exist.
     pub fn retain_panes(&self, live_pane_ids: &[u64]) {
         if let Some(r) = self
