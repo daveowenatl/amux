@@ -224,6 +224,24 @@ impl NotificationStore {
         }
     }
 
+    /// Mark all notifications for a workspace as read.
+    pub fn mark_workspace_read(&mut self, pane_ids: &[u64]) {
+        for n in &mut self.notifications {
+            if !n.read && pane_ids.contains(&n.pane_id) {
+                n.read = true;
+            }
+        }
+        for &pid in pane_ids {
+            if let Some(state) = self.pane_states.get_mut(&pid) {
+                if state.unread_count > 0 {
+                    state.unread_count = 0;
+                    state.flash_started_at = Some(Instant::now());
+                    state.flash_reason = Some(FlashReason::NotificationDismiss);
+                }
+            }
+        }
+    }
+
     /// Mark all notifications as read.
     pub fn mark_all_read(&mut self) {
         for n in &mut self.notifications {

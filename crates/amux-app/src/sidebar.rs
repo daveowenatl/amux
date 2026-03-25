@@ -20,6 +20,7 @@ const STATUS_ORANGE: Color32 = Color32::from_rgb(230, 170, 40);
 const STATUS_GRAY: Color32 = Color32::from_gray(100);
 const NEW_BTN_TEXT: Color32 = Color32::from_gray(140);
 const NEW_BTN_HOVER: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
+const CLOSE_BTN_COLOR: Color32 = Color32::from_rgba_premultiplied(140, 140, 140, 179); // secondary@0.7
 
 // ---------------------------------------------------------------------------
 // Layout constants (matching cmux points)
@@ -41,6 +42,8 @@ const PILL_CORNER_RADIUS: f32 = 7.0;
 const COUNT_FONT_SIZE: f32 = 10.0;
 const NOTIF_FONT_SIZE: f32 = 10.0;
 const NOTIF_PREVIEW_HEIGHT: f32 = 24.0; // ~2 lines at 10pt
+const CLOSE_BTN_SIZE: f32 = 16.0;
+const CLOSE_BTN_FONT_SIZE: f32 = 9.0;
 #[cfg(target_os = "macos")]
 const TRAFFIC_LIGHT_SPACER: f32 = 28.0;
 
@@ -51,6 +54,9 @@ const TRAFFIC_LIGHT_SPACER: f32 = 28.0;
 pub(crate) enum SidebarAction {
     SwitchWorkspace(usize),
     CreateWorkspace,
+    CloseWorkspace(usize),
+    RenameWorkspace(usize, String),
+    MarkWorkspaceRead(usize),
 }
 
 // ---------------------------------------------------------------------------
@@ -90,11 +96,9 @@ pub(crate) fn render_sidebar(
                 .show(ui, |ui| {
                     for (idx, ws) in workspaces.iter().enumerate() {
                         let is_active = idx == active_workspace_idx;
-                        let action =
+                        let row_actions =
                             render_workspace_row(ui, ws, idx, is_active, notifications, state);
-                        if let Some(a) = action {
-                            actions.push(a);
-                        }
+                        actions.extend(row_actions);
                     }
 
                     ui.add_space(8.0);
@@ -147,14 +151,16 @@ fn render_workspace_row(
     idx: usize,
     is_active: bool,
     notifications: &NotificationStore,
-    state: &SidebarState,
-) -> Option<SidebarAction> {
+    state: &mut SidebarState,
+) -> Vec<SidebarAction> {
+    let mut actions = Vec::new();
     let pane_ids: Vec<u64> = ws.tree.iter_panes();
     let unread = notifications.workspace_unread_count(&pane_ids);
     let status = notifications.workspace_status(ws.id);
     let has_status = status.is_some();
     let latest_notif = notifications.latest_for_workspace(ws.id);
     let has_notif_text = latest_notif.is_some_and(|n| !n.body.is_empty());
+    let is_renaming = state.renaming == Some(idx);
 
     // Dynamic row height
     let title_line_h = TITLE_FONT_SIZE + 2.0; // text + small buffer
@@ -170,15 +176,37 @@ fn render_workspace_row(
     let (rect, response) = ui.allocate_exact_size(egui::vec2(avail_w, row_h), egui::Sense::click());
 
     if !ui.is_rect_visible(rect) {
-        return if response.clicked() && !is_active {
-            Some(SidebarAction::SwitchWorkspace(idx))
-        } else {
-            None
-        };
+        if response.clicked() && !is_active {
+            actions.push(SidebarAction::SwitchWorkspace(idx));
+        }
+        return actions;
     }
 
     let hovered = response.hovered();
-    let _ = state; // will use in later PRs
+
+    // --- Middle-click to close ---
+    if response.middle_clicked() {
+        actions.push(SidebarAction::CloseWorkspace(idx));
+        return actions;
+    }
+
+    // --- Context menu ---
+    response.context_menu(|ui| {
+        if ui.button("Rename Workspace").clicked() {
+            state.renaming = Some(idx);
+            state.rename_buf = ws.title.clone();
+            ui.close_menu();
+        }
+        if ui.button("Close Workspace").clicked() {
+            actions.push(SidebarAction::CloseWorkspace(idx));
+            ui.close_menu();
+        }
+        ui.separator();
+        if ui.button("Mark All Read").clicked() {
+            actions.push(SidebarAction::MarkWorkspaceRead(idx));
+            ui.close_menu();
+        }
+    });
 
     // --- Background ---
     let bg = if is_active {
@@ -190,31 +218,111 @@ fn render_workspace_row(
     };
     ui.painter().rect_filled(rect, ROW_CORNER_RADIUS, bg);
 
-    // --- Title ---
+    // --- Title (or rename TextEdit) ---
     let title_color = if is_active {
         TEXT_ACTIVE
     } else {
         TEXT_INACTIVE
     };
-    let title_pos = rect.min + egui::vec2(ROW_H_PAD, ROW_V_PAD);
 
-    // Measure and truncate title with ellipsis
-    let badge_reserve = BADGE_RADIUS * 2.0 + 4.0; // space for badge/count on right
-    let max_title_w = avail_w - ROW_H_PAD * 2.0 - badge_reserve;
-    let title_font = egui::FontId::proportional(TITLE_FONT_SIZE);
+    let close_btn_reserve = CLOSE_BTN_SIZE + 4.0;
+    let badge_reserve = BADGE_RADIUS * 2.0 + 4.0;
+    // When hovered, reserve space for close button instead of badge
+    let right_reserve = if hovered && !is_renaming {
+        close_btn_reserve
+    } else {
+        badge_reserve
+    };
+    let max_title_w = avail_w - ROW_H_PAD * 2.0 - right_reserve;
 
-    let truncated_title = truncate_text(ui, &ws.title, &title_font, max_title_w);
-    ui.painter().text(
-        title_pos,
-        egui::Align2::LEFT_TOP,
-        &truncated_title,
-        title_font.clone(),
-        title_color,
-    );
+    if is_renaming {
+        // Render inline rename TextEdit
+        let title_rect = egui::Rect::from_min_size(
+            rect.min + egui::vec2(ROW_H_PAD, ROW_V_PAD),
+            egui::vec2(max_title_w, title_line_h),
+        );
+        let rename_id = ui.id().with("rename").with(idx);
+        let mut text_edit = egui::TextEdit::singleline(&mut state.rename_buf)
+            .id(rename_id)
+            .font(egui::FontId::proportional(TITLE_FONT_SIZE))
+            .text_color(title_color)
+            .desired_width(max_title_w)
+            .frame(false);
+        // Dark background for the rename field
+        text_edit = text_edit.background_color(Color32::from_rgba_premultiplied(0, 0, 0, 180));
 
-    // --- Unread badge or pane count (right-aligned) ---
+        let te_response = ui.put(title_rect, text_edit);
+
+        // Request focus on first frame
+        if !te_response.has_focus() {
+            te_response.request_focus();
+        }
+
+        // Confirm on Enter, cancel on Escape, confirm on focus loss
+        let confirmed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+        if confirmed || (!te_response.has_focus() && !cancelled) {
+            let new_name = state.rename_buf.trim().to_string();
+            if !new_name.is_empty() && new_name != ws.title {
+                actions.push(SidebarAction::RenameWorkspace(idx, new_name));
+            }
+            state.renaming = None;
+            state.rename_buf.clear();
+        } else if cancelled {
+            state.renaming = None;
+            state.rename_buf.clear();
+        }
+    } else {
+        let title_pos = rect.min + egui::vec2(ROW_H_PAD, ROW_V_PAD);
+        let title_font = egui::FontId::proportional(TITLE_FONT_SIZE);
+        let truncated_title = truncate_text(ui, &ws.title, &title_font, max_title_w);
+        ui.painter().text(
+            title_pos,
+            egui::Align2::LEFT_TOP,
+            &truncated_title,
+            title_font,
+            title_color,
+        );
+    }
+
+    // --- Close button on hover (replaces badge) or badge/count ---
     let badge_center_y = rect.min.y + ROW_V_PAD + title_line_h / 2.0;
-    if unread > 0 {
+
+    if hovered && !is_renaming {
+        // Close button (✕) on the right
+        let btn_center = egui::pos2(
+            rect.right() - ROW_H_PAD - CLOSE_BTN_SIZE / 2.0,
+            badge_center_y,
+        );
+        let btn_rect =
+            egui::Rect::from_center_size(btn_center, egui::vec2(CLOSE_BTN_SIZE, CLOSE_BTN_SIZE));
+
+        // Check if pointer is over close button
+        let pointer_over_btn = ui
+            .input(|i| i.pointer.hover_pos())
+            .is_some_and(|p| btn_rect.contains(p));
+
+        let btn_color = if pointer_over_btn {
+            TEXT_ACTIVE
+        } else {
+            CLOSE_BTN_COLOR
+        };
+
+        ui.painter().text(
+            btn_center,
+            egui::Align2::CENTER_CENTER,
+            "\u{2715}", // ✕
+            egui::FontId::proportional(CLOSE_BTN_FONT_SIZE),
+            btn_color,
+        );
+
+        // If clicked on the close button specifically, close instead of switch
+        if response.clicked() && pointer_over_btn {
+            actions.push(SidebarAction::CloseWorkspace(idx));
+            return actions;
+        }
+    } else if unread > 0 {
         let badge_center = egui::pos2(rect.right() - ROW_H_PAD - BADGE_RADIUS, badge_center_y);
         let badge_color = if is_active {
             BADGE_ACTIVE_BG
@@ -252,7 +360,6 @@ fn render_workspace_row(
         let pill_y = rect.min.y + ROW_V_PAD + title_line_h + 4.0;
         let pill_x = rect.min.x + ROW_H_PAD;
 
-        // Measure pill text width
         let pill_font = egui::FontId::proportional(PILL_FONT_SIZE);
         let text_galley =
             ui.painter()
@@ -280,7 +387,6 @@ fn render_workspace_row(
         } else {
             TEXT_SECONDARY
         };
-        // Position below pill or title
         let notif_y = if has_status {
             rect.min.y + ROW_V_PAD + title_line_h + 4.0 + PILL_HEIGHT + 2.0
         } else {
@@ -290,7 +396,6 @@ fn render_workspace_row(
         let max_w = avail_w - ROW_H_PAD * 2.0;
         let notif_font = egui::FontId::proportional(NOTIF_FONT_SIZE);
 
-        // Use galley for word-wrap, clip to 2 lines
         let galley = ui
             .painter()
             .layout(notif.body.clone(), notif_font, notif_color, max_w);
@@ -305,14 +410,15 @@ fn render_workspace_row(
         );
     }
 
-    if response.clicked() && !is_active {
-        Some(SidebarAction::SwitchWorkspace(idx))
-    } else {
-        None
+    // --- Click to switch workspace ---
+    if response.clicked() && !is_active && !is_renaming {
+        actions.push(SidebarAction::SwitchWorkspace(idx));
     }
+
+    actions
 }
 
-/// Truncate text to fit within `max_width`, appending "…" if needed.
+/// Truncate text to fit within `max_width`, appending "\u{2026}" if needed.
 fn truncate_text(ui: &egui::Ui, text: &str, font: &egui::FontId, max_width: f32) -> String {
     let full_galley = ui
         .painter()
@@ -321,8 +427,7 @@ fn truncate_text(ui: &egui::Ui, text: &str, font: &egui::FontId, max_width: f32)
         return text.to_string();
     }
 
-    // Binary search for the longest prefix that fits with "…"
-    let ellipsis = "…";
+    let ellipsis = "\u{2026}";
     let ellipsis_w = ui
         .painter()
         .layout_no_wrap(ellipsis.to_string(), font.clone(), Color32::WHITE)

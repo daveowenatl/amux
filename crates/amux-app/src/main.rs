@@ -194,6 +194,8 @@ fn fresh_startup(
         sidebar: SidebarState {
             visible: true,
             width: DEFAULT_SIDEBAR_WIDTH,
+            renaming: None,
+            rename_buf: String::new(),
         },
         notifications: NotificationStore::new(),
     })
@@ -306,6 +308,8 @@ fn restore_session(
     let sidebar = SidebarState {
         visible: session.sidebar.visible,
         width: session.sidebar.width,
+        renaming: None,
+        rename_buf: String::new(),
     };
 
     // Restore notifications (without Instant-dependent fields)
@@ -428,6 +432,10 @@ pub(crate) struct Workspace {
 pub(crate) struct SidebarState {
     pub(crate) visible: bool,
     pub(crate) width: f32,
+    /// When set, the workspace at this index is being renamed in-place.
+    pub(crate) renaming: Option<usize>,
+    /// Buffer for the in-progress rename text.
+    pub(crate) rename_buf: String,
 }
 
 struct DragState {
@@ -903,6 +911,20 @@ impl eframe::App for AmuxApp {
                     }
                     sidebar::SidebarAction::CreateWorkspace => {
                         self.create_workspace(None);
+                    }
+                    sidebar::SidebarAction::CloseWorkspace(idx) => {
+                        self.close_workspace_at(idx);
+                    }
+                    sidebar::SidebarAction::RenameWorkspace(idx, new_name) => {
+                        if idx < self.workspaces.len() {
+                            self.workspaces[idx].title = new_name;
+                        }
+                    }
+                    sidebar::SidebarAction::MarkWorkspaceRead(idx) => {
+                        if idx < self.workspaces.len() {
+                            let pane_ids: Vec<u64> = self.workspaces[idx].tree.iter_panes();
+                            self.notifications.mark_workspace_read(&pane_ids);
+                        }
                     }
                 }
             }
@@ -1704,7 +1726,7 @@ impl AmuxApp {
                     return true;
                 }
 
-                // Jump to workspace 1-8
+                // Jump to workspace 1-9 (Cmd+9 = last workspace)
                 #[cfg(target_os = "macos")]
                 let is_jump_mod = is_cmd && !modifiers.shift;
                 #[cfg(not(target_os = "macos"))]
@@ -1720,9 +1742,13 @@ impl AmuxApp {
                         egui::Key::Num6 => Some(5),
                         egui::Key::Num7 => Some(6),
                         egui::Key::Num8 => Some(7),
+                        egui::Key::Num9 => Some(usize::MAX), // last workspace
                         _ => None,
                     };
-                    if let Some(idx) = num {
+                    if let Some(mut idx) = num {
+                        if idx == usize::MAX {
+                            idx = self.workspaces.len().saturating_sub(1);
+                        }
                         if idx < self.workspaces.len() {
                             self.active_workspace_idx = idx;
                             return true;
