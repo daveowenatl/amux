@@ -1,3 +1,5 @@
+mod sidebar;
+
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::{mpsc, Arc};
@@ -59,12 +61,147 @@ fn get_cwd_from_pid(pid: u32) -> Option<String> {
     None
 }
 
-const FONT_SIZE: f32 = 14.0;
+const DEFAULT_FONT_SIZE: f32 = 12.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
 const TAB_BAR_HEIGHT: f32 = 24.0;
 
+// ---------------------------------------------------------------------------
+// App config (loaded from ~/.config/amux/config.toml)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(default)]
+struct AppConfig {
+    font_size: f32,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            font_size: DEFAULT_FONT_SIZE,
+        }
+    }
+}
+
+fn load_app_config() -> AppConfig {
+    let config_path = if cfg!(target_os = "windows") {
+        dirs::config_dir().map(|d| d.join("amux").join("config.toml"))
+    } else {
+        dirs::home_dir().map(|d| d.join(".config").join("amux").join("config.toml"))
+    };
+
+    if let Some(path) = config_path {
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => match toml::from_str::<AppConfig>(&contents) {
+                Ok(mut config) => {
+                    tracing::info!("Loaded config from {}", path.display());
+                    config.font_size = validate_font_size(config.font_size);
+                    return config;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to parse {}: {}", path.display(), e);
+                }
+            },
+            Err(_) => {
+                tracing::debug!("No config file at {}", path.display());
+            }
+        }
+    }
+
+    AppConfig::default()
+}
+
+fn validate_font_size(size: f32) -> f32 {
+    const MIN_FONT_SIZE: f32 = 4.0;
+    const MAX_FONT_SIZE: f32 = 96.0;
+    if !size.is_finite() || size <= 0.0 {
+        DEFAULT_FONT_SIZE
+    } else {
+        size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+    }
+}
+
+/// Load system fonts as fallbacks to egui's font families.
+/// This provides coverage for braille patterns, geometric shapes, and other symbols
+/// that egui's bundled Hack font doesn't include.
+fn install_system_font_fallback(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let mut loaded = Vec::new();
+
+    // Platform-specific font candidates: (path, name, is_symbol_font)
+    // We try to load a monospace font + a symbols font for maximum coverage.
+    let candidates: &[(&str, &str, bool)] = if cfg!(target_os = "macos") {
+        &[
+            // SF Mono: single .ttf with good Unicode coverage
+            ("/System/Library/Fonts/SFNSMono.ttf", "sf_mono", false),
+            // Apple Symbols: broad Unicode symbol coverage
+            (
+                "/System/Library/Fonts/Apple Symbols.ttf",
+                "apple_symbols",
+                true,
+            ),
+            // Supplemental Andale Mono as another option
+            (
+                "/System/Library/Fonts/Supplemental/Andale Mono.ttf",
+                "andale_mono",
+                false,
+            ),
+        ]
+    } else if cfg!(target_os = "windows") {
+        &[
+            ("C:\\Windows\\Fonts\\consola.ttf", "consolas", false),
+            ("C:\\Windows\\Fonts\\segmdl2.ttf", "segoe_symbols", true),
+        ]
+    } else {
+        &[
+            (
+                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                "dejavu_mono",
+                false,
+            ),
+            (
+                "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+                "dejavu_mono",
+                false,
+            ),
+        ]
+    };
+
+    for &(path, name, _is_symbol) in candidates {
+        if fonts.font_data.contains_key(name) {
+            continue;
+        }
+        if let Ok(data) = std::fs::read(path) {
+            fonts
+                .font_data
+                .insert(name.to_owned(), egui::FontData::from_owned(data).into());
+            loaded.push(name);
+        }
+    }
+
+    if loaded.is_empty() {
+        tracing::debug!("No system font fallbacks found");
+        return;
+    }
+
+    // Add all loaded fonts as fallbacks to both families
+    for family_key in [egui::FontFamily::Monospace, egui::FontFamily::Proportional] {
+        if let Some(family) = fonts.families.get_mut(&family_key) {
+            for name in &loaded {
+                family.push((*name).to_owned());
+            }
+        }
+    }
+
+    tracing::info!("Loaded font fallbacks: {:?}", loaded);
+    ctx.set_fonts(fonts);
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+
+    let app_config = load_app_config();
+    let font_size = app_config.font_size;
 
     let (ipc_rx, ipc_addr) = amux_ipc::start_server()?;
     tracing::info!("IPC server: {}", ipc_addr);
@@ -102,10 +239,13 @@ fn main() -> anyhow::Result<()> {
         "amux",
         options,
         Box::new(move |_cc| {
+            // Add system monospace font as fallback for braille/symbol coverage
+            install_system_font_fallback(&_cc.egui_ctx);
+
             #[cfg(feature = "gpu-renderer")]
             let gpu_renderer = _cc.wgpu_render_state.as_ref().map(|rs| {
                 tracing::info!("GPU renderer initialized (wgpu backend)");
-                GpuRenderer::new(rs.clone(), FONT_SIZE)
+                GpuRenderer::new(rs.clone(), font_size)
             });
 
             Ok(Box::new(AmuxApp {
@@ -126,12 +266,13 @@ fn main() -> anyhow::Result<()> {
                 last_click_pos: egui::Pos2::ZERO,
                 click_count: 0,
                 wants_exit: false,
-                font_size: FONT_SIZE,
+                font_size,
                 find_state: None,
                 copy_mode: None,
                 hovered_hyperlink: None,
                 ime_preedit: None,
                 selection_changed: false,
+                tab_drag: None,
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
             }))
@@ -180,6 +321,7 @@ fn fresh_startup(
         zoomed: None,
         dragging_divider: None,
         last_pane_sizes: HashMap::new(),
+        color: None,
     };
 
     Ok(StartupState {
@@ -192,6 +334,10 @@ fn fresh_startup(
         sidebar: SidebarState {
             visible: true,
             width: DEFAULT_SIDEBAR_WIDTH,
+            renaming: None,
+            rename_buf: String::new(),
+            rename_just_opened: false,
+            drag: None,
         },
         notifications: NotificationStore::new(),
     })
@@ -286,6 +432,7 @@ fn restore_session(
             zoomed: saved_ws.zoomed.filter(|z| panes.contains_key(z)),
             dragging_divider: None,
             last_pane_sizes: HashMap::new(),
+            color: saved_ws.color,
         });
     }
 
@@ -304,6 +451,10 @@ fn restore_session(
     let sidebar = SidebarState {
         visible: session.sidebar.visible,
         width: session.sidebar.width,
+        renaming: None,
+        rename_buf: String::new(),
+        rename_just_opened: false,
+        drag: None,
     };
 
     // Restore notifications (without Instant-dependent fields)
@@ -413,19 +564,40 @@ impl ManagedPane {
 }
 
 /// A workspace shown in the sidebar. Owns the split tree.
-struct Workspace {
-    id: u64,
-    title: String,
-    tree: PaneTree,
-    focused_pane: PaneId,
-    zoomed: Option<PaneId>,
-    dragging_divider: Option<DragState>,
-    last_pane_sizes: HashMap<PaneId, (usize, usize)>,
+pub(crate) struct Workspace {
+    pub(crate) id: u64,
+    pub(crate) title: String,
+    pub(crate) tree: PaneTree,
+    pub(crate) focused_pane: PaneId,
+    pub(crate) zoomed: Option<PaneId>,
+    pub(crate) dragging_divider: Option<DragState>,
+    pub(crate) last_pane_sizes: HashMap<PaneId, (usize, usize)>,
+    /// Optional workspace color for sidebar indicator.
+    pub(crate) color: Option<[u8; 4]>,
 }
 
-struct SidebarState {
-    visible: bool,
-    width: f32,
+pub(crate) struct SidebarState {
+    pub(crate) visible: bool,
+    pub(crate) width: f32,
+    /// When set, the workspace at this index is being renamed in-place.
+    pub(crate) renaming: Option<usize>,
+    /// Buffer for the in-progress rename text.
+    pub(crate) rename_buf: String,
+    /// True on the first frame after rename starts (to skip focus-loss exit).
+    pub(crate) rename_just_opened: bool,
+    /// Drag reorder state.
+    pub(crate) drag: Option<SidebarDragState>,
+}
+
+pub(crate) struct SidebarDragState {
+    /// Index of workspace being dragged.
+    pub(crate) source_idx: usize,
+    /// Current pointer Y position.
+    pub(crate) current_y: f32,
+    /// Computed drop target index.
+    pub(crate) drop_target_idx: usize,
+    /// Y midpoints of each row for computing drop position.
+    pub(crate) row_midpoints: Vec<f32>,
 }
 
 struct DragState {
@@ -607,8 +779,16 @@ struct AmuxApp {
     ime_preedit: Option<String>,
     /// Set during update() when selection changes; used for smart repaint.
     selection_changed: bool,
+    /// Drag state for tab reordering within a pane.
+    tab_drag: Option<TabDragState>,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
+}
+
+struct TabDragState {
+    pane_id: PaneId,
+    source_idx: usize,
+    drop_target_idx: usize,
 }
 
 impl AmuxApp {
@@ -623,7 +803,7 @@ impl AmuxApp {
                 return (cw, ch);
             }
         }
-        let font_id = egui::FontId::monospace(FONT_SIZE);
+        let font_id = egui::FontId::monospace(self.font_size);
         let cell_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
         let cell_height = ui.fonts(|f| f.row_height(&font_id));
         (cell_width, cell_height)
@@ -732,6 +912,7 @@ impl AmuxApp {
                 focused_pane: ws.focused_pane,
                 zoomed: ws.zoomed,
                 panes: saved_panes,
+                color: ws.color,
             });
         }
 
@@ -887,7 +1068,65 @@ impl eframe::App for AmuxApp {
 
         // Render sidebar
         if self.sidebar.visible {
-            self.render_sidebar(ctx);
+            let sidebar_actions = sidebar::render_sidebar(
+                ctx,
+                &mut self.sidebar,
+                &self.workspaces,
+                self.active_workspace_idx,
+                &self.notifications,
+            );
+            for action in sidebar_actions {
+                match action {
+                    sidebar::SidebarAction::SwitchWorkspace(idx) => {
+                        self.active_workspace_idx = idx;
+                    }
+                    sidebar::SidebarAction::CreateWorkspace => {
+                        self.create_workspace(None);
+                    }
+                    sidebar::SidebarAction::CloseWorkspace(idx) => {
+                        self.close_workspace_at(idx);
+                    }
+                    sidebar::SidebarAction::RenameWorkspace(idx, new_name) => {
+                        if idx < self.workspaces.len() {
+                            self.workspaces[idx].title = new_name;
+                        }
+                    }
+                    sidebar::SidebarAction::MarkWorkspaceRead(idx) => {
+                        if idx < self.workspaces.len() {
+                            let pane_ids: Vec<u64> = self.workspaces[idx].tree.iter_panes();
+                            self.notifications.mark_workspace_read(&pane_ids);
+                        }
+                    }
+                    sidebar::SidebarAction::ReorderWorkspace(from, to) => {
+                        if from < self.workspaces.len() && to <= self.workspaces.len() {
+                            let ws = self.workspaces.remove(from);
+                            // After removal, adjust insertion index for the shift
+                            let insert_idx = if from < to {
+                                (to - 1).min(self.workspaces.len())
+                            } else {
+                                to.min(self.workspaces.len())
+                            };
+                            self.workspaces.insert(insert_idx, ws);
+                            if self.active_workspace_idx == from {
+                                self.active_workspace_idx = insert_idx;
+                            } else if from < self.active_workspace_idx
+                                && insert_idx >= self.active_workspace_idx
+                            {
+                                self.active_workspace_idx -= 1;
+                            } else if from > self.active_workspace_idx
+                                && insert_idx <= self.active_workspace_idx
+                            {
+                                self.active_workspace_idx += 1;
+                            }
+                        }
+                    }
+                    sidebar::SidebarAction::SetWorkspaceColor(idx, color) => {
+                        if idx < self.workspaces.len() {
+                            self.workspaces[idx].color = color;
+                        }
+                    }
+                }
+            }
         }
 
         // Render main content
@@ -1063,23 +1302,29 @@ impl AmuxApp {
             let tab_font = egui::FontId::proportional(11.0);
             let mut x = tab_rect.min.x + 2.0;
 
+            // Get pointer state for hover detection and drag
+            let hover_pos = ui.input(|i| i.pointer.hover_pos());
+            let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+            let any_released = ui.input(|i| i.pointer.any_released());
+            let primary_down = ui.input(|i| i.pointer.primary_down());
+            let interact_pos = ui.input(|i| i.pointer.interact_pos());
+
             // Track actions to apply after rendering
             let mut switch_to: Option<usize> = None;
             let mut close_tab: Option<usize> = None;
+            let mut tab_rects: Vec<egui::Rect> = Vec::new();
+            let mut drag_start: Option<usize> = None;
 
             for (idx, surface) in managed.surfaces.iter().enumerate() {
                 let is_active = idx == active_idx;
                 let raw_title = surface.pane.title();
                 let label = if raw_title.is_empty() {
-                    format!("tab {}", idx + 1)
+                    format!("tab {}", surface.id)
+                } else if raw_title.chars().count() > 20 {
+                    let prefix: String = raw_title.chars().take(17).collect();
+                    format!("{prefix}...")
                 } else {
-                    // Truncate long titles (char-safe for UTF-8)
-                    if raw_title.chars().count() > 20 {
-                        let prefix: String = raw_title.chars().take(17).collect();
-                        format!("{prefix}...")
-                    } else {
-                        raw_title.to_string()
-                    }
+                    raw_title.to_string()
                 };
 
                 let text_galley =
@@ -1091,11 +1336,13 @@ impl AmuxApp {
                     egui::pos2(x, tab_rect.min.y),
                     egui::vec2(tab_w, TAB_BAR_HEIGHT),
                 );
+                tab_rects.push(this_tab);
+
+                let tab_hovered = hover_pos.is_some_and(|p| this_tab.contains(p));
 
                 // Tab background
                 if is_active {
                     painter.rect_filled(this_tab, 0.0, egui::Color32::from_gray(50));
-                    // Active underline
                     let underline = egui::Rect::from_min_size(
                         egui::pos2(x, tab_rect.max.y - 2.0),
                         egui::vec2(tab_w, 2.0),
@@ -1116,31 +1363,112 @@ impl AmuxApp {
                     text_color,
                 );
 
-                // Close button
-                let close_rect = egui::Rect::from_center_size(
-                    egui::pos2(x + tab_w - 10.0, tab_rect.center().y),
-                    egui::vec2(12.0, 12.0),
-                );
-                painter.text(
-                    close_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "x",
-                    egui::FontId::proportional(9.0),
-                    egui::Color32::from_gray(90),
-                );
+                // Close button — only visible on hover
+                let close_center = egui::pos2(x + tab_w - 10.0, tab_rect.center().y);
+                let close_rect = egui::Rect::from_center_size(close_center, egui::vec2(12.0, 12.0));
+                if tab_hovered {
+                    let close_hovered = hover_pos.is_some_and(|p| close_rect.contains(p));
+                    let close_color = if close_hovered {
+                        egui::Color32::WHITE
+                    } else {
+                        egui::Color32::from_gray(90)
+                    };
+                    sidebar::paint_close_x(painter, close_center, 3.5, close_color);
+                }
 
-                // Hit testing
-                if ui.input(|i| i.pointer.any_pressed()) {
-                    if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                        if close_rect.contains(pos) {
+                // Hit testing (primary button only)
+                if primary_pressed {
+                    if let Some(pos) = interact_pos {
+                        if tab_hovered && close_rect.contains(pos) {
                             close_tab = Some(idx);
                         } else if this_tab.contains(pos) && !is_active {
                             switch_to = Some(idx);
+                        }
+                        // Start tab drag
+                        if this_tab.contains(pos)
+                            && !close_rect.contains(pos)
+                            && self.tab_drag.is_none()
+                        {
+                            drag_start = Some(idx);
                         }
                     }
                 }
 
                 x += tab_w + 1.0;
+            }
+
+            // Tab drag reorder logic
+            if let Some(src) = drag_start {
+                self.tab_drag = Some(TabDragState {
+                    pane_id,
+                    source_idx: src,
+                    drop_target_idx: src,
+                });
+            }
+
+            if let Some(drag) = &mut self.tab_drag {
+                if drag.pane_id == pane_id {
+                    if any_released || !primary_down {
+                        let from = drag.source_idx;
+                        let to = drag.drop_target_idx;
+                        self.tab_drag = None;
+                        if from != to {
+                            if let Some(m) = self.panes.get_mut(&pane_id) {
+                                let surface = m.surfaces.remove(from);
+                                let insert_idx = if from < to {
+                                    (to - 1).min(m.surfaces.len())
+                                } else {
+                                    to.min(m.surfaces.len())
+                                };
+                                m.surfaces.insert(insert_idx, surface);
+                                if m.active_surface_idx == from {
+                                    m.active_surface_idx = insert_idx;
+                                } else if from < m.active_surface_idx
+                                    && insert_idx >= m.active_surface_idx
+                                {
+                                    m.active_surface_idx -= 1;
+                                } else if from > m.active_surface_idx
+                                    && insert_idx <= m.active_surface_idx
+                                {
+                                    m.active_surface_idx += 1;
+                                }
+                            }
+                            return;
+                        }
+                    } else if let Some(pos) = hover_pos {
+                        // Compute drop target from X position vs tab midpoints
+                        let tab_midpoints: Vec<f32> =
+                            tab_rects.iter().map(|r| r.center().x).collect();
+                        let mut target = tab_midpoints.len();
+                        for (i, &mid) in tab_midpoints.iter().enumerate() {
+                            if pos.x < mid {
+                                target = i;
+                                break;
+                            }
+                        }
+                        drag.drop_target_idx = target;
+
+                        // Paint drop indicator
+                        let drop_x = if target == 0 {
+                            tab_rects.first().map(|r| r.min.x).unwrap_or(x)
+                        } else if target < tab_rects.len() {
+                            let left = tab_rects[target - 1].max.x;
+                            let right = tab_rects[target].min.x;
+                            (left + right) / 2.0
+                        } else {
+                            tab_rects.last().map(|r| r.max.x).unwrap_or(x)
+                        };
+                        let indicator_rect = egui::Rect::from_min_size(
+                            egui::pos2(drop_x - 1.0, tab_rect.min.y + 2.0),
+                            egui::vec2(2.0, TAB_BAR_HEIGHT - 4.0),
+                        );
+                        painter.rect_filled(
+                            indicator_rect,
+                            1.0,
+                            egui::Color32::from_rgb(0, 145, 255),
+                        );
+                    }
+                }
             }
 
             // "+" button to add tab
@@ -1155,8 +1483,8 @@ impl AmuxApp {
                 egui::FontId::proportional(14.0),
                 egui::Color32::from_gray(100),
             );
-            if ui.input(|i| i.pointer.any_pressed()) {
-                if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+            if primary_pressed {
+                if let Some(pos) = interact_pos {
                     if plus_rect.contains(pos) {
                         let ws_id = self.active_workspace().id;
                         let sf_id = self.next_surface_id;
@@ -1353,146 +1681,6 @@ impl AmuxApp {
         }
     }
 
-    // --- Sidebar ---
-
-    fn render_sidebar(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("sidebar")
-            .resizable(true)
-            .default_width(self.sidebar.width)
-            .min_width(120.0)
-            .max_width(400.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(egui::Color32::from_gray(30))
-                    .inner_margin(8.0),
-            )
-            .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
-
-                ui.label(
-                    egui::RichText::new("Workspaces")
-                        .strong()
-                        .color(egui::Color32::from_gray(180)),
-                );
-                ui.add_space(4.0);
-
-                let active_idx = self.active_workspace_idx;
-                let mut switch_to: Option<usize> = None;
-
-                for (idx, ws) in self.workspaces.iter().enumerate() {
-                    let is_active = idx == active_idx;
-                    let bg = if is_active {
-                        egui::Color32::from_gray(55)
-                    } else {
-                        egui::Color32::TRANSPARENT
-                    };
-
-                    let pane_ids: Vec<u64> = ws.tree.iter_panes();
-                    let unread = self.notifications.workspace_unread_count(&pane_ids);
-                    let has_status = self.notifications.workspace_status(ws.id).is_some();
-                    let row_height = if has_status { 38.0 } else { 24.0 };
-
-                    let response = ui.horizontal(|ui| {
-                        let (rect, response) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), row_height),
-                            egui::Sense::click(),
-                        );
-                        if ui.is_rect_visible(rect) {
-                            ui.painter().rect_filled(rect, 4.0, bg);
-                            let text_color = if is_active {
-                                egui::Color32::WHITE
-                            } else {
-                                egui::Color32::from_gray(160)
-                            };
-                            ui.painter().text(
-                                rect.min + egui::vec2(8.0, 4.0),
-                                egui::Align2::LEFT_TOP,
-                                &ws.title,
-                                egui::FontId::proportional(14.0),
-                                text_color,
-                            );
-
-                            // Unread badge or pane count
-                            if unread > 0 {
-                                let badge_center =
-                                    egui::pos2(rect.right() - 16.0, rect.min.y + 12.0);
-                                ui.painter().circle_filled(
-                                    badge_center,
-                                    8.0,
-                                    egui::Color32::from_rgb(40, 120, 255),
-                                );
-                                ui.painter().text(
-                                    badge_center,
-                                    egui::Align2::CENTER_CENTER,
-                                    format!("{}", unread),
-                                    egui::FontId::proportional(9.0),
-                                    egui::Color32::WHITE,
-                                );
-                            } else {
-                                let count = ws.tree.iter_panes().len();
-                                ui.painter().text(
-                                    egui::pos2(rect.right() - 8.0, rect.min.y + 4.0),
-                                    egui::Align2::RIGHT_TOP,
-                                    format!("{}", count),
-                                    egui::FontId::proportional(11.0),
-                                    egui::Color32::from_gray(100),
-                                );
-                            }
-
-                            // Status pill
-                            if let Some(status) = self.notifications.workspace_status(ws.id) {
-                                let (pill_color, default_text) = match status.state {
-                                    amux_notify::AgentState::Active => {
-                                        (egui::Color32::from_rgb(50, 180, 80), "active")
-                                    }
-                                    amux_notify::AgentState::Waiting => {
-                                        (egui::Color32::from_rgb(230, 170, 40), "waiting")
-                                    }
-                                    amux_notify::AgentState::Idle => {
-                                        (egui::Color32::from_gray(100), "idle")
-                                    }
-                                };
-                                let label = status.label.as_deref().unwrap_or(default_text);
-                                let pill_pos = egui::pos2(rect.min.x + 8.0, rect.min.y + 22.0);
-                                let text_width = label.len() as f32 * 5.5 + 8.0;
-                                let pill_rect = egui::Rect::from_min_size(
-                                    pill_pos,
-                                    egui::vec2(text_width.min(rect.width() - 32.0), 14.0),
-                                );
-                                ui.painter().rect_filled(pill_rect, 7.0, pill_color);
-                                ui.painter().text(
-                                    pill_rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    label,
-                                    egui::FontId::proportional(9.0),
-                                    egui::Color32::WHITE,
-                                );
-                            }
-                        }
-                        response
-                    });
-                    if response.inner.clicked() && !is_active {
-                        switch_to = Some(idx);
-                    }
-                }
-
-                if let Some(idx) = switch_to {
-                    self.active_workspace_idx = idx;
-                }
-
-                ui.add_space(8.0);
-
-                if ui
-                    .button(
-                        egui::RichText::new("+ New Workspace").color(egui::Color32::from_gray(140)),
-                    )
-                    .clicked()
-                {
-                    self.create_workspace(None);
-                }
-            });
-    }
-
     // --- Resize ---
 
     fn resize_pane_if_needed(&mut self, id: PaneId, rect: egui::Rect, ui: &egui::Ui) {
@@ -1594,6 +1782,7 @@ impl AmuxApp {
                     zoomed: None,
                     dragging_divider: None,
                     last_pane_sizes: HashMap::new(),
+                    color: None,
                 };
 
                 self.workspaces.push(workspace);
@@ -1690,6 +1879,23 @@ impl AmuxApp {
 
                 // Copy selection if active; otherwise fall through to send Ctrl+C
                 if is_copy && self.copy_selection() {
+                    return true;
+                }
+
+                // Paste: Cmd+V (macOS) / Ctrl+Shift+V (other)
+                #[cfg(target_os = "macos")]
+                let is_paste = is_cmd && !modifiers.shift && *key == egui::Key::V;
+                #[cfg(not(target_os = "macos"))]
+                let is_paste = modifiers.ctrl && modifiers.shift && *key == egui::Key::V;
+
+                if is_paste {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        if let Ok(text) = clipboard.get_text() {
+                            if !text.is_empty() {
+                                self.do_paste(&text);
+                            }
+                        }
+                    }
                     return true;
                 }
 
@@ -1826,7 +2032,7 @@ impl AmuxApp {
                     return true;
                 }
 
-                // Jump to workspace 1-8
+                // Jump to workspace 1-9 (Cmd+9 = last workspace)
                 #[cfg(target_os = "macos")]
                 let is_jump_mod = is_cmd && !modifiers.shift;
                 #[cfg(not(target_os = "macos"))]
@@ -1842,9 +2048,13 @@ impl AmuxApp {
                         egui::Key::Num6 => Some(5),
                         egui::Key::Num7 => Some(6),
                         egui::Key::Num8 => Some(7),
+                        egui::Key::Num9 => Some(usize::MAX), // last workspace
                         _ => None,
                     };
-                    if let Some(idx) = num {
+                    if let Some(mut idx) = num {
+                        if idx == usize::MAX {
+                            idx = self.workspaces.len().saturating_sub(1);
+                        }
                         if idx < self.workspaces.len() {
                             self.active_workspace_idx = idx;
                             return true;
@@ -1983,7 +2193,7 @@ impl AmuxApp {
             if let Some(pane_id) = target_pane {
                 if let Some(managed) = self.panes.get_mut(&pane_id) {
                     let surface = managed.active_surface_mut();
-                    let font_id = egui::FontId::monospace(FONT_SIZE);
+                    let font_id = egui::FontId::monospace(self.font_size);
                     let cell_height = ctx.fonts(|f| f.row_height(&font_id));
 
                     surface.scroll_accum += -scroll_delta / cell_height;
@@ -2117,9 +2327,14 @@ impl AmuxApp {
         let focused_id = self.focused_pane_id();
         if let Some(managed) = self.panes.get_mut(&focused_id) {
             let surface = managed.active_surface_mut();
+            // 1. Clear visible screen and move cursor home via terminal state machine
+            surface.pane.feed_bytes(b"\x1b[2J\x1b[H");
+            // 2. Erase scrollback buffer
             surface.pane.erase_scrollback();
             surface.scroll_offset = 0;
             surface.scroll_accum = 0.0;
+            // 3. Send Ctrl+L to the PTY so the shell redraws its prompt
+            let _ = surface.pane.write_bytes(b"\x0c");
         }
     }
 
@@ -2731,27 +2946,60 @@ impl AmuxApp {
                     ui.vertical_centered(|ui| {
                         ui.add_space(40.0);
                         ui.label(
-                            egui::RichText::new("No notifications yet")
-                                .color(egui::Color32::from_gray(100)),
+                            egui::RichText::new("\u{1f515}") // 🔕
+                                .size(32.0),
+                        );
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("No notifications")
+                                .color(egui::Color32::from_gray(140))
+                                .size(14.0),
+                        );
+                        ui.label(
+                            egui::RichText::new("Agent notifications will appear here")
+                                .color(egui::Color32::from_gray(80))
+                                .size(11.0),
                         );
                     });
                 } else {
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        // Iterate newest first
-                        for notif in notifications.iter().rev() {
+                        // Group by workspace, most recent notifications first within each
+                        let mut grouped: Vec<_> = notifications.iter().rev().collect();
+                        grouped.sort_by_key(|n| n.workspace_id);
+                        let mut last_ws_id: Option<u64> = None;
+                        for notif in &grouped {
+                            // Workspace section header
+                            if last_ws_id != Some(notif.workspace_id) {
+                                last_ws_id = Some(notif.workspace_id);
+                                if let Some(ws) =
+                                    self.workspaces.iter().find(|w| w.id == notif.workspace_id)
+                                {
+                                    ui.add_space(4.0);
+                                    ui.label(
+                                        egui::RichText::new(&ws.title)
+                                            .strong()
+                                            .size(11.0)
+                                            .color(egui::Color32::from_gray(120)),
+                                    );
+                                    ui.add_space(2.0);
+                                }
+                            }
+
                             let response = ui.horizontal(|ui| {
-                                // Unread dot
+                                // Source icon + unread dot
+                                let source_icon = match notif.source {
+                                    NotificationSource::Bell => "\u{1f514}",  // 🔔
+                                    NotificationSource::Toast => "\u{1f4ac}", // 💬
+                                    NotificationSource::Cli => "\u{2328}",    // ⌨
+                                };
                                 let dot_color = if notif.read {
                                     egui::Color32::from_gray(60)
                                 } else {
-                                    egui::Color32::from_rgb(40, 120, 255)
+                                    egui::Color32::from_rgb(0, 145, 255)
                                 };
-                                let dot_rect = ui.allocate_exact_size(
-                                    egui::vec2(8.0, 8.0),
-                                    egui::Sense::hover(),
+                                ui.label(
+                                    egui::RichText::new(source_icon).size(10.0).color(dot_color),
                                 );
-                                ui.painter()
-                                    .circle_filled(dot_rect.0.center(), 3.0, dot_color);
 
                                 ui.vertical(|ui| {
                                     let title = if notif.title.is_empty() {
@@ -2922,6 +3170,22 @@ impl AmuxApp {
             }
         }
         true
+    }
+
+    fn do_paste(&mut self, text: &str) {
+        let focused_id = self.focused_pane_id();
+        if let Some(managed) = self.panes.get_mut(&focused_id) {
+            let surface = managed.active_surface_mut();
+            surface.scroll_offset = 0;
+            surface.scroll_accum = 0.0;
+            if surface.pane.bracketed_paste_enabled() {
+                let _ = surface.pane.write_bytes(b"\x1b[200~");
+                let _ = surface.pane.write_bytes(text.as_bytes());
+                let _ = surface.pane.write_bytes(b"\x1b[201~");
+            } else {
+                let _ = surface.pane.write_bytes(text.as_bytes());
+            }
+        }
     }
 
     fn select_all_visible(&mut self) {
@@ -4145,7 +4409,7 @@ fn render_pane(
     // Scroll indicator
     if scroll_offset > 0 {
         let indicator = format!("[+{}]", scroll_offset);
-        let indicator_font = egui::FontId::monospace(FONT_SIZE * 0.8);
+        let indicator_font = egui::FontId::monospace(font_size * 0.8);
         let text_color = egui::Color32::from_rgba_unmultiplied(255, 200, 50, 200);
         let bg_color = egui::Color32::from_rgba_unmultiplied(40, 40, 40, 180);
 

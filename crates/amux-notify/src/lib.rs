@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -46,6 +46,8 @@ pub struct WorkspaceStatus {
     pub state: AgentState,
     pub label: Option<String>,
     pub updated_at: Instant,
+    /// Optional progress value (0.0–1.0) for progress bar display.
+    pub progress: Option<f32>,
 }
 
 /// A single notification entry.
@@ -224,6 +226,25 @@ impl NotificationStore {
         }
     }
 
+    /// Mark all notifications for a workspace as read.
+    pub fn mark_workspace_read(&mut self, pane_ids: &[u64]) {
+        let pane_set: HashSet<u64> = pane_ids.iter().copied().collect();
+        for n in &mut self.notifications {
+            if !n.read && pane_set.contains(&n.pane_id) {
+                n.read = true;
+            }
+        }
+        for &pid in pane_ids {
+            if let Some(state) = self.pane_states.get_mut(&pid) {
+                if state.unread_count > 0 {
+                    state.unread_count = 0;
+                    state.flash_started_at = Some(Instant::now());
+                    state.flash_reason = Some(FlashReason::NotificationDismiss);
+                }
+            }
+        }
+    }
+
     /// Mark all notifications as read.
     pub fn mark_all_read(&mut self) {
         for n in &mut self.notifications {
@@ -306,7 +327,15 @@ impl NotificationStore {
         self.notifications.iter().rev().find(|n| !n.read)
     }
 
-    /// Set workspace agent status.
+    /// Find the most recent notification for a workspace (read or unread).
+    pub fn latest_for_workspace(&self, workspace_id: u64) -> Option<&Notification> {
+        self.notifications
+            .iter()
+            .rev()
+            .find(|n| n.workspace_id == workspace_id)
+    }
+
+    /// Set workspace agent status. Clears any existing progress bar.
     pub fn set_status(&mut self, workspace_id: u64, state: AgentState, label: Option<String>) {
         self.workspace_statuses.insert(
             workspace_id,
@@ -314,8 +343,17 @@ impl NotificationStore {
                 state,
                 label,
                 updated_at: Instant::now(),
+                progress: None,
             },
         );
+    }
+
+    /// Set workspace progress (0.0–1.0). Pass `None` to clear.
+    pub fn set_progress(&mut self, workspace_id: u64, progress: Option<f32>) {
+        if let Some(status) = self.workspace_statuses.get_mut(&workspace_id) {
+            status.progress = progress;
+            status.updated_at = Instant::now();
+        }
     }
 
     /// Get workspace agent status.
@@ -560,5 +598,73 @@ mod tests {
         assert_eq!(store.all_notifications().len(), 0);
         assert_eq!(store.pane_unread(10), 0);
         assert_eq!(store.pane_unread(20), 0);
+    }
+
+    #[test]
+    fn mark_workspace_read_only_affects_given_panes() {
+        let mut store = NotificationStore::new();
+        // Workspace 1 panes: 10, 11
+        store.push(1, 10, 100, "A".into(), "a".into(), NotificationSource::Bell);
+        store.push(1, 11, 101, "B".into(), "b".into(), NotificationSource::Bell);
+        // Workspace 2 pane: 20
+        store.push(2, 20, 200, "C".into(), "c".into(), NotificationSource::Bell);
+
+        store.mark_workspace_read(&[10, 11]);
+        assert_eq!(store.pane_unread(10), 0);
+        assert_eq!(store.pane_unread(11), 0);
+        assert_eq!(store.pane_unread(20), 1); // unaffected
+    }
+
+    #[test]
+    fn latest_for_workspace_returns_most_recent() {
+        let mut store = NotificationStore::new();
+        store.push(
+            1,
+            10,
+            100,
+            "First".into(),
+            "a".into(),
+            NotificationSource::Bell,
+        );
+        store.push(
+            2,
+            20,
+            200,
+            "Other".into(),
+            "b".into(),
+            NotificationSource::Bell,
+        );
+        store.push(
+            1,
+            10,
+            101,
+            "Latest".into(),
+            "c".into(),
+            NotificationSource::Bell,
+        );
+
+        let latest = store.latest_for_workspace(1).unwrap();
+        assert_eq!(latest.title, "Latest");
+
+        let latest2 = store.latest_for_workspace(2).unwrap();
+        assert_eq!(latest2.title, "Other");
+
+        assert!(store.latest_for_workspace(99).is_none());
+    }
+
+    #[test]
+    fn progress_lifecycle() {
+        let mut store = NotificationStore::new();
+        // set_status creates entry with no progress
+        store.set_status(1, AgentState::Active, Some("Building".into()));
+        assert!(store.workspace_status(1).unwrap().progress.is_none());
+
+        // set_progress adds progress
+        store.set_progress(1, Some(0.5));
+        assert_eq!(store.workspace_status(1).unwrap().progress, Some(0.5));
+
+        // set_status clears progress
+        store.set_status(1, AgentState::Idle, None);
+        assert!(store.workspace_status(1).unwrap().progress.is_none());
     }
 }
