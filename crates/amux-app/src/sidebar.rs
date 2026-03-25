@@ -129,6 +129,9 @@ pub(crate) fn render_sidebar(
                 .inner_margin(egui::Margin::symmetric(ROW_OUTER_H_PAD as i8, 0)),
         )
         .show(ctx, |ui| {
+            // Persist the actual panel width back to state for session save/restore
+            state.width = ui.available_width() + ROW_OUTER_H_PAD * 2.0;
+
             #[cfg(target_os = "macos")]
             ui.add_space(TRAFFIC_LIGHT_SPACER);
             #[cfg(not(target_os = "macos"))]
@@ -181,8 +184,12 @@ pub(crate) fn render_sidebar(
                             // After last row: at the bottom edge
                             row_rects.last().map(|r| r.max.y).unwrap_or_default()
                         };
+                        let indicator_x = row_rects
+                            .first()
+                            .map(|r| r.min.x)
+                            .unwrap_or_else(|| ui.min_rect().min.x);
                         let indicator_rect = egui::Rect::from_min_size(
-                            egui::pos2(0.0, drop_y - DROP_INDICATOR_HEIGHT / 2.0),
+                            egui::pos2(indicator_x, drop_y - DROP_INDICATOR_HEIGHT / 2.0),
                             egui::vec2(avail_w, DROP_INDICATOR_HEIGHT),
                         );
                         ui.painter().rect_filled(indicator_rect, 1.0, ACCENT_BLUE);
@@ -342,6 +349,7 @@ fn render_workspace_row(
         if ui.button("Rename Workspace").clicked() {
             state.renaming = Some(idx);
             state.rename_buf = ws.title.clone();
+            state.rename_just_opened = true;
             ui.close_menu();
         }
         if ui.button("Close Workspace").clicked() {
@@ -440,7 +448,10 @@ fn render_workspace_row(
         let confirmed = ui.input(|i| i.key_pressed(egui::Key::Enter));
         let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
 
-        if confirmed || (!te_response.has_focus() && !cancelled) {
+        let lost_focus = !te_response.has_focus() && !state.rename_just_opened;
+        state.rename_just_opened = false;
+
+        if confirmed || (lost_focus && !cancelled) {
             let new_name = state.rename_buf.trim().to_string();
             if !new_name.is_empty() && new_name != ws.title {
                 actions.push(SidebarAction::RenameWorkspace(idx, new_name));

@@ -93,8 +93,9 @@ fn load_app_config() -> AppConfig {
     if let Some(path) = config_path {
         match std::fs::read_to_string(&path) {
             Ok(contents) => match toml::from_str::<AppConfig>(&contents) {
-                Ok(config) => {
+                Ok(mut config) => {
                     tracing::info!("Loaded config from {}", path.display());
+                    config.font_size = validate_font_size(config.font_size);
                     return config;
                 }
                 Err(e) => {
@@ -108,6 +109,16 @@ fn load_app_config() -> AppConfig {
     }
 
     AppConfig::default()
+}
+
+fn validate_font_size(size: f32) -> f32 {
+    const MIN_FONT_SIZE: f32 = 4.0;
+    const MAX_FONT_SIZE: f32 = 96.0;
+    if !size.is_finite() || size <= 0.0 {
+        DEFAULT_FONT_SIZE
+    } else {
+        size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+    }
 }
 
 /// Load system fonts as fallbacks to egui's font families.
@@ -325,6 +336,7 @@ fn fresh_startup(
             width: DEFAULT_SIDEBAR_WIDTH,
             renaming: None,
             rename_buf: String::new(),
+            rename_just_opened: false,
             drag: None,
         },
         notifications: NotificationStore::new(),
@@ -441,6 +453,7 @@ fn restore_session(
         width: session.sidebar.width,
         renaming: None,
         rename_buf: String::new(),
+        rename_just_opened: false,
         drag: None,
     };
 
@@ -570,6 +583,8 @@ pub(crate) struct SidebarState {
     pub(crate) renaming: Option<usize>,
     /// Buffer for the in-progress rename text.
     pub(crate) rename_buf: String,
+    /// True on the first frame after rename starts (to skip focus-loss exit).
+    pub(crate) rename_just_opened: bool,
     /// Drag reorder state.
     pub(crate) drag: Option<SidebarDragState>,
 }
@@ -1083,19 +1098,23 @@ impl eframe::App for AmuxApp {
                         }
                     }
                     sidebar::SidebarAction::ReorderWorkspace(from, to) => {
-                        if from < self.workspaces.len() && to < self.workspaces.len() {
+                        if from < self.workspaces.len() && to <= self.workspaces.len() {
                             let ws = self.workspaces.remove(from);
-                            let to = to.min(self.workspaces.len());
-                            self.workspaces.insert(to, ws);
-                            // Adjust active index to follow the moved workspace
+                            // After removal, adjust insertion index for the shift
+                            let insert_idx = if from < to {
+                                (to - 1).min(self.workspaces.len())
+                            } else {
+                                to.min(self.workspaces.len())
+                            };
+                            self.workspaces.insert(insert_idx, ws);
                             if self.active_workspace_idx == from {
-                                self.active_workspace_idx = to;
+                                self.active_workspace_idx = insert_idx;
                             } else if from < self.active_workspace_idx
-                                && to >= self.active_workspace_idx
+                                && insert_idx >= self.active_workspace_idx
                             {
                                 self.active_workspace_idx -= 1;
                             } else if from > self.active_workspace_idx
-                                && to <= self.active_workspace_idx
+                                && insert_idx <= self.active_workspace_idx
                             {
                                 self.active_workspace_idx += 1;
                             }
@@ -1285,7 +1304,7 @@ impl AmuxApp {
 
             // Get pointer state for hover detection and drag
             let hover_pos = ui.input(|i| i.pointer.hover_pos());
-            let any_pressed = ui.input(|i| i.pointer.any_pressed());
+            let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
             let any_released = ui.input(|i| i.pointer.any_released());
             let primary_down = ui.input(|i| i.pointer.primary_down());
             let interact_pos = ui.input(|i| i.pointer.interact_pos());
@@ -1357,8 +1376,8 @@ impl AmuxApp {
                     sidebar::paint_close_x(painter, close_center, 3.5, close_color);
                 }
 
-                // Hit testing
-                if any_pressed {
+                // Hit testing (primary button only)
+                if primary_pressed {
                     if let Some(pos) = interact_pos {
                         if tab_hovered && close_rect.contains(pos) {
                             close_tab = Some(idx);
@@ -1396,14 +1415,20 @@ impl AmuxApp {
                         if from != to {
                             if let Some(m) = self.panes.get_mut(&pane_id) {
                                 let surface = m.surfaces.remove(from);
-                                let to = to.min(m.surfaces.len());
-                                m.surfaces.insert(to, surface);
+                                let insert_idx = if from < to {
+                                    (to - 1).min(m.surfaces.len())
+                                } else {
+                                    to.min(m.surfaces.len())
+                                };
+                                m.surfaces.insert(insert_idx, surface);
                                 if m.active_surface_idx == from {
-                                    m.active_surface_idx = to;
-                                } else if from < m.active_surface_idx && to >= m.active_surface_idx
+                                    m.active_surface_idx = insert_idx;
+                                } else if from < m.active_surface_idx
+                                    && insert_idx >= m.active_surface_idx
                                 {
                                     m.active_surface_idx -= 1;
-                                } else if from > m.active_surface_idx && to <= m.active_surface_idx
+                                } else if from > m.active_surface_idx
+                                    && insert_idx <= m.active_surface_idx
                                 {
                                     m.active_surface_idx += 1;
                                 }
@@ -1458,7 +1483,7 @@ impl AmuxApp {
                 egui::FontId::proportional(14.0),
                 egui::Color32::from_gray(100),
             );
-            if any_pressed {
+            if primary_pressed {
                 if let Some(pos) = interact_pos {
                     if plus_rect.contains(pos) {
                         let ws_id = self.active_workspace().id;
@@ -1854,6 +1879,23 @@ impl AmuxApp {
 
                 // Copy selection if active; otherwise fall through to send Ctrl+C
                 if is_copy && self.copy_selection() {
+                    return true;
+                }
+
+                // Paste: Cmd+V (macOS) / Ctrl+Shift+V (other)
+                #[cfg(target_os = "macos")]
+                let is_paste = is_cmd && !modifiers.shift && *key == egui::Key::V;
+                #[cfg(not(target_os = "macos"))]
+                let is_paste = modifiers.ctrl && modifiers.shift && *key == egui::Key::V;
+
+                if is_paste {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        if let Ok(text) = clipboard.get_text() {
+                            if !text.is_empty() {
+                                self.do_paste(&text);
+                            }
+                        }
+                    }
                     return true;
                 }
 
@@ -2921,9 +2963,11 @@ impl AmuxApp {
                     });
                 } else {
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        // Group by workspace
+                        // Group by workspace, most recent notifications first within each
+                        let mut grouped: Vec<_> = notifications.iter().rev().collect();
+                        grouped.sort_by_key(|n| n.workspace_id);
                         let mut last_ws_id: Option<u64> = None;
-                        for notif in notifications.iter().rev() {
+                        for notif in &grouped {
                             // Workspace section header
                             if last_ws_id != Some(notif.workspace_id) {
                                 last_ws_id = Some(notif.workspace_id);
@@ -3126,6 +3170,22 @@ impl AmuxApp {
             }
         }
         true
+    }
+
+    fn do_paste(&mut self, text: &str) {
+        let focused_id = self.focused_pane_id();
+        if let Some(managed) = self.panes.get_mut(&focused_id) {
+            let surface = managed.active_surface_mut();
+            surface.scroll_offset = 0;
+            surface.scroll_accum = 0.0;
+            if surface.pane.bracketed_paste_enabled() {
+                let _ = surface.pane.write_bytes(b"\x1b[200~");
+                let _ = surface.pane.write_bytes(text.as_bytes());
+                let _ = surface.pane.write_bytes(b"\x1b[201~");
+            } else {
+                let _ = surface.pane.write_bytes(text.as_bytes());
+            }
+        }
     }
 
     fn select_all_visible(&mut self) {
