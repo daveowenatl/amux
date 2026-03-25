@@ -23,6 +23,10 @@ pub struct TerminalSnapshot {
     pub cursor_text_italic: bool,
     /// Selection start/end for dirty tracking (None if no selection).
     pub selection_range: Option<((usize, usize), (usize, usize))>,
+    /// Find/search highlight ranges as (phys_row, start_col, end_col_exclusive).
+    /// The current match (if any) uses a distinct color.
+    pub highlight_ranges: Vec<(usize, usize, usize)>,
+    pub current_highlight: Option<usize>,
 }
 
 /// Data for a single terminal cell.
@@ -77,6 +81,8 @@ impl TerminalSnapshot {
         selection: Option<SelectionRange>,
         pane_id: u64,
         seqno: usize,
+        highlight_ranges: Vec<(usize, usize, usize)>,
+        current_highlight: Option<usize>,
     ) -> Self {
         let selection_range = selection.as_ref().map(|s| (s.start, s.end));
         let default_bg = srgba_to_f32(palette.background);
@@ -116,6 +122,22 @@ impl TerminalSnapshot {
                             bg = palette.foreground;
                             fg = palette.background;
                         }
+                    }
+                }
+
+                // Apply find/search highlighting
+                for (i, &(h_row, h_start, h_end)) in highlight_ranges.iter().enumerate() {
+                    if h_row == stable_row && col_idx >= h_start && col_idx < h_end {
+                        if current_highlight == Some(i) {
+                            // Current match: bright orange bg
+                            bg = SrgbaTuple(1.0, 0.6, 0.0, 1.0);
+                            fg = SrgbaTuple(0.0, 0.0, 0.0, 1.0);
+                        } else {
+                            // Other matches: yellow bg
+                            bg = SrgbaTuple(1.0, 1.0, 0.0, 0.7);
+                            fg = SrgbaTuple(0.0, 0.0, 0.0, 1.0);
+                        }
+                        break;
                     }
                 }
 
@@ -166,6 +188,8 @@ impl TerminalSnapshot {
             cursor_text_bold,
             cursor_text_italic,
             selection_range,
+            highlight_ranges,
+            current_highlight,
         }
     }
 }

@@ -24,6 +24,8 @@ pub struct PaneRenderState {
     scroll_offset: usize,
     is_focused: bool,
     selection_range: Option<((usize, usize), (usize, usize))>,
+    highlight_count: usize,
+    current_highlight: Option<usize>,
 
     // Dirty-tracking fields — geometry (pane position/size, cell dimensions)
     rect_x: f32,
@@ -67,6 +69,8 @@ impl PaneRenderState {
             scroll_offset: 0,
             is_focused: false,
             selection_range: None,
+            highlight_count: 0,
+            current_highlight: None,
             rect_x: 0.0,
             rect_y: 0.0,
             rect_w: 0.0,
@@ -93,6 +97,8 @@ impl PaneRenderState {
             || self.scroll_offset != snap.scroll_offset
             || self.is_focused != snap.is_focused
             || self.selection_range != snap.selection_range
+            || self.highlight_count != snap.highlight_ranges.len()
+            || self.current_highlight != snap.current_highlight
             || self.rect_x != rect.x
             || self.rect_y != rect.y
             || self.rect_w != rect.width
@@ -118,6 +124,8 @@ impl PaneRenderState {
         self.scroll_offset = snap.scroll_offset;
         self.is_focused = snap.is_focused;
         self.selection_range = snap.selection_range;
+        self.highlight_count = snap.highlight_ranges.len();
+        self.current_highlight = snap.current_highlight;
         self.rect_x = rect.x;
         self.rect_y = rect.y;
         self.rect_w = rect.width;

@@ -416,6 +416,58 @@ impl TerminalPane {
 
         output_lines.join("\n")
     }
+
+    /// Search the full scrollback for case-insensitive occurrences of `query`.
+    ///
+    /// Returns matches as `(phys_row, start_col, end_col)` tuples where
+    /// `end_col` is exclusive.
+    pub fn search_scrollback(&self, query: &str) -> Vec<(usize, usize, usize)> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let query_lower = query.to_lowercase();
+        let (cols, _) = self.dimensions();
+        let screen = self.terminal.screen();
+        let total = screen.scrollback_rows();
+        let lines = screen.lines_in_phys_range(0..total);
+
+        let mut matches = Vec::new();
+        for (phys_row, line) in lines.iter().enumerate() {
+            let mut line_text = String::new();
+            let mut col_offsets: Vec<usize> = Vec::new(); // byte offset → col index
+
+            for cell in line.visible_cells() {
+                let col_idx = cell.cell_index();
+                if col_idx >= cols {
+                    break;
+                }
+                let s = cell.str();
+                for _ in s.bytes() {
+                    col_offsets.push(col_idx);
+                }
+                line_text.push_str(s);
+            }
+
+            let line_lower = line_text.to_lowercase();
+            let mut search_start = 0;
+            while let Some(byte_pos) = line_lower[search_start..].find(&query_lower) {
+                let abs_pos = search_start + byte_pos;
+                let end_pos = abs_pos + query_lower.len();
+                if abs_pos < col_offsets.len() && end_pos <= col_offsets.len() {
+                    let start_col = col_offsets[abs_pos];
+                    // end_col is exclusive: one past the last matched column
+                    let end_col = if end_pos < col_offsets.len() {
+                        col_offsets[end_pos]
+                    } else {
+                        col_offsets[end_pos - 1] + 1
+                    };
+                    matches.push((phys_row, start_col, end_col));
+                }
+                search_start = abs_pos + 1;
+            }
+        }
+        matches
+    }
 }
 
 /// Append an SGR color parameter to an in-progress SGR sequence.

@@ -129,6 +129,7 @@ fn main() -> anyhow::Result<()> {
                 click_count: 0,
                 wants_exit: false,
                 font_size: DEFAULT_FONT_SIZE,
+                find_state: None,
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
             }))
@@ -478,6 +479,16 @@ impl SelectionState {
     }
 }
 
+/// State for the in-pane find/search bar.
+struct FindState {
+    query: String,
+    /// Matches as (phys_row, start_col, end_col_exclusive).
+    matches: Vec<(usize, usize, usize)>,
+    current_match: usize,
+    /// The pane this search applies to.
+    pane_id: PaneId,
+}
+
 /// Word boundary delimiters for double-click selection.
 const WORD_DELIMITERS: &str = " \t\n()[]{}'\"|<>&;:,.`~!@#$%^*-+=?/\\";
 
@@ -575,6 +586,7 @@ struct AmuxApp {
     click_count: u32,
     wants_exit: bool,
     font_size: f32,
+    find_state: Option<FindState>,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
 }
@@ -857,8 +869,9 @@ impl eframe::App for AmuxApp {
         let shortcut_consumed = self.handle_shortcuts(ctx);
 
         // Handle keyboard/paste input -> focused pane's active surface only
+        let mut sent_input = false;
         if !shortcut_consumed {
-            self.handle_input(ctx);
+            sent_input = self.handle_input(ctx);
         }
 
         // Render sidebar
@@ -945,6 +958,11 @@ impl eframe::App for AmuxApp {
             self.render_notification_panel(ctx);
         }
 
+        // Find bar overlay
+        if self.find_state.is_some() {
+            self.render_find_bar(ctx);
+        }
+
         // Update window title from focused pane's active surface
         let focused_id = self.focused_pane_id();
         if let Some(managed) = self.panes.get(&focused_id) {
@@ -961,8 +979,9 @@ impl eframe::App for AmuxApp {
             gpu.retain_panes(&live_ids);
         }
 
-        // Smart repaint
-        if got_data {
+        // Smart repaint: immediate when data arrived or input was sent (to
+        // catch the PTY echo on the very next frame), otherwise poll at 50ms.
+        if got_data || sent_input || shortcut_consumed {
             ctx.request_repaint();
         } else {
             ctx.request_repaint_after(Duration::from_millis(50));
@@ -1156,6 +1175,14 @@ impl AmuxApp {
             }
         }
 
+        // Collect find highlights for this pane
+        let (find_highlights, current_highlight) = self
+            .find_state
+            .as_ref()
+            .filter(|f| f.pane_id == pane_id)
+            .map(|f| (f.matches.clone(), Some(f.current_match)))
+            .unwrap_or_default();
+
         // Render terminal content for the active surface
         let managed = match self.panes.get_mut(&pane_id) {
             Some(m) => m,
@@ -1171,6 +1198,8 @@ impl AmuxApp {
             surface.scroll_offset,
             selection.as_ref(),
             self.font_size,
+            &find_highlights,
+            current_highlight,
             #[cfg(feature = "gpu-renderer")]
             self.gpu_renderer.as_ref(),
             #[cfg(feature = "gpu-renderer")]
@@ -1582,12 +1611,16 @@ impl AmuxApp {
                     return true;
                 }
 
-                // Escape: clear selection if active
+                // Escape: close find bar or clear selection
                 if *key == egui::Key::Escape
                     && !modifiers.shift
                     && !modifiers.ctrl
                     && !modifiers.alt
                 {
+                    if self.find_state.is_some() {
+                        self.find_state = None;
+                        return true;
+                    }
                     let focused = self.focused_pane_id();
                     if let Some(m) = self.panes.get_mut(&focused) {
                         if m.selection.is_some() {
@@ -1595,6 +1628,18 @@ impl AmuxApp {
                             return true;
                         }
                     }
+                }
+
+                // Find: Cmd+F (macOS) / Ctrl+Shift+F (other)
+                if is_cmd && !modifiers.shift && *key == egui::Key::F {
+                    let pane_id = self.focused_pane_id();
+                    self.find_state = Some(FindState {
+                        query: String::new(),
+                        matches: Vec::new(),
+                        current_match: 0,
+                        pane_id,
+                    });
+                    return true;
                 }
 
                 // Select all: Cmd+A
@@ -1877,31 +1922,6 @@ impl AmuxApp {
             }
         }
 
-        // Focus-follows-mouse: set focus to the pane under the cursor on click
-        if ctx.input(|i| i.pointer.primary_clicked()) {
-            let hover_pos = ctx.input(|i| i.pointer.hover_pos());
-            let target_pane = hover_pos.and_then(|pos| {
-                let panel_rect = self.last_panel_rect?;
-                let ws = self.active_workspace();
-                if let Some(zoomed_id) = ws.zoomed {
-                    if panel_rect.contains(pos) {
-                        return Some(zoomed_id);
-                    }
-                    return None;
-                }
-                let layout = ws.tree.layout(panel_rect);
-                layout
-                    .iter()
-                    .find(|(_, rect)| rect.contains(pos))
-                    .map(|(id, _)| *id)
-            });
-            if let Some(pane_id) = target_pane {
-                if pane_id != self.focused_pane_id() {
-                    self.set_focus(pane_id);
-                }
-            }
-        }
-
         false
     }
 
@@ -2086,6 +2106,109 @@ impl AmuxApp {
                 self.active_workspace_idx = idx;
             }
             self.set_focus(pane_id);
+        }
+    }
+
+    fn render_find_bar(&mut self, ctx: &egui::Context) {
+        let mut close = false;
+        let mut navigate: Option<isize> = None; // +1 = next, -1 = prev
+
+        egui::Window::new("Find")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::RIGHT_TOP, [-8.0, 8.0])
+            .fixed_size([300.0, 0.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let response =
+                        ui.text_edit_singleline(&mut self.find_state.as_mut().unwrap().query);
+
+                    // Auto-focus the text field
+                    if response.gained_focus() || !response.has_focus() {
+                        response.request_focus();
+                    }
+
+                    // Enter = next, Shift+Enter = prev
+                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        if ui.input(|i| i.modifiers.shift) {
+                            navigate = Some(-1);
+                        } else {
+                            navigate = Some(1);
+                        }
+                        response.request_focus();
+                    }
+
+                    // Trigger search on text change
+                    if response.changed() {
+                        let find = self.find_state.as_ref().unwrap();
+                        let query = find.query.clone();
+                        let pane_id = find.pane_id;
+                        if let Some(managed) = self.panes.get(&pane_id) {
+                            let matches = managed.active_surface().pane.search_scrollback(&query);
+                            let find = self.find_state.as_mut().unwrap();
+                            find.matches = matches;
+                            find.current_match = 0;
+                        }
+                    }
+
+                    if ui.button("X").clicked() {
+                        close = true;
+                    }
+                });
+
+                // Show match count
+                if let Some(find) = &self.find_state {
+                    let total = find.matches.len();
+                    if total > 0 {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{}/{}", find.current_match + 1, total));
+                            if ui.button("<").clicked() {
+                                navigate = Some(-1);
+                            }
+                            if ui.button(">").clicked() {
+                                navigate = Some(1);
+                            }
+                        });
+                    } else if !find.query.is_empty() {
+                        ui.label("No matches");
+                    }
+                }
+            });
+
+        if close {
+            self.find_state = None;
+            return;
+        }
+
+        // Navigate matches
+        if let Some(dir) = navigate {
+            if let Some(find) = self.find_state.as_mut() {
+                if !find.matches.is_empty() {
+                    let total = find.matches.len();
+                    if dir > 0 {
+                        find.current_match = (find.current_match + 1) % total;
+                    } else {
+                        find.current_match = if find.current_match == 0 {
+                            total - 1
+                        } else {
+                            find.current_match - 1
+                        };
+                    }
+
+                    // Scroll to the current match
+                    let (phys_row, _, _) = find.matches[find.current_match];
+                    let pane_id = find.pane_id;
+                    if let Some(managed) = self.panes.get_mut(&pane_id) {
+                        let surface = managed.active_surface_mut();
+                        let (_, rows) = surface.pane.dimensions();
+                        let total_rows = surface.pane.screen().scrollback_rows();
+                        // Calculate scroll offset to center the match
+                        let target_end = phys_row + rows / 2;
+                        let actual_end = target_end.min(total_rows);
+                        surface.scroll_offset = total_rows.saturating_sub(actual_end);
+                    }
+                }
+            }
         }
     }
 
@@ -2512,7 +2635,7 @@ impl AmuxApp {
 
     // --- Input ---
 
-    fn handle_input(&mut self, ctx: &egui::Context) {
+    fn handle_input(&mut self, ctx: &egui::Context) -> bool {
         let events = ctx.input(|i| i.events.clone());
         let focused_id = self.focused_pane_id();
 
@@ -2531,7 +2654,7 @@ impl AmuxApp {
 
         let managed = match self.panes.get_mut(&focused_id) {
             Some(m) => m,
-            None => return,
+            None => return has_input,
         };
         let surface = managed.active_surface_mut();
 
@@ -2568,6 +2691,7 @@ impl AmuxApp {
                 _ => {}
             }
         }
+        has_input
     }
 
     // --- IPC ---
@@ -3306,6 +3430,8 @@ fn render_pane(
     scroll_offset: usize,
     selection: Option<&SelectionState>,
     font_size: f32,
+    find_highlights: &[(usize, usize, usize)],
+    current_highlight: Option<usize>,
     #[cfg(feature = "gpu-renderer")] gpu_renderer: Option<&GpuRenderer>,
     #[cfg(feature = "gpu-renderer")] pane_id: u64,
 ) {
@@ -3335,6 +3461,8 @@ fn render_pane(
             gpu_selection,
             pane_id,
             seqno,
+            find_highlights.to_vec(),
+            current_highlight,
         );
         let pixels_per_point = ui.ctx().pixels_per_point();
         let callback = gpu.paint_callback(rect, snapshot, pixels_per_point);
@@ -3406,6 +3534,20 @@ fn render_pane(
                         bg = srgba_to_egui(palette.foreground);
                         fg = bg_default;
                     }
+                }
+            }
+
+            // Find/search highlighting
+            for (i, &(h_row, h_start, h_end)) in find_highlights.iter().enumerate() {
+                if h_row == stable_row && col_idx >= h_start && col_idx < h_end {
+                    if current_highlight == Some(i) {
+                        bg = egui::Color32::from_rgb(255, 153, 0); // orange
+                    } else {
+                        bg = egui::Color32::from_rgba_unmultiplied(255, 255, 0, 180);
+                        // yellow
+                    }
+                    fg = egui::Color32::BLACK;
+                    break;
                 }
             }
 
