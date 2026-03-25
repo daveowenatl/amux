@@ -39,6 +39,9 @@ egui = "0.31"
 # Font rendering
 cosmic-text = "0.12"
 
+# Image decoding
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
 # GPU rendering
 wgpu = "24.0"
 egui-wgpu = "0.31"
@@ -56,6 +59,7 @@ clap = { version = "4", features = ["derive"] }
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
+open = "5"
 
 # Error handling
 anyhow = "1"

@@ -8,7 +8,7 @@ use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};
 
 use atlas::GlyphAtlas;
 use callback::{PhysRect, TerminalGpuResources, TerminalPaintCallback};
-use pipeline::{BackgroundPipeline, ForegroundPipeline};
+use pipeline::{BackgroundPipeline, ForegroundPipeline, ImagePipeline};
 pub use snapshot::TerminalSnapshot;
 
 /// Atlas texture size (2048×2048, ~4MB for R8).
@@ -38,7 +38,17 @@ impl GpuRenderer {
 
         let bg_pipeline = BackgroundPipeline::new(device, target_format);
         let fg_pipeline = ForegroundPipeline::new(device, target_format);
+        let img_pipeline = ImagePipeline::new(device, target_format);
         let atlas = GlyphAtlas::new(device, ATLAS_SIZE);
+
+        let image_sampler = device.create_sampler(&egui_wgpu::wgpu::SamplerDescriptor {
+            label: Some("image_sampler"),
+            address_mode_u: egui_wgpu::wgpu::AddressMode::ClampToEdge,
+            address_mode_v: egui_wgpu::wgpu::AddressMode::ClampToEdge,
+            mag_filter: egui_wgpu::wgpu::FilterMode::Linear,
+            min_filter: egui_wgpu::wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
 
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
@@ -57,6 +67,7 @@ impl GpuRenderer {
             .insert(TerminalGpuResources {
                 bg_pipeline,
                 fg_pipeline,
+                img_pipeline,
                 atlas,
                 font_system,
                 swash_cache,
@@ -64,6 +75,9 @@ impl GpuRenderer {
                 atlas_bind_group_dirty: true,
                 target_is_srgb,
                 pane_states: std::collections::HashMap::new(),
+                image_cache: std::collections::HashMap::new(),
+                shape_cache: std::collections::HashMap::new(),
+                image_sampler,
             });
 
         Self {
@@ -113,7 +127,33 @@ impl GpuRenderer {
         self.cell_height
     }
 
-    /// Remove cached render state for panes that no longer exist.
+    /// Update font size, re-measure cell dimensions, and invalidate caches.
+    pub fn set_font_size(&mut self, font_size: f32) {
+        let line_height = (font_size * 1.3).ceil();
+        let metrics = Metrics::new(font_size, line_height);
+
+        if let Some(r) = self
+            .render_state
+            .renderer
+            .write()
+            .callback_resources
+            .get_mut::<TerminalGpuResources>()
+        {
+            let cell_width = measure_cell_width(&mut r.font_system, metrics);
+            r.metrics = metrics;
+            // Clear all pane render states to force full rebuild with new metrics.
+            r.pane_states.clear();
+            // Clear shape cache since glyph sizes change with font size.
+            r.shape_cache.clear();
+            // Mark atlas bind group dirty since glyph sizes will change.
+            r.atlas_bind_group_dirty = true;
+            self.cell_width = cell_width;
+            self.cell_height = line_height;
+        }
+    }
+
+    /// Remove cached render state for panes that no longer exist
+    /// and evict unreferenced image textures.
     pub fn retain_panes(&self, live_pane_ids: &[u64]) {
         if let Some(r) = self
             .render_state
@@ -123,6 +163,7 @@ impl GpuRenderer {
             .get_mut::<TerminalGpuResources>()
         {
             r.retain_panes(live_pane_ids);
+            r.evict_unused_images();
         }
     }
 }

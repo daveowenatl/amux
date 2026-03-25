@@ -35,6 +35,12 @@ enum Command {
         /// Target surface ID
         #[arg(long)]
         surface: Option<String>,
+        /// Include ANSI escape sequences (colors/formatting)
+        #[arg(long)]
+        ansi: bool,
+        /// Line range (e.g. "1-50", "-20" for last 20 lines)
+        #[arg(long)]
+        lines: Option<String>,
     },
     /// List server capabilities
     Capabilities,
@@ -216,7 +222,11 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
             print_response(&resp, cli.json);
         }
-        Command::ReadScreen { surface } => {
+        Command::ReadScreen {
+            surface,
+            ansi,
+            lines,
+        } => {
             let surface_id = surface
                 .or_else(|| std::env::var("AMUX_SURFACE_ID").ok())
                 .unwrap_or_else(|| "default".to_string());
@@ -225,6 +235,8 @@ async fn main() -> anyhow::Result<()> {
                     "surface.read_text",
                     serde_json::json!({
                         "surface_id": surface_id,
+                        "ansi": ansi,
+                        "lines": lines,
                     }),
                 )
                 .await?;

@@ -266,9 +266,79 @@ impl TerminalPane {
         self.terminal.current_seqno()
     }
 
+    /// Erase the scrollback buffer, keeping only the visible screen.
+    pub fn erase_scrollback(&mut self) {
+        self.terminal.erase_scrollback();
+    }
+
+    /// Notify the terminal that focus has changed (for DECSET 1004 focus reporting).
+    pub fn focus_changed(&mut self, focused: bool) {
+        self.terminal.focus_changed(focused);
+    }
+
     /// Get the last-rendered sequence number.
     pub fn rendered_seqno(&self) -> SequenceNo {
         self.seqno
+    }
+
+    /// Read lines from the scrollback or visible screen, with optional ANSI formatting.
+    ///
+    /// `line_spec` formats:
+    /// - `"1-50"` — lines 1 through 50 (1-based, from top of scrollback)
+    /// - `"-20"` — last 20 lines
+    /// - `"5"` — just line 5
+    pub fn read_screen_lines(&self, line_spec: &str, ansi: bool) -> String {
+        let screen = self.terminal.screen();
+        let total = screen.scrollback_rows();
+        let (cols, _) = self.dimensions();
+
+        // Parse line spec into (start_phys, end_phys) range (0-based), clamped to valid bounds.
+        let (start, end) = if total == 0 {
+            (0, 0)
+        } else if let Some(rest) = line_spec.strip_prefix('-') {
+            // "-N" means last N lines
+            let n: usize = rest.parse().unwrap_or(total);
+            (total.saturating_sub(n), total)
+        } else if let Some((a, b)) = line_spec.split_once('-') {
+            // "A-B" means lines A through B (1-based)
+            let a: usize = a.parse().unwrap_or(1);
+            let b: usize = b.parse().unwrap_or(total);
+            let s = (a.saturating_sub(1)).min(total);
+            let e = b.min(total);
+            // Normalize reversed ranges
+            if s >= e {
+                (0, 0)
+            } else {
+                (s, e)
+            }
+        } else {
+            // Single line number
+            let n: usize = line_spec.parse().unwrap_or(1);
+            let idx = (n.saturating_sub(1)).min(total.saturating_sub(1));
+            (idx, (idx + 1).min(total))
+        };
+
+        if ansi {
+            // Use the existing ANSI-formatted reader, but for the specific range
+            self.read_scrollback_text_range(start, end)
+        } else {
+            let lines = screen.lines_in_phys_range(start..end);
+            let mut result = String::new();
+            for (i, line) in lines.iter().enumerate() {
+                if i > 0 {
+                    result.push('\n');
+                }
+                let mut line_text = String::new();
+                for cell in line.visible_cells() {
+                    if cell.cell_index() >= cols {
+                        break;
+                    }
+                    line_text.push_str(cell.str());
+                }
+                result.push_str(line_text.trim_end());
+            }
+            result
+        }
     }
 
     /// Read the visible screen content as a string (lines joined by newlines).
@@ -296,17 +366,28 @@ impl TerminalPane {
         result
     }
 
+    /// Read a range of lines as text with ANSI escape sequences.
+    /// `start` and `end` are physical row indices (0-based, end exclusive).
+    pub fn read_scrollback_text_range(&self, start: usize, end: usize) -> String {
+        self.read_scrollback_text_impl(start, end)
+    }
+
     /// Read scrollback + visible screen as text with ANSI escape sequences,
     /// up to `max_lines` lines. Preserves colors and formatting for session
     /// persistence. Trailing empty lines are trimmed.
     pub fn read_scrollback_text(&self, max_lines: usize) -> String {
+        let screen = self.terminal.screen();
+        let total = screen.scrollback_rows();
+        let start = total.saturating_sub(max_lines);
+        self.read_scrollback_text_impl(start, total)
+    }
+
+    fn read_scrollback_text_impl(&self, start: usize, end: usize) -> String {
         use wezterm_term::{CellAttributes, Intensity, Underline};
 
         let (cols, _) = self.dimensions();
         let screen = self.terminal.screen();
-        let total = screen.scrollback_rows();
-        let start = total.saturating_sub(max_lines);
-        let lines = screen.lines_in_phys_range(start..total);
+        let lines = screen.lines_in_phys_range(start..end);
 
         // Build lines with ANSI formatting, collecting into a Vec
         // so we can trim trailing empty lines.
@@ -405,6 +486,58 @@ impl TerminalPane {
         }
 
         output_lines.join("\n")
+    }
+
+    /// Search the full scrollback for case-insensitive occurrences of `query`.
+    ///
+    /// Returns matches as `(phys_row, start_col, end_col)` tuples where
+    /// `end_col` is exclusive.
+    pub fn search_scrollback(&self, query: &str) -> Vec<(usize, usize, usize)> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let query_lower = query.to_lowercase();
+        let (cols, _) = self.dimensions();
+        let screen = self.terminal.screen();
+        let total = screen.scrollback_rows();
+        let lines = screen.lines_in_phys_range(0..total);
+
+        let mut matches = Vec::new();
+        for (phys_row, line) in lines.iter().enumerate() {
+            let mut line_text = String::new();
+            let mut col_offsets: Vec<usize> = Vec::new(); // byte offset → col index
+
+            for cell in line.visible_cells() {
+                let col_idx = cell.cell_index();
+                if col_idx >= cols {
+                    break;
+                }
+                let s = cell.str();
+                for _ in s.bytes() {
+                    col_offsets.push(col_idx);
+                }
+                line_text.push_str(s);
+            }
+
+            let line_lower = line_text.to_lowercase();
+            let mut search_start = 0;
+            while let Some(byte_pos) = line_lower[search_start..].find(&query_lower) {
+                let abs_pos = search_start + byte_pos;
+                let end_pos = abs_pos + query_lower.len();
+                if abs_pos < col_offsets.len() && end_pos <= col_offsets.len() {
+                    let start_col = col_offsets[abs_pos];
+                    // end_col is exclusive: one past the last matched column
+                    let end_col = if end_pos < col_offsets.len() {
+                        col_offsets[end_pos]
+                    } else {
+                        col_offsets[end_pos - 1] + 1
+                    };
+                    matches.push((phys_row, start_col, end_col));
+                }
+                search_start = abs_pos + 1;
+            }
+        }
+        matches
     }
 }
 

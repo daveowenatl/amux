@@ -126,6 +126,12 @@ fn main() -> anyhow::Result<()> {
                 last_click_pos: egui::Pos2::ZERO,
                 click_count: 0,
                 wants_exit: false,
+                font_size: FONT_SIZE,
+                find_state: None,
+                copy_mode: None,
+                hovered_hyperlink: None,
+                ime_preedit: None,
+                selection_changed: false,
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
             }))
@@ -475,6 +481,29 @@ impl SelectionState {
     }
 }
 
+/// State for the in-pane find/search bar.
+struct FindState {
+    query: String,
+    /// Matches as (phys_row, start_col, end_col_exclusive).
+    matches: Vec<(usize, usize, usize)>,
+    current_match: usize,
+    /// The pane this search applies to.
+    pane_id: PaneId,
+    /// True on the first frame after opening, for initial focus.
+    just_opened: bool,
+}
+
+/// State for vi-style copy mode (scrollback navigation + visual selection).
+struct CopyModeState {
+    pane_id: PaneId,
+    /// Cursor position in (col, phys_row).
+    cursor: (usize, usize),
+    /// Visual selection anchor (col, phys_row), set when 'v' is pressed.
+    visual_anchor: Option<(usize, usize)>,
+    /// Line-visual mode (V).
+    line_visual: bool,
+}
+
 /// Word boundary delimiters for double-click selection.
 const WORD_DELIMITERS: &str = " \t\n()[]{}'\"|<>&;:,.`~!@#$%^*-+=?/\\";
 
@@ -571,6 +600,13 @@ struct AmuxApp {
     last_click_pos: egui::Pos2,
     click_count: u32,
     wants_exit: bool,
+    font_size: f32,
+    find_state: Option<FindState>,
+    copy_mode: Option<CopyModeState>,
+    hovered_hyperlink: Option<String>,
+    ime_preedit: Option<String>,
+    /// Set during update() when selection changes; used for smart repaint.
+    selection_changed: bool,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
 }
@@ -604,7 +640,18 @@ impl AmuxApp {
     fn set_focus(&mut self, pane_id: PaneId) {
         let ws = self.active_workspace_mut();
         if ws.focused_pane != pane_id {
+            let old_id = ws.focused_pane;
             ws.focused_pane = pane_id;
+
+            // Send DECSET 1004 focus-out to old pane
+            if let Some(managed) = self.panes.get_mut(&old_id) {
+                managed.active_surface_mut().pane.focus_changed(false);
+            }
+            // Send DECSET 1004 focus-in to new pane
+            if let Some(managed) = self.panes.get_mut(&pane_id) {
+                managed.active_surface_mut().pane.focus_changed(true);
+            }
+
             // Clear notifications on the newly focused pane
             self.notifications.mark_pane_read(pane_id);
             // Navigation flash — but suppress if other panes have unread
@@ -809,6 +856,8 @@ impl eframe::App for AmuxApp {
             return;
         }
 
+        self.selection_changed = false;
+
         // Drain PTY output from all surfaces in all panes
         let mut got_data = false;
         for managed in self.panes.values_mut() {
@@ -830,8 +879,10 @@ impl eframe::App for AmuxApp {
         let shortcut_consumed = self.handle_shortcuts(ctx);
 
         // Handle keyboard/paste input -> focused pane's active surface only
-        if !shortcut_consumed {
-            self.handle_input(ctx);
+        // (blocked during copy mode — all keys go through handle_copy_mode_key)
+        let mut sent_input = false;
+        if !shortcut_consumed && self.copy_mode.is_none() {
+            sent_input = self.handle_input(ctx);
         }
 
         // Render sidebar
@@ -856,7 +907,10 @@ impl eframe::App for AmuxApp {
                         egui::pos2(panel_rect.min.x, panel_rect.min.y + TAB_BAR_HEIGHT),
                         panel_rect.max,
                     );
-                    self.handle_selection_mouse(ui, zoomed_id, content_rect);
+                    let sel_changed = self.handle_selection_mouse(ui, zoomed_id, content_rect);
+                    if sel_changed {
+                        self.selection_changed = true;
+                    }
                     self.render_single_pane(ui, zoomed_id, panel_rect, true);
                     self.resize_pane_if_needed(zoomed_id, panel_rect, ui);
                 } else {
@@ -889,7 +943,10 @@ impl eframe::App for AmuxApp {
                                 egui::pos2(rect.min.x, rect.min.y + TAB_BAR_HEIGHT),
                                 rect.max,
                             );
-                            self.handle_selection_mouse(ui, id, content_rect);
+                            let sel_changed = self.handle_selection_mouse(ui, id, content_rect);
+                            if sel_changed {
+                                self.selection_changed = true;
+                            }
                             break;
                         }
                     }
@@ -918,6 +975,14 @@ impl eframe::App for AmuxApp {
             self.render_notification_panel(ctx);
         }
 
+        // Find bar overlay
+        if self.find_state.is_some() {
+            self.render_find_bar(ctx);
+        }
+
+        // Hyperlink hover detection + Cmd+click handling
+        self.handle_hyperlinks(ctx);
+
         // Update window title from focused pane's active surface
         let focused_id = self.focused_pane_id();
         if let Some(managed) = self.panes.get(&focused_id) {
@@ -927,6 +992,14 @@ impl eframe::App for AmuxApp {
             }
         }
 
+        // Position IME candidate window at the terminal cursor
+        self.update_ime_position(ctx);
+
+        // Render IME preedit overlay
+        if let Some(preedit) = self.ime_preedit.clone() {
+            self.render_ime_preedit(ctx, &preedit);
+        }
+
         // Clean up GPU resources for closed panes.
         #[cfg(feature = "gpu-renderer")]
         if let Some(ref gpu) = self.gpu_renderer {
@@ -934,8 +1007,9 @@ impl eframe::App for AmuxApp {
             gpu.retain_panes(&live_ids);
         }
 
-        // Smart repaint
-        if got_data {
+        // Smart repaint: immediate when data arrived or input was sent (to
+        // catch the PTY echo on the very next frame), otherwise poll at 50ms.
+        if got_data || sent_input || shortcut_consumed || self.selection_changed {
             ctx.request_repaint();
         } else {
             ctx.request_repaint_after(Duration::from_millis(50));
@@ -1129,12 +1203,49 @@ impl AmuxApp {
             }
         }
 
+        // Collect find highlights for this pane
+        let (find_highlights, current_highlight) = self
+            .find_state
+            .as_ref()
+            .filter(|f| f.pane_id == pane_id)
+            .map(|f| (f.matches.clone(), Some(f.current_match)))
+            .unwrap_or_default();
+
+        // Build selection: use copy mode visual selection if active, else normal selection
+        let copy_mode_sel = self
+            .copy_mode
+            .as_ref()
+            .filter(|cm| cm.pane_id == pane_id && cm.visual_anchor.is_some())
+            .map(|cm| {
+                let anchor = cm.visual_anchor.unwrap();
+                let cursor = cm.cursor;
+                let (start, end) =
+                    if anchor.1 < cursor.1 || (anchor.1 == cursor.1 && anchor.0 <= cursor.0) {
+                        (anchor, cursor)
+                    } else {
+                        (cursor, anchor)
+                    };
+                SelectionState {
+                    anchor: start,
+                    end,
+                    mode: if cm.line_visual {
+                        SelectionMode::Line
+                    } else {
+                        SelectionMode::Cell
+                    },
+                    active: false,
+                }
+            });
+
         // Render terminal content for the active surface
         let managed = match self.panes.get_mut(&pane_id) {
             Some(m) => m,
             None => return,
         };
-        let selection = managed.selection.as_ref().cloned();
+        let selection = copy_mode_sel
+            .as_ref()
+            .or(managed.selection.as_ref())
+            .cloned();
         let surface = managed.active_surface_mut();
         render_pane(
             ui,
@@ -1143,11 +1254,39 @@ impl AmuxApp {
             is_focused,
             surface.scroll_offset,
             selection.as_ref(),
+            self.font_size,
+            &find_highlights,
+            current_highlight,
             #[cfg(feature = "gpu-renderer")]
             self.gpu_renderer.as_ref(),
             #[cfg(feature = "gpu-renderer")]
             pane_id,
         );
+
+        // Render copy mode cursor overlay
+        if let Some(cm) = self.copy_mode.as_ref().filter(|cm| cm.pane_id == pane_id) {
+            let (cell_w, cell_h) = self.cell_dimensions(ui);
+            if let Some(managed) = self.panes.get(&pane_id) {
+                let surface = managed.active_surface();
+                let (_, rows) = surface.pane.dimensions();
+                let total = surface.pane.screen().scrollback_rows();
+                let end = total.saturating_sub(surface.scroll_offset);
+                let start = end.saturating_sub(rows);
+                if cm.cursor.1 >= start && cm.cursor.1 < end {
+                    let row_in_view = cm.cursor.1 - start;
+                    let x = content_rect.min.x + cm.cursor.0 as f32 * cell_w;
+                    let y = content_rect.min.y + row_in_view as f32 * cell_h;
+                    let cursor_rect =
+                        egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cell_w, cell_h));
+                    ui.painter().rect_stroke(
+                        cursor_rect,
+                        0.0,
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 255, 0)),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+            }
+        }
 
         // Notification ring + flash animation (matching cmux)
         let pane_u64 = pane_id;
@@ -1554,12 +1693,21 @@ impl AmuxApp {
                     return true;
                 }
 
-                // Escape: clear selection if active
+                // Copy mode: intercept all keys when active
+                if self.copy_mode.is_some() {
+                    return self.handle_copy_mode_key(key, modifiers);
+                }
+
+                // Escape: close find bar, exit copy mode, or clear selection
                 if *key == egui::Key::Escape
                     && !modifiers.shift
                     && !modifiers.ctrl
                     && !modifiers.alt
                 {
+                    if self.find_state.is_some() {
+                        self.find_state = None;
+                        return true;
+                    }
                     let focused = self.focused_pane_id();
                     if let Some(m) = self.panes.get_mut(&focused) {
                         if m.selection.is_some() {
@@ -1567,6 +1715,19 @@ impl AmuxApp {
                             return true;
                         }
                     }
+                }
+
+                // Find: Cmd+F (macOS) / Ctrl+Shift+F (other)
+                if is_cmd && !modifiers.shift && *key == egui::Key::F {
+                    let pane_id = self.focused_pane_id();
+                    self.find_state = Some(FindState {
+                        query: String::new(),
+                        matches: Vec::new(),
+                        current_match: 0,
+                        pane_id,
+                        just_opened: true,
+                    });
+                    return true;
                 }
 
                 // Select all: Cmd+A
@@ -1578,6 +1739,12 @@ impl AmuxApp {
                 #[cfg(not(target_os = "macos"))]
                 if modifiers.ctrl && modifiers.shift && *key == egui::Key::A {
                     self.select_all_visible();
+                    return true;
+                }
+
+                // Enter copy mode: Cmd+Shift+X (macOS) / Ctrl+Shift+X (other)
+                if is_cmd && modifiers.shift && *key == egui::Key::X {
+                    self.enter_copy_mode();
                     return true;
                 }
 
@@ -1777,6 +1944,12 @@ impl AmuxApp {
                     return true;
                 }
 
+                // Clear scrollback: Cmd+K (macOS) / Ctrl+Shift+K (other)
+                if is_cmd && !modifiers.shift && *key == egui::Key::K {
+                    self.do_clear_scrollback();
+                    return true;
+                }
+
                 // Scroll
                 if modifiers.shift && *key == egui::Key::PageUp {
                     return self.do_scroll(-1);
@@ -1940,6 +2113,16 @@ impl AmuxApp {
         }
     }
 
+    fn do_clear_scrollback(&mut self) {
+        let focused_id = self.focused_pane_id();
+        if let Some(managed) = self.panes.get_mut(&focused_id) {
+            let surface = managed.active_surface_mut();
+            surface.pane.erase_scrollback();
+            surface.scroll_offset = 0;
+            surface.scroll_accum = 0.0;
+        }
+    }
+
     // --- Notifications ---
 
     fn drain_notifications(&mut self) {
@@ -1998,6 +2181,517 @@ impl AmuxApp {
                 self.active_workspace_idx = idx;
             }
             self.set_focus(pane_id);
+        }
+    }
+
+    fn update_ime_position(&self, ctx: &egui::Context) {
+        let focused_id = self.focused_pane_id();
+        let panel_rect = match self.last_panel_rect {
+            Some(r) => r,
+            None => return,
+        };
+
+        // Find the focused pane's rect
+        let pane_rect = if let Some(zoomed_id) = self.active_workspace().zoomed {
+            if zoomed_id == focused_id {
+                panel_rect
+            } else {
+                return;
+            }
+        } else {
+            let layout = self.active_workspace().tree.layout(panel_rect);
+            match layout.iter().find(|(id, _)| *id == focused_id) {
+                Some((_, r)) => *r,
+                None => return,
+            }
+        };
+
+        if let Some(managed) = self.panes.get(&focused_id) {
+            let surface = managed.active_surface();
+            let cursor = surface.pane.cursor();
+            let (dim_cols, dim_rows) = surface.pane.dimensions();
+            let cols = dim_cols.max(1) as f32;
+            let rows = dim_rows.max(1) as f32;
+            let cell_w = pane_rect.width() / cols;
+            let cell_h = (pane_rect.height() - TAB_BAR_HEIGHT) / rows;
+            let x = pane_rect.min.x + cursor.x as f32 * cell_w;
+            let y = pane_rect.min.y + TAB_BAR_HEIGHT + cursor.y as f32 * cell_h;
+            ctx.send_viewport_cmd(egui::ViewportCommand::IMERect(egui::Rect::from_min_size(
+                egui::pos2(x, y),
+                egui::vec2(cell_w, cell_h),
+            )));
+        }
+    }
+
+    fn render_ime_preedit(&self, ctx: &egui::Context, preedit: &str) {
+        let focused_id = self.focused_pane_id();
+        let panel_rect = match self.last_panel_rect {
+            Some(r) => r,
+            None => return,
+        };
+
+        let pane_rect = if let Some(zoomed_id) = self.active_workspace().zoomed {
+            if zoomed_id == focused_id {
+                panel_rect
+            } else {
+                return;
+            }
+        } else {
+            let layout = self.active_workspace().tree.layout(panel_rect);
+            match layout.iter().find(|(id, _)| *id == focused_id) {
+                Some((_, r)) => *r,
+                None => return,
+            }
+        };
+
+        if let Some(managed) = self.panes.get(&focused_id) {
+            let surface = managed.active_surface();
+            let cursor = surface.pane.cursor();
+            let (dim_cols, dim_rows) = surface.pane.dimensions();
+            let cols = dim_cols.max(1) as f32;
+            let rows = dim_rows.max(1) as f32;
+            let cell_w = pane_rect.width() / cols;
+            let cell_h = (pane_rect.height() - TAB_BAR_HEIGHT) / rows;
+            let x = pane_rect.min.x + cursor.x as f32 * cell_w;
+            let y = pane_rect.min.y + TAB_BAR_HEIGHT + cursor.y as f32 * cell_h;
+
+            egui::Area::new(egui::Id::new("ime_preedit"))
+                .fixed_pos(egui::pos2(x, y))
+                .show(ctx, |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(preedit)
+                                .monospace()
+                                .size(self.font_size)
+                                .underline(),
+                        );
+                    });
+                });
+        }
+    }
+
+    fn handle_hyperlinks(&mut self, ctx: &egui::Context) {
+        self.hovered_hyperlink = None;
+
+        let hover_pos = match ctx.input(|i| i.pointer.hover_pos()) {
+            Some(pos) => pos,
+            None => return,
+        };
+
+        let panel_rect = match self.last_panel_rect {
+            Some(r) => r,
+            None => return,
+        };
+
+        // Find which pane the mouse is over
+        let ws = self.active_workspace();
+        let pane_id = if let Some(zoomed_id) = ws.zoomed {
+            if panel_rect.contains(hover_pos) {
+                zoomed_id
+            } else {
+                return;
+            }
+        } else {
+            let layout = ws.tree.layout(panel_rect);
+            match layout
+                .iter()
+                .find(|(_, rect)| rect.contains(hover_pos))
+                .map(|(id, _)| *id)
+            {
+                Some(id) => id,
+                None => return,
+            }
+        };
+
+        // Resolve cell coordinates from pixel position
+        let (cell_w, cell_h) = ctx.fonts(|f| {
+            let fid = egui::FontId::monospace(self.font_size);
+            (f.glyph_width(&fid, 'M'), f.row_height(&fid))
+        });
+
+        #[cfg(feature = "gpu-renderer")]
+        let (cell_w, cell_h) = if let Some(gpu) = &self.gpu_renderer {
+            let cw = gpu.cell_width();
+            let ch = gpu.cell_height();
+            if cw > 0.0 && ch > 0.0 {
+                (cw, ch)
+            } else {
+                (cell_w, cell_h)
+            }
+        } else {
+            (cell_w, cell_h)
+        };
+
+        if cell_w <= 0.0 || cell_h <= 0.0 {
+            return;
+        }
+
+        // Get the content rect (below tab bar) for this pane
+        let pane_rect = if let Some(zoomed_id) = self.active_workspace().zoomed {
+            if zoomed_id == pane_id {
+                panel_rect
+            } else {
+                return;
+            }
+        } else {
+            let layout = self.active_workspace().tree.layout(panel_rect);
+            match layout.iter().find(|(id, _)| *id == pane_id) {
+                Some((_, r)) => *r,
+                None => return,
+            }
+        };
+        let content_top = pane_rect.min.y + TAB_BAR_HEIGHT;
+        if hover_pos.y < content_top || hover_pos.x < pane_rect.min.x {
+            return;
+        }
+        let col = ((hover_pos.x - pane_rect.min.x) / cell_w) as usize;
+        let row = ((hover_pos.y - content_top) / cell_h) as usize;
+
+        // Check if cell has a hyperlink
+        if let Some(managed) = self.panes.get(&pane_id) {
+            let surface = managed.active_surface();
+            let (cols, rows) = surface.pane.dimensions();
+            if col >= cols || row >= rows {
+                return;
+            }
+            let screen = surface.pane.screen();
+            let total = screen.scrollback_rows();
+            let end = total.saturating_sub(surface.scroll_offset);
+            let start = end.saturating_sub(rows);
+            let phys_row = start + row;
+            let lines = screen.lines_in_phys_range(phys_row..phys_row + 1);
+            if let Some(line) = lines.first() {
+                for cell in line.visible_cells() {
+                    if cell.cell_index() == col {
+                        if let Some(link) = cell.attrs().hyperlink() {
+                            let url = link.uri().to_string();
+                            self.hovered_hyperlink = Some(url.clone());
+
+                            // Set pointer cursor
+                            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+
+                            // Cmd+click opens URL
+                            let cmd_held = ctx.input(|i| {
+                                #[cfg(target_os = "macos")]
+                                {
+                                    i.modifiers.mac_cmd || i.modifiers.command
+                                }
+                                #[cfg(not(target_os = "macos"))]
+                                {
+                                    i.modifiers.ctrl
+                                }
+                            });
+                            if cmd_held && ctx.input(|i| i.pointer.primary_clicked()) {
+                                // Only open safe URL schemes.
+                                if url.starts_with("http://")
+                                    || url.starts_with("https://")
+                                    || url.starts_with("mailto:")
+                                {
+                                    let _ = open::that(&url);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    fn enter_copy_mode(&mut self) {
+        let pane_id = self.focused_pane_id();
+        if let Some(managed) = self.panes.get(&pane_id) {
+            let surface = managed.active_surface();
+            let cursor = surface.pane.cursor();
+            let screen = surface.pane.screen();
+            let (_, rows) = surface.pane.dimensions();
+            let total = screen.scrollback_rows();
+            let end = total.saturating_sub(surface.scroll_offset);
+            let start = end.saturating_sub(rows);
+            // Place copy mode cursor at terminal cursor position in phys coords
+            let phys_row = start + (cursor.y.max(0) as usize).min(rows.saturating_sub(1));
+            self.copy_mode = Some(CopyModeState {
+                pane_id,
+                cursor: (cursor.x, phys_row),
+                visual_anchor: None,
+                line_visual: false,
+            });
+        }
+    }
+
+    fn handle_copy_mode_key(&mut self, key: &egui::Key, modifiers: &egui::Modifiers) -> bool {
+        let cm = match self.copy_mode.as_mut() {
+            Some(cm) => cm,
+            None => return false,
+        };
+        let pane_id = cm.pane_id;
+
+        // Get dimensions for bounds checking
+        let (cols, rows, total_rows) = match self.panes.get(&pane_id) {
+            Some(m) => {
+                let s = m.active_surface();
+                let (c, r) = s.pane.dimensions();
+                let t = s.pane.screen().scrollback_rows();
+                (c, r, t)
+            }
+            None => {
+                self.copy_mode = None;
+                return true;
+            }
+        };
+        let cm = self.copy_mode.as_mut().unwrap();
+
+        match key {
+            // Exit copy mode
+            egui::Key::Escape | egui::Key::Q => {
+                self.copy_mode = None;
+                return true;
+            }
+            // Movement
+            egui::Key::H | egui::Key::ArrowLeft => {
+                cm.cursor.0 = cm.cursor.0.saturating_sub(1);
+            }
+            egui::Key::L | egui::Key::ArrowRight => {
+                cm.cursor.0 = (cm.cursor.0 + 1).min(cols.saturating_sub(1));
+            }
+            egui::Key::K | egui::Key::ArrowUp => {
+                cm.cursor.1 = cm.cursor.1.saturating_sub(1);
+            }
+            egui::Key::J | egui::Key::ArrowDown => {
+                cm.cursor.1 = (cm.cursor.1 + 1).min(total_rows.saturating_sub(1));
+            }
+            // Half-page up/down
+            egui::Key::U if modifiers.ctrl => {
+                let half = rows / 2;
+                cm.cursor.1 = cm.cursor.1.saturating_sub(half);
+            }
+            egui::Key::D if modifiers.ctrl => {
+                let half = rows / 2;
+                cm.cursor.1 = (cm.cursor.1 + half).min(total_rows.saturating_sub(1));
+            }
+            // End of scrollback (Shift+G = vim 'G')
+            egui::Key::G if modifiers.shift => {
+                cm.cursor.1 = total_rows.saturating_sub(1);
+                cm.cursor.0 = 0;
+            }
+            // Start of scrollback (g = vim 'gg', second g handled by repeat)
+            egui::Key::G => {
+                cm.cursor.1 = 0;
+                cm.cursor.0 = 0;
+            }
+            // Line start/end
+            egui::Key::Num0 => {
+                cm.cursor.0 = 0;
+            }
+            // Visual mode toggle
+            egui::Key::V if modifiers.shift => {
+                // Line visual
+                if cm.line_visual {
+                    cm.visual_anchor = None;
+                    cm.line_visual = false;
+                } else {
+                    cm.visual_anchor = Some(cm.cursor);
+                    cm.line_visual = true;
+                }
+            }
+            egui::Key::V => {
+                // Character visual
+                if cm.visual_anchor.is_some() && !cm.line_visual {
+                    cm.visual_anchor = None;
+                } else {
+                    cm.visual_anchor = Some(cm.cursor);
+                    cm.line_visual = false;
+                }
+            }
+            // Yank selection
+            egui::Key::Y => {
+                let anchor = cm.visual_anchor;
+                let line_visual = cm.line_visual;
+                if let Some(anchor) = anchor {
+                    let text = self.extract_copy_mode_text(pane_id, anchor, cols, line_visual);
+                    if let Some(text) = text {
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            let _ = clipboard.set_text(&text);
+                        }
+                    }
+                    self.copy_mode = None;
+                    return true;
+                }
+            }
+            _ => {}
+        }
+
+        // Scroll viewport to keep cursor visible
+        if let Some(managed) = self.panes.get_mut(&pane_id) {
+            let cm = self.copy_mode.as_ref().unwrap();
+            let surface = managed.active_surface_mut();
+            let end = total_rows.saturating_sub(surface.scroll_offset);
+            let start = end.saturating_sub(rows);
+            if cm.cursor.1 < start {
+                surface.scroll_offset = total_rows.saturating_sub(cm.cursor.1 + rows);
+            } else if cm.cursor.1 >= end {
+                surface.scroll_offset = total_rows.saturating_sub(cm.cursor.1 + 1);
+            }
+        }
+
+        true
+    }
+
+    fn extract_copy_mode_text(
+        &self,
+        pane_id: PaneId,
+        anchor: (usize, usize),
+        cols: usize,
+        line_visual: bool,
+    ) -> Option<String> {
+        let cm = self.copy_mode.as_ref()?;
+        let managed = self.panes.get(&pane_id)?;
+        let surface = managed.active_surface();
+        let screen = surface.pane.screen();
+
+        let (start, end) =
+            if anchor.1 < cm.cursor.1 || (anchor.1 == cm.cursor.1 && anchor.0 <= cm.cursor.0) {
+                (anchor, cm.cursor)
+            } else {
+                (cm.cursor, anchor)
+            };
+
+        let lines = screen.lines_in_phys_range(start.1..end.1 + 1);
+        let mut result = String::new();
+
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                result.push('\n');
+            }
+            let phys_row = start.1 + i;
+            for cell in line.visible_cells() {
+                let col = cell.cell_index();
+                if col >= cols {
+                    break;
+                }
+                if line_visual {
+                    result.push_str(cell.str());
+                } else {
+                    // Character visual: clip to selection bounds
+                    if phys_row == start.1 && col < start.0 {
+                        continue;
+                    }
+                    if phys_row == end.1 && col > end.0 {
+                        break;
+                    }
+                    result.push_str(cell.str());
+                }
+            }
+        }
+
+        // Trim trailing whitespace per line
+        let trimmed: Vec<&str> = result.lines().map(|l| l.trim_end()).collect();
+        Some(trimmed.join("\n"))
+    }
+
+    fn render_find_bar(&mut self, ctx: &egui::Context) {
+        let mut close = false;
+        let mut navigate: Option<isize> = None; // +1 = next, -1 = prev
+
+        egui::Window::new("Find")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::RIGHT_TOP, [-8.0, 8.0])
+            .fixed_size([300.0, 0.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let response =
+                        ui.text_edit_singleline(&mut self.find_state.as_mut().unwrap().query);
+
+                    // Auto-focus the text field on first show
+                    if let Some(fs) = self.find_state.as_mut() {
+                        if fs.just_opened {
+                            response.request_focus();
+                            fs.just_opened = false;
+                        }
+                    }
+
+                    // Enter = next, Shift+Enter = prev
+                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        if ui.input(|i| i.modifiers.shift) {
+                            navigate = Some(-1);
+                        } else {
+                            navigate = Some(1);
+                        }
+                        response.request_focus();
+                    }
+
+                    // Trigger search on text change
+                    if response.changed() {
+                        let find = self.find_state.as_ref().unwrap();
+                        let query = find.query.clone();
+                        let pane_id = find.pane_id;
+                        if let Some(managed) = self.panes.get(&pane_id) {
+                            let matches = managed.active_surface().pane.search_scrollback(&query);
+                            let find = self.find_state.as_mut().unwrap();
+                            find.matches = matches;
+                            find.current_match = 0;
+                        }
+                    }
+
+                    if ui.button("X").clicked() {
+                        close = true;
+                    }
+                });
+
+                // Show match count
+                if let Some(find) = &self.find_state {
+                    let total = find.matches.len();
+                    if total > 0 {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{}/{}", find.current_match + 1, total));
+                            if ui.button("<").clicked() {
+                                navigate = Some(-1);
+                            }
+                            if ui.button(">").clicked() {
+                                navigate = Some(1);
+                            }
+                        });
+                    } else if !find.query.is_empty() {
+                        ui.label("No matches");
+                    }
+                }
+            });
+
+        if close {
+            self.find_state = None;
+            return;
+        }
+
+        // Navigate matches
+        if let Some(dir) = navigate {
+            if let Some(find) = self.find_state.as_mut() {
+                if !find.matches.is_empty() {
+                    let total = find.matches.len();
+                    if dir > 0 {
+                        find.current_match = (find.current_match + 1) % total;
+                    } else {
+                        find.current_match = if find.current_match == 0 {
+                            total - 1
+                        } else {
+                            find.current_match - 1
+                        };
+                    }
+
+                    // Scroll to the current match
+                    let (phys_row, _, _) = find.matches[find.current_match];
+                    let pane_id = find.pane_id;
+                    if let Some(managed) = self.panes.get_mut(&pane_id) {
+                        let surface = managed.active_surface_mut();
+                        let (_, rows) = surface.pane.dimensions();
+                        let total_rows = surface.pane.screen().scrollback_rows();
+                        // Calculate scroll offset to center the match
+                        let target_end = phys_row + rows / 2;
+                        let actual_end = target_end.min(total_rows);
+                        surface.scroll_offset = total_rows.saturating_sub(actual_end);
+                    }
+                }
+            }
         }
     }
 
@@ -2260,12 +2954,17 @@ impl AmuxApp {
 
     // --- Selection Mouse ---
 
-    fn handle_selection_mouse(&mut self, ui: &egui::Ui, pane_id: PaneId, content_rect: egui::Rect) {
+    fn handle_selection_mouse(
+        &mut self,
+        ui: &egui::Ui,
+        pane_id: PaneId,
+        content_rect: egui::Rect,
+    ) -> bool {
         let (cell_width, cell_height) = self.cell_dimensions(ui);
 
         let managed = match self.panes.get(&pane_id) {
             Some(m) => m,
-            None => return,
+            None => return false,
         };
         let surface = managed.active_surface();
         let (cols, visible_rows) = surface.pane.dimensions();
@@ -2279,7 +2978,7 @@ impl AmuxApp {
 
         // Check if we're dragging a divider — skip selection if so
         if self.active_workspace().dragging_divider.is_some() {
-            return;
+            return false;
         }
 
         if primary_pressed {
@@ -2289,8 +2988,7 @@ impl AmuxApp {
                     if let Some(m) = self.panes.get_mut(&pane_id) {
                         m.selection = None;
                     }
-                    ui.ctx().request_repaint();
-                    return;
+                    return true;
                 }
 
                 let (col, stable_row) = pointer_to_cell(
@@ -2350,7 +3048,7 @@ impl AmuxApp {
                         active: true,
                     });
                 }
-                ui.ctx().request_repaint();
+                return true;
             }
         } else if primary_down {
             // Drag — update selection end
@@ -2406,7 +3104,7 @@ impl AmuxApp {
                             }
                         }
                     }
-                    ui.ctx().request_repaint();
+                    return true;
                 }
             }
         } else if primary_released {
@@ -2420,11 +3118,12 @@ impl AmuxApp {
                 }
             }
         }
+        false
     }
 
     // --- Input ---
 
-    fn handle_input(&mut self, ctx: &egui::Context) {
+    fn handle_input(&mut self, ctx: &egui::Context) -> bool {
         let events = ctx.input(|i| i.events.clone());
         let focused_id = self.focused_pane_id();
 
@@ -2443,7 +3142,7 @@ impl AmuxApp {
 
         let managed = match self.panes.get_mut(&focused_id) {
             Some(m) => m,
-            None => return,
+            None => return has_input,
         };
         let surface = managed.active_surface_mut();
 
@@ -2477,9 +3176,26 @@ impl AmuxApp {
                         let _ = surface.pane.write_bytes(text.as_bytes());
                     }
                 }
+                egui::Event::Ime(ime_event) => match ime_event {
+                    egui::ImeEvent::Commit(text) => {
+                        surface.scroll_offset = 0;
+                        surface.scroll_accum = 0.0;
+                        self.ime_preedit = None;
+                        let _ = surface.pane.write_bytes(text.as_bytes());
+                    }
+                    egui::ImeEvent::Preedit(text) => {
+                        self.ime_preedit = if text.is_empty() {
+                            None
+                        } else {
+                            Some(text.clone())
+                        };
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
+        has_input
     }
 
     // --- IPC ---
@@ -2565,7 +3281,14 @@ impl AmuxApp {
                         let surface = self.resolve_surface(&params.surface_id);
                         match surface {
                             Some(sf) => {
-                                let text = sf.pane.read_screen_text();
+                                let text = if let Some(ref line_spec) = params.lines {
+                                    sf.pane.read_screen_lines(line_spec, params.ansi)
+                                } else if params.ansi {
+                                    let (_, rows) = sf.pane.dimensions();
+                                    sf.pane.read_scrollback_text(rows)
+                                } else {
+                                    sf.pane.read_screen_text()
+                                };
                                 Response::ok(req.id.clone(), serde_json::json!({"text": text}))
                             }
                             None => Response::err(req.id.clone(), "not_found", "surface not found"),
@@ -3217,6 +3940,9 @@ fn render_pane(
     is_focused: bool,
     scroll_offset: usize,
     selection: Option<&SelectionState>,
+    font_size: f32,
+    find_highlights: &[(usize, usize, usize)],
+    current_highlight: Option<usize>,
     #[cfg(feature = "gpu-renderer")] gpu_renderer: Option<&GpuRenderer>,
     #[cfg(feature = "gpu-renderer")] pane_id: u64,
 ) {
@@ -3246,6 +3972,8 @@ fn render_pane(
             gpu_selection,
             pane_id,
             seqno,
+            find_highlights.to_vec(),
+            current_highlight,
         );
         let pixels_per_point = ui.ctx().pixels_per_point();
         let callback = gpu.paint_callback(rect, snapshot, pixels_per_point);
@@ -3253,7 +3981,7 @@ fn render_pane(
         return;
     }
 
-    let font_id = egui::FontId::monospace(FONT_SIZE);
+    let font_id = egui::FontId::monospace(font_size);
     let cell_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
     let cell_height = ui.fonts(|f| f.row_height(&font_id));
 
@@ -3272,6 +4000,12 @@ fn render_pane(
 
     // Fill the full allocated rect first to avoid artifacts when terminal is smaller
     painter.rect_filled(rect, 0.0, bg_default);
+
+    // Dim unfocused panes with a semi-transparent overlay
+    if !is_focused {
+        let dim_overlay = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+        painter.rect_filled(rect, 0.0, dim_overlay);
+    }
 
     let total = screen.scrollback_rows();
     let end = total.saturating_sub(scroll_offset);
@@ -3311,6 +4045,20 @@ fn render_pane(
                         bg = srgba_to_egui(palette.foreground);
                         fg = bg_default;
                     }
+                }
+            }
+
+            // Find/search highlighting
+            for (i, &(h_row, h_start, h_end)) in find_highlights.iter().enumerate() {
+                if h_row == stable_row && col_idx >= h_start && col_idx < h_end {
+                    if current_highlight == Some(i) {
+                        bg = egui::Color32::from_rgb(255, 153, 0); // orange
+                    } else {
+                        bg = egui::Color32::from_rgba_unmultiplied(255, 255, 0, 180);
+                        // yellow
+                    }
+                    fg = egui::Color32::BLACK;
+                    break;
                 }
             }
 
