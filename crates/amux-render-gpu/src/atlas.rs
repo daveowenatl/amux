@@ -94,25 +94,54 @@ impl AtlasPage {
     }
 
     fn upload_region(&self, queue: &wgpu::Queue, x: u32, y: u32, w: u32, h: u32, data: &[u8]) {
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d { x, y, z: 0 },
-                aspect: wgpu::TextureAspect::All,
-            },
-            data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(w * self.bytes_per_pixel),
-                rows_per_image: Some(h),
-            },
-            wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-        );
+        let unpadded_bytes_per_row = w * self.bytes_per_pixel;
+        let alignment = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(alignment) * alignment;
+
+        let copy_info = wgpu::TexelCopyTextureInfo {
+            texture: &self.texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d { x, y, z: 0 },
+            aspect: wgpu::TextureAspect::All,
+        };
+        let extent = wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        };
+
+        if padded_bytes_per_row == unpadded_bytes_per_row || h <= 1 {
+            // Data is already aligned or single row — upload directly.
+            queue.write_texture(
+                copy_info,
+                data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(h),
+                },
+                extent,
+            );
+        } else {
+            // Pad each row to satisfy wgpu alignment requirements.
+            let mut padded = vec![0u8; (padded_bytes_per_row * h) as usize];
+            let row_size = unpadded_bytes_per_row as usize;
+            let padded_row_size = padded_bytes_per_row as usize;
+            for row in 0..h as usize {
+                padded[row * padded_row_size..row * padded_row_size + row_size]
+                    .copy_from_slice(&data[row * row_size..row * row_size + row_size]);
+            }
+            queue.write_texture(
+                copy_info,
+                &padded,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(h),
+                },
+                extent,
+            );
+        }
     }
 }
 
@@ -170,18 +199,19 @@ impl GlyphAtlas {
         &self.color.texture_view
     }
 
-    /// Look up or rasterize a glyph, returning its atlas entry.
+    /// Look up or rasterize a glyph, returning `(entry, newly_inserted)`.
     ///
     /// Returns `None` for glyphs that can't be rasterized (e.g., spaces, missing glyphs).
+    /// `newly_inserted` is true only when a new glyph was uploaded to the atlas texture.
     pub fn get_or_insert(
         &mut self,
         queue: &wgpu::Queue,
         font_system: &mut FontSystem,
         swash_cache: &mut SwashCache,
         cache_key: CacheKey,
-    ) -> Option<AtlasEntry> {
+    ) -> (Option<AtlasEntry>, bool) {
         if let Some(entry) = self.cache.get(&cache_key) {
-            return *entry;
+            return (*entry, false);
         }
 
         let image: Option<SwashImage> = swash_cache.get_image_uncached(font_system, cache_key);
@@ -245,7 +275,8 @@ impl GlyphAtlas {
             }
         });
 
+        let newly_inserted = entry.is_some();
         self.cache.insert(cache_key, entry);
-        entry
+        (entry, newly_inserted)
     }
 }

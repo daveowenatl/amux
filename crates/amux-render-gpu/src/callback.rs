@@ -13,13 +13,21 @@ use crate::snapshot::TerminalSnapshot;
 
 /// Per-pane GPU state: instance buffers and dirty-tracking fingerprint.
 pub struct PaneRenderState {
-    // Dirty-tracking fields
+    // Dirty-tracking fields — terminal state
     seqno: usize,
     cursor_x: usize,
     cursor_y: i64,
     scroll_offset: usize,
     is_focused: bool,
-    has_selection: bool,
+    selection_range: Option<((usize, usize), (usize, usize))>,
+
+    // Dirty-tracking fields — geometry (pane position/size, cell dimensions)
+    rect_x: f32,
+    rect_y: f32,
+    rect_w: f32,
+    rect_h: f32,
+    cell_width: f32,
+    cell_height: f32,
 
     // Per-pane GPU instance buffers
     pub bg_buffer: wgpu::Buffer,
@@ -51,7 +59,13 @@ impl PaneRenderState {
             cursor_y: 0,
             scroll_offset: 0,
             is_focused: false,
-            has_selection: false,
+            selection_range: None,
+            rect_x: 0.0,
+            rect_y: 0.0,
+            rect_w: 0.0,
+            rect_h: 0.0,
+            cell_width: 0.0,
+            cell_height: 0.0,
             bg_buffer,
             bg_capacity: initial_capacity,
             bg_count: 0,
@@ -61,24 +75,42 @@ impl PaneRenderState {
         }
     }
 
-    /// Check if the pane content has changed since last render.
-    fn is_dirty(&self, snap: &TerminalSnapshot) -> bool {
+    /// Check if the pane content or geometry has changed since last render.
+    fn is_dirty(&self, snap: &TerminalSnapshot, rect: &PhysRect, cell_w: f32, cell_h: f32) -> bool {
         self.seqno != snap.seqno
             || self.cursor_x != snap.cursor.x
             || self.cursor_y != snap.cursor.y
             || self.scroll_offset != snap.scroll_offset
             || self.is_focused != snap.is_focused
-            || self.has_selection != snap.has_selection
+            || self.selection_range != snap.selection_range
+            || self.rect_x != rect.x
+            || self.rect_y != rect.y
+            || self.rect_w != rect.width
+            || self.rect_h != rect.height
+            || self.cell_width != cell_w
+            || self.cell_height != cell_h
     }
 
-    /// Update the fingerprint to match the current snapshot.
-    fn update_fingerprint(&mut self, snap: &TerminalSnapshot) {
+    /// Update the fingerprint to match the current state.
+    fn update_fingerprint(
+        &mut self,
+        snap: &TerminalSnapshot,
+        rect: &PhysRect,
+        cell_w: f32,
+        cell_h: f32,
+    ) {
         self.seqno = snap.seqno;
         self.cursor_x = snap.cursor.x;
         self.cursor_y = snap.cursor.y;
         self.scroll_offset = snap.scroll_offset;
         self.is_focused = snap.is_focused;
-        self.has_selection = snap.has_selection;
+        self.selection_range = snap.selection_range;
+        self.rect_x = rect.x;
+        self.rect_y = rect.y;
+        self.rect_w = rect.width;
+        self.rect_h = rect.height;
+        self.cell_width = cell_w;
+        self.cell_height = cell_h;
     }
 }
 
@@ -93,6 +125,13 @@ pub struct TerminalGpuResources {
     pub atlas_bind_group_dirty: bool,
     /// Per-pane render state (instance buffers + dirty tracking).
     pub pane_states: HashMap<u64, PaneRenderState>,
+}
+
+impl TerminalGpuResources {
+    /// Remove render state for panes that are no longer alive.
+    pub fn retain_panes(&mut self, live_pane_ids: &[u64]) {
+        self.pane_states.retain(|id, _| live_pane_ids.contains(id));
+    }
 }
 
 /// Paint callback for a single terminal pane.
@@ -141,7 +180,12 @@ impl CallbackTrait for TerminalPaintCallback {
             .or_insert_with(|| PaneRenderState::new(device));
 
         // Skip expensive instance rebuild if nothing changed.
-        if !pane_state.is_dirty(&self.snapshot) {
+        if !pane_state.is_dirty(
+            &self.snapshot,
+            &self.phys_rect,
+            self.cell_width,
+            self.cell_height,
+        ) {
             return Vec::new();
         }
 
@@ -300,7 +344,12 @@ impl CallbackTrait for TerminalPaintCallback {
         }
         pane_state.fg_count = fg_instances.len() as u32;
 
-        pane_state.update_fingerprint(&self.snapshot);
+        pane_state.update_fingerprint(
+            &self.snapshot,
+            &self.phys_rect,
+            self.cell_width,
+            self.cell_height,
+        );
 
         Vec::new()
     }
@@ -371,7 +420,7 @@ fn shape_and_rasterize(
         for glyph in run.glyphs.iter() {
             let physical = glyph.physical((0.0, 0.0), 1.0);
 
-            let entry = resources.atlas.get_or_insert(
+            let (entry, newly_inserted) = resources.atlas.get_or_insert(
                 queue,
                 &mut resources.font_system,
                 &mut resources.swash_cache,
@@ -392,7 +441,9 @@ fn shape_and_rasterize(
                     _pad: [0.0; 3],
                 });
 
-                resources.atlas_bind_group_dirty = true;
+                if newly_inserted {
+                    resources.atlas_bind_group_dirty = true;
+                }
             }
         }
     }

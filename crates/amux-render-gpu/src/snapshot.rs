@@ -21,8 +21,8 @@ pub struct TerminalSnapshot {
     /// Text under the cursor (for block cursor rendering).
     pub cursor_text: String,
     pub cursor_text_bold: bool,
-    /// Whether a selection is active (used for dirty tracking).
-    pub has_selection: bool,
+    /// Selection start/end for dirty tracking (None if no selection).
+    pub selection_range: Option<((usize, usize), (usize, usize))>,
 }
 
 /// Data for a single terminal cell.
@@ -78,7 +78,7 @@ impl TerminalSnapshot {
         pane_id: u64,
         seqno: usize,
     ) -> Self {
-        let has_selection = selection.is_some();
+        let selection_range = selection.as_ref().map(|s| (s.start, s.end));
         let default_bg = srgba_to_f32(palette.background);
         let default_fg = srgba_to_f32(palette.foreground);
         let cursor_bg = srgba_to_f32(palette.cursor_bg);
@@ -160,7 +160,7 @@ impl TerminalSnapshot {
             scroll_offset,
             cursor_text,
             cursor_text_bold,
-            has_selection,
+            selection_range,
         }
     }
 }
@@ -179,6 +179,24 @@ fn resolve_color(
     }
 }
 
+/// Convert sRGB color from wezterm-term to linear RGB for GPU shaders.
+///
+/// The GPU pipeline outputs to an sRGB surface (e.g., Bgra8UnormSrgb),
+/// which applies gamma encoding on write. Colors must be linear in the
+/// shader to avoid double-gamma.
 fn srgba_to_f32(c: SrgbaTuple) -> [f32; 4] {
-    [c.0, c.1, c.2, c.3]
+    [
+        srgb_to_linear(c.0),
+        srgb_to_linear(c.1),
+        srgb_to_linear(c.2),
+        c.3,
+    ]
+}
+
+fn srgb_to_linear(v: f32) -> f32 {
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
 }

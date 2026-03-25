@@ -109,6 +109,19 @@ impl GpuRenderer {
     pub fn cell_height(&self) -> f32 {
         self.cell_height
     }
+
+    /// Remove cached render state for panes that no longer exist.
+    pub fn retain_panes(&self, live_pane_ids: &[u64]) {
+        if let Some(r) = self
+            .render_state
+            .renderer
+            .write()
+            .callback_resources
+            .get_mut::<TerminalGpuResources>()
+        {
+            r.retain_panes(live_pane_ids);
+        }
+    }
 }
 
 /// Measure monospace cell width by laying out "M" and reading the advance.

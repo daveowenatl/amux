@@ -926,6 +926,13 @@ impl eframe::App for AmuxApp {
             }
         }
 
+        // Clean up GPU resources for closed panes.
+        #[cfg(feature = "gpu-renderer")]
+        if let Some(ref gpu) = self.gpu_renderer {
+            let live_ids: Vec<u64> = self.panes.keys().copied().collect();
+            gpu.retain_panes(&live_ids);
+        }
+
         // Smart repaint
         if got_data {
             ctx.request_repaint();
