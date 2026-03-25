@@ -193,14 +193,20 @@ enum Command {
     /// Clear saved session data
     #[command(name = "session-clear")]
     SessionClear,
+    /// Install shell integration scripts
+    #[command(name = "install-shell-integration")]
+    InstallShellIntegration,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // SessionClear is a direct filesystem operation — handle before IPC connection
-    // so it works even when the server isn't running.
+    // These commands are direct filesystem operations — handle before IPC connection.
+    if matches!(cli.command, Command::InstallShellIntegration) {
+        install_shell_integration()?;
+        return Ok(());
+    }
     if matches!(cli.command, Command::SessionClear) {
         match amux_session::clear() {
             Ok(()) => {
@@ -666,7 +672,7 @@ async fn main() -> anyhow::Result<()> {
                 print_response(&resp, false);
             }
         }
-        Command::SessionClear => {
+        Command::SessionClear | Command::InstallShellIntegration => {
             unreachable!("handled before IPC connection");
         }
     }
@@ -828,4 +834,42 @@ fn print_pane_list(result: &serde_json::Value) {
             println!("pane:{}{} {}x{} [{}]", id, focus_marker, cols, rows, status);
         }
     }
+}
+
+fn install_shell_integration() -> anyhow::Result<()> {
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("amux")
+        .join("shell");
+    std::fs::create_dir_all(&config_dir)?;
+
+    let zsh_script = include_str!("../../../resources/shell-integration/amux-zsh-integration.zsh");
+    let bash_script =
+        include_str!("../../../resources/shell-integration/amux-bash-integration.bash");
+
+    let zsh_path = config_dir.join("amux-zsh-integration.zsh");
+    let bash_path = config_dir.join("amux-bash-integration.bash");
+
+    std::fs::write(&zsh_path, zsh_script)?;
+    std::fs::write(&bash_path, bash_script)?;
+
+    println!("Shell integration scripts installed to:");
+    println!("  {}", zsh_path.display());
+    println!("  {}", bash_path.display());
+    println!();
+    println!("Add one of the following to your shell config:");
+    println!();
+    println!("  # For zsh (~/.zshrc):");
+    println!(
+        "  [[ -n \"$AMUX_SOCKET_PATH\" ]] && source \"{}\"",
+        zsh_path.display()
+    );
+    println!();
+    println!("  # For bash (~/.bashrc):");
+    println!(
+        "  [[ -n \"$AMUX_SOCKET_PATH\" ]] && source \"{}\"",
+        bash_path.display()
+    );
+
+    Ok(())
 }
