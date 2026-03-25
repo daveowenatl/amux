@@ -92,7 +92,11 @@ _amux_report_pr() {
     local repo_path="$1"
     [[ -n "$repo_path" ]] || return 0
     [[ -d "$repo_path" ]] || return 0
-    command -v gh >/dev/null 2>&1 || return 0
+
+    command -v gh >/dev/null 2>&1 || {
+        amux set-pr --clear >/dev/null 2>&1
+        return 0
+    }
 
     local branch
     branch="$(git -C "$repo_path" branch --show-current 2>/dev/null)"

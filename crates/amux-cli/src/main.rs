@@ -110,6 +110,7 @@ enum Command {
     #[command(name = "set-cwd")]
     SetCwd {
         /// Working directory path (omit to clear)
+        #[arg(conflicts_with = "clear")]
         cwd: Option<String>,
         /// Clear CWD metadata
         #[arg(long)]
@@ -122,10 +123,10 @@ enum Command {
     #[command(name = "set-git")]
     SetGit {
         /// Branch name (omit to clear)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear")]
         branch: Option<String>,
         /// Working tree has uncommitted changes
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear")]
         dirty: bool,
         /// Clear git info
         #[arg(long)]
@@ -138,13 +139,13 @@ enum Command {
     #[command(name = "set-pr")]
     SetPr {
         /// PR number
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear")]
         number: Option<u32>,
         /// PR title
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear")]
         title: Option<String>,
         /// PR state: open, merged, closed
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear")]
         state: Option<String>,
         /// Clear PR info
         #[arg(long)]

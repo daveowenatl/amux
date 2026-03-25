@@ -501,13 +501,7 @@ fn restore_session(
             "waiting" => amux_notify::AgentState::Waiting,
             _ => amux_notify::AgentState::Idle,
         };
-        store.set_status(
-            *ws_id,
-            state,
-            saved_status.label.clone(),
-            saved_status.task.clone(),
-            saved_status.message.clone(),
-        );
+        store.set_status(*ws_id, state, saved_status.label.clone(), None, None);
     }
 
     let active_idx = session
@@ -914,15 +908,15 @@ impl AmuxApp {
                         .surfaces
                         .iter()
                         .map(|sf| {
-                            let working_dir = sf
-                                .pane
-                                .working_dir()
-                                .and_then(|url| url.to_file_path().ok())
-                                .map(|p| p.to_string_lossy().to_string())
-                                .or_else(|| {
-                                    // Fallback: query the child process's cwd via OS APIs
-                                    sf.pane.child_pid().and_then(get_cwd_from_pid)
-                                });
+                            // Prefer shell-reported CWD (metadata.cwd from set-cwd/OSC 7),
+                            // then fall back to pane.working_dir() and OS-level queries.
+                            let working_dir = sf.metadata.cwd.clone().or_else(|| {
+                                sf.pane
+                                    .working_dir()
+                                    .and_then(|url| url.to_file_path().ok())
+                                    .map(|p| p.to_string_lossy().to_string())
+                                    .or_else(|| sf.pane.child_pid().and_then(get_cwd_from_pid))
+                            });
                             let scrollback = sf.pane.read_scrollback_text(4096);
                             let (cols, rows) = sf.pane.dimensions();
                             amux_session::SavedSurface {
@@ -996,8 +990,9 @@ impl AmuxApp {
                                 }
                                 .to_string(),
                                 label: status.label.clone(),
-                                task: status.task.clone(),
-                                message: status.message.clone(),
+                                // task/message are transient agent state — don't persist
+                                task: None,
+                                message: None,
                             },
                         )
                     })
