@@ -130,6 +130,7 @@ fn main() -> anyhow::Result<()> {
                 wants_exit: false,
                 font_size: DEFAULT_FONT_SIZE,
                 find_state: None,
+                copy_mode: None,
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
             }))
@@ -489,6 +490,17 @@ struct FindState {
     pane_id: PaneId,
 }
 
+/// State for vi-style copy mode (scrollback navigation + visual selection).
+struct CopyModeState {
+    pane_id: PaneId,
+    /// Cursor position in (col, phys_row).
+    cursor: (usize, usize),
+    /// Visual selection anchor (col, phys_row), set when 'v' is pressed.
+    visual_anchor: Option<(usize, usize)>,
+    /// Line-visual mode (V).
+    line_visual: bool,
+}
+
 /// Word boundary delimiters for double-click selection.
 const WORD_DELIMITERS: &str = " \t\n()[]{}'\"|<>&;:,.`~!@#$%^*-+=?/\\";
 
@@ -587,6 +599,7 @@ struct AmuxApp {
     wants_exit: bool,
     font_size: f32,
     find_state: Option<FindState>,
+    copy_mode: Option<CopyModeState>,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
 }
@@ -869,8 +882,9 @@ impl eframe::App for AmuxApp {
         let shortcut_consumed = self.handle_shortcuts(ctx);
 
         // Handle keyboard/paste input -> focused pane's active surface only
+        // (blocked during copy mode — all keys go through handle_copy_mode_key)
         let mut sent_input = false;
-        if !shortcut_consumed {
+        if !shortcut_consumed && self.copy_mode.is_none() {
             sent_input = self.handle_input(ctx);
         }
 
@@ -1183,12 +1197,41 @@ impl AmuxApp {
             .map(|f| (f.matches.clone(), Some(f.current_match)))
             .unwrap_or_default();
 
+        // Build selection: use copy mode visual selection if active, else normal selection
+        let copy_mode_sel = self
+            .copy_mode
+            .as_ref()
+            .filter(|cm| cm.pane_id == pane_id && cm.visual_anchor.is_some())
+            .map(|cm| {
+                let anchor = cm.visual_anchor.unwrap();
+                let cursor = cm.cursor;
+                let (start, end) =
+                    if anchor.1 < cursor.1 || (anchor.1 == cursor.1 && anchor.0 <= cursor.0) {
+                        (anchor, cursor)
+                    } else {
+                        (cursor, anchor)
+                    };
+                SelectionState {
+                    anchor: start,
+                    end,
+                    mode: if cm.line_visual {
+                        SelectionMode::Line
+                    } else {
+                        SelectionMode::Cell
+                    },
+                    active: false,
+                }
+            });
+
         // Render terminal content for the active surface
         let managed = match self.panes.get_mut(&pane_id) {
             Some(m) => m,
             None => return,
         };
-        let selection = managed.selection.as_ref().cloned();
+        let selection = copy_mode_sel
+            .as_ref()
+            .or(managed.selection.as_ref())
+            .cloned();
         let surface = managed.active_surface_mut();
         render_pane(
             ui,
@@ -1205,6 +1248,31 @@ impl AmuxApp {
             #[cfg(feature = "gpu-renderer")]
             pane_id,
         );
+
+        // Render copy mode cursor overlay
+        if let Some(cm) = self.copy_mode.as_ref().filter(|cm| cm.pane_id == pane_id) {
+            let (cell_w, cell_h) = self.cell_dimensions(ui);
+            if let Some(managed) = self.panes.get(&pane_id) {
+                let surface = managed.active_surface();
+                let (_, rows) = surface.pane.dimensions();
+                let total = surface.pane.screen().scrollback_rows();
+                let end = total.saturating_sub(surface.scroll_offset);
+                let start = end.saturating_sub(rows);
+                if cm.cursor.1 >= start && cm.cursor.1 < end {
+                    let row_in_view = cm.cursor.1 - start;
+                    let x = content_rect.min.x + cm.cursor.0 as f32 * cell_w;
+                    let y = content_rect.min.y + TAB_BAR_HEIGHT + row_in_view as f32 * cell_h;
+                    let cursor_rect =
+                        egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cell_w, cell_h));
+                    ui.painter().rect_stroke(
+                        cursor_rect,
+                        0.0,
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 255, 0)),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+            }
+        }
 
         // Notification ring + flash animation (matching cmux)
         let pane_u64 = pane_id;
@@ -1611,7 +1679,12 @@ impl AmuxApp {
                     return true;
                 }
 
-                // Escape: close find bar or clear selection
+                // Copy mode: intercept all keys when active
+                if self.copy_mode.is_some() {
+                    return self.handle_copy_mode_key(key, modifiers);
+                }
+
+                // Escape: close find bar, exit copy mode, or clear selection
                 if *key == egui::Key::Escape
                     && !modifiers.shift
                     && !modifiers.ctrl
@@ -1651,6 +1724,12 @@ impl AmuxApp {
                 #[cfg(not(target_os = "macos"))]
                 if modifiers.ctrl && modifiers.shift && *key == egui::Key::A {
                     self.select_all_visible();
+                    return true;
+                }
+
+                // Enter copy mode: Cmd+Shift+X (macOS) / Ctrl+Shift+X (other)
+                if is_cmd && modifiers.shift && *key == egui::Key::X {
+                    self.enter_copy_mode();
                     return true;
                 }
 
@@ -2107,6 +2186,196 @@ impl AmuxApp {
             }
             self.set_focus(pane_id);
         }
+    }
+
+    fn enter_copy_mode(&mut self) {
+        let pane_id = self.focused_pane_id();
+        if let Some(managed) = self.panes.get(&pane_id) {
+            let surface = managed.active_surface();
+            let cursor = surface.pane.cursor();
+            let screen = surface.pane.screen();
+            let (_, rows) = surface.pane.dimensions();
+            let total = screen.scrollback_rows();
+            let end = total.saturating_sub(surface.scroll_offset);
+            let start = end.saturating_sub(rows);
+            // Place copy mode cursor at terminal cursor position in phys coords
+            let phys_row = start + cursor.y as usize;
+            self.copy_mode = Some(CopyModeState {
+                pane_id,
+                cursor: (cursor.x, phys_row),
+                visual_anchor: None,
+                line_visual: false,
+            });
+        }
+    }
+
+    fn handle_copy_mode_key(&mut self, key: &egui::Key, modifiers: &egui::Modifiers) -> bool {
+        let cm = match self.copy_mode.as_mut() {
+            Some(cm) => cm,
+            None => return false,
+        };
+        let pane_id = cm.pane_id;
+
+        // Get dimensions for bounds checking
+        let (cols, rows, total_rows) = match self.panes.get(&pane_id) {
+            Some(m) => {
+                let s = m.active_surface();
+                let (c, r) = s.pane.dimensions();
+                let t = s.pane.screen().scrollback_rows();
+                (c, r, t)
+            }
+            None => {
+                self.copy_mode = None;
+                return true;
+            }
+        };
+        let cm = self.copy_mode.as_mut().unwrap();
+
+        match key {
+            // Exit copy mode
+            egui::Key::Escape | egui::Key::Q => {
+                self.copy_mode = None;
+                return true;
+            }
+            // Movement
+            egui::Key::H | egui::Key::ArrowLeft => {
+                cm.cursor.0 = cm.cursor.0.saturating_sub(1);
+            }
+            egui::Key::L | egui::Key::ArrowRight => {
+                cm.cursor.0 = (cm.cursor.0 + 1).min(cols.saturating_sub(1));
+            }
+            egui::Key::K | egui::Key::ArrowUp => {
+                cm.cursor.1 = cm.cursor.1.saturating_sub(1);
+            }
+            egui::Key::J | egui::Key::ArrowDown => {
+                cm.cursor.1 = (cm.cursor.1 + 1).min(total_rows.saturating_sub(1));
+            }
+            // Half-page up/down
+            egui::Key::U if modifiers.ctrl => {
+                let half = rows / 2;
+                cm.cursor.1 = cm.cursor.1.saturating_sub(half);
+            }
+            egui::Key::D if modifiers.ctrl => {
+                let half = rows / 2;
+                cm.cursor.1 = (cm.cursor.1 + half).min(total_rows.saturating_sub(1));
+            }
+            // Start of scrollback
+            egui::Key::G if modifiers.shift => {
+                cm.cursor.1 = total_rows.saturating_sub(1);
+                cm.cursor.0 = 0;
+            }
+            egui::Key::G => {
+                cm.cursor.1 = 0;
+                cm.cursor.0 = 0;
+            }
+            // Line start/end
+            egui::Key::Num0 => {
+                cm.cursor.0 = 0;
+            }
+            // Visual mode toggle
+            egui::Key::V if modifiers.shift => {
+                // Line visual
+                if cm.line_visual {
+                    cm.visual_anchor = None;
+                    cm.line_visual = false;
+                } else {
+                    cm.visual_anchor = Some(cm.cursor);
+                    cm.line_visual = true;
+                }
+            }
+            egui::Key::V => {
+                // Character visual
+                if cm.visual_anchor.is_some() && !cm.line_visual {
+                    cm.visual_anchor = None;
+                } else {
+                    cm.visual_anchor = Some(cm.cursor);
+                    cm.line_visual = false;
+                }
+            }
+            // Yank selection
+            egui::Key::Y => {
+                let anchor = cm.visual_anchor;
+                let line_visual = cm.line_visual;
+                if let Some(anchor) = anchor {
+                    let text = self.extract_copy_mode_text(pane_id, anchor, cols, line_visual);
+                    if let Some(text) = text {
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            let _ = clipboard.set_text(&text);
+                        }
+                    }
+                    self.copy_mode = None;
+                    return true;
+                }
+            }
+            _ => {}
+        }
+
+        // Scroll viewport to keep cursor visible
+        if let Some(managed) = self.panes.get_mut(&pane_id) {
+            let cm = self.copy_mode.as_ref().unwrap();
+            let surface = managed.active_surface_mut();
+            let end = total_rows.saturating_sub(surface.scroll_offset);
+            let start = end.saturating_sub(rows);
+            if cm.cursor.1 < start {
+                surface.scroll_offset = total_rows.saturating_sub(cm.cursor.1 + rows);
+            } else if cm.cursor.1 >= end {
+                surface.scroll_offset = total_rows.saturating_sub(cm.cursor.1 + 1);
+            }
+        }
+
+        true
+    }
+
+    fn extract_copy_mode_text(
+        &self,
+        pane_id: PaneId,
+        anchor: (usize, usize),
+        cols: usize,
+        line_visual: bool,
+    ) -> Option<String> {
+        let cm = self.copy_mode.as_ref()?;
+        let managed = self.panes.get(&pane_id)?;
+        let surface = managed.active_surface();
+        let screen = surface.pane.screen();
+
+        let (start, end) =
+            if anchor.1 < cm.cursor.1 || (anchor.1 == cm.cursor.1 && anchor.0 <= cm.cursor.0) {
+                (anchor, cm.cursor)
+            } else {
+                (cm.cursor, anchor)
+            };
+
+        let lines = screen.lines_in_phys_range(start.1..end.1 + 1);
+        let mut result = String::new();
+
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                result.push('\n');
+            }
+            let phys_row = start.1 + i;
+            for cell in line.visible_cells() {
+                let col = cell.cell_index();
+                if col >= cols {
+                    break;
+                }
+                if line_visual {
+                    result.push_str(cell.str());
+                } else {
+                    // Character visual: clip to selection bounds
+                    if phys_row == start.1 && col < start.0 {
+                        continue;
+                    }
+                    if phys_row == end.1 && col > end.0 {
+                        break;
+                    }
+                    result.push_str(cell.str());
+                }
+            }
+        }
+
+        // Trim trailing whitespace per line
+        let trimmed: Vec<&str> = result.lines().map(|l| l.trim_end()).collect();
+        Some(trimmed.join("\n"))
     }
 
     fn render_find_bar(&mut self, ctx: &egui::Context) {
