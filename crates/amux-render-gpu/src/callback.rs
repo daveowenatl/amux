@@ -13,6 +13,8 @@ use crate::snapshot::TerminalSnapshot;
 
 /// Per-pane GPU state: instance buffers and dirty-tracking fingerprint.
 pub struct PaneRenderState {
+    /// False until first successful prepare; forces initial rebuild.
+    initialized: bool,
     // Dirty-tracking fields — terminal state
     seqno: usize,
     cursor_x: usize,
@@ -54,6 +56,7 @@ impl PaneRenderState {
             mapped_at_creation: false,
         });
         Self {
+            initialized: false,
             seqno: 0,
             cursor_x: 0,
             cursor_y: 0,
@@ -77,7 +80,8 @@ impl PaneRenderState {
 
     /// Check if the pane content or geometry has changed since last render.
     fn is_dirty(&self, snap: &TerminalSnapshot, rect: &PhysRect, cell_w: f32, cell_h: f32) -> bool {
-        self.seqno != snap.seqno
+        !self.initialized
+            || self.seqno != snap.seqno
             || self.cursor_x != snap.cursor.x
             || self.cursor_y != snap.cursor.y
             || self.scroll_offset != snap.scroll_offset
@@ -99,6 +103,7 @@ impl PaneRenderState {
         cell_w: f32,
         cell_h: f32,
     ) {
+        self.initialized = true;
         self.seqno = snap.seqno;
         self.cursor_x = snap.cursor.x;
         self.cursor_y = snap.cursor.y;
@@ -274,7 +279,7 @@ impl CallbackTrait for TerminalPaintCallback {
                         shape_and_rasterize(
                             &snap.cursor_text,
                             snap.cursor_text_bold,
-                            false,
+                            snap.cursor_text_italic,
                             snap.cursor_fg,
                             cx,
                             cy,

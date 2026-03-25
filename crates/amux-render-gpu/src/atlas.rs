@@ -247,7 +247,7 @@ impl GlyphAtlas {
             } else {
                 // Monochrome glyph: store alpha data in the mono atlas.
                 let alpha_data = match img.content {
-                    SwashContent::Mask => img.data.clone(),
+                    SwashContent::Mask => img.data,
                     SwashContent::SubpixelMask => img
                         .data
                         .chunks(3)

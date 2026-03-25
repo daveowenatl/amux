@@ -21,6 +21,7 @@ pub struct TerminalSnapshot {
     /// Text under the cursor (for block cursor rendering).
     pub cursor_text: String,
     pub cursor_text_bold: bool,
+    pub cursor_text_italic: bool,
     /// Selection start/end for dirty tracking (None if no selection).
     pub selection_range: Option<((usize, usize), (usize, usize))>,
 }
@@ -92,6 +93,7 @@ impl TerminalSnapshot {
         let mut cells = Vec::with_capacity(cols * rows);
         let mut cursor_text = String::new();
         let mut cursor_text_bold = false;
+        let mut cursor_text_italic = false;
 
         for (row_idx, line) in lines.iter().enumerate() {
             for cell_ref in line.visible_cells() {
@@ -130,6 +132,7 @@ impl TerminalSnapshot {
                     if !text.is_empty() && text != " " {
                         cursor_text = text.to_string();
                         cursor_text_bold = attrs.intensity() == wezterm_term::Intensity::Bold;
+                        cursor_text_italic = attrs.italic();
                     }
                 }
 
@@ -160,6 +163,7 @@ impl TerminalSnapshot {
             scroll_offset,
             cursor_text,
             cursor_text_bold,
+            cursor_text_italic,
             selection_range,
         }
     }
