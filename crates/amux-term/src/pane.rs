@@ -266,6 +266,16 @@ impl TerminalPane {
         self.terminal.current_seqno()
     }
 
+    /// Erase the scrollback buffer, keeping only the visible screen.
+    pub fn erase_scrollback(&mut self) {
+        self.terminal.erase_scrollback();
+    }
+
+    /// Notify the terminal that focus has changed (for DECSET 1004 focus reporting).
+    pub fn focus_changed(&mut self, focused: bool) {
+        self.terminal.focus_changed(focused);
+    }
+
     /// Get the last-rendered sequence number.
     pub fn rendered_seqno(&self) -> SequenceNo {
         self.seqno

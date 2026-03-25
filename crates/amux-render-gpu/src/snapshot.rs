@@ -141,6 +141,15 @@ impl TerminalSnapshot {
             }
         }
 
+        // Dim background colors for unfocused panes.
+        let dim_factor = if is_focused { 1.0 } else { 0.6 };
+        let dimmed_bg = dim_color(default_bg, dim_factor);
+        if !is_focused {
+            for cell in &mut cells {
+                cell.bg = dim_color(cell.bg, dim_factor);
+            }
+        }
+
         Self {
             pane_id,
             seqno,
@@ -148,7 +157,7 @@ impl TerminalSnapshot {
             rows,
             cells,
             cursor: *cursor,
-            default_bg,
+            default_bg: dimmed_bg,
             cursor_bg,
             cursor_fg,
             is_focused,
@@ -183,4 +192,9 @@ fn resolve_color(
 /// sRGB values are passed through directly.
 fn srgba_to_f32(c: SrgbaTuple) -> [f32; 4] {
     [c.0, c.1, c.2, c.3]
+}
+
+/// Dim a color by multiplying RGB channels toward black.
+fn dim_color(c: [f32; 4], factor: f32) -> [f32; 4] {
+    [c[0] * factor, c[1] * factor, c[2] * factor, c[3]]
 }

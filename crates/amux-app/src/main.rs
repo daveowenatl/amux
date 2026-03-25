@@ -620,7 +620,18 @@ impl AmuxApp {
     fn set_focus(&mut self, pane_id: PaneId) {
         let ws = self.active_workspace_mut();
         if ws.focused_pane != pane_id {
+            let old_id = ws.focused_pane;
             ws.focused_pane = pane_id;
+
+            // Send DECSET 1004 focus-out to old pane
+            if let Some(managed) = self.panes.get_mut(&old_id) {
+                managed.active_surface_mut().pane.focus_changed(false);
+            }
+            // Send DECSET 1004 focus-in to new pane
+            if let Some(managed) = self.panes.get_mut(&pane_id) {
+                managed.active_surface_mut().pane.focus_changed(true);
+            }
+
             // Clear notifications on the newly focused pane
             self.notifications.mark_pane_read(pane_id);
             // Navigation flash — but suppress if other panes have unread
@@ -1794,6 +1805,12 @@ impl AmuxApp {
                     return true;
                 }
 
+                // Clear scrollback: Cmd+K (macOS) / Ctrl+Shift+K (other)
+                if is_cmd && !modifiers.shift && *key == egui::Key::K {
+                    self.do_clear_scrollback();
+                    return true;
+                }
+
                 // Scroll
                 if modifiers.shift && *key == egui::Key::PageUp {
                     return self.do_scroll(-1);
@@ -1856,6 +1873,31 @@ impl AmuxApp {
                         surface.scroll_accum -= whole_lines as f32;
                         self.do_scroll_lines_for(pane_id, whole_lines);
                     }
+                }
+            }
+        }
+
+        // Focus-follows-mouse: set focus to the pane under the cursor on click
+        if ctx.input(|i| i.pointer.primary_clicked()) {
+            let hover_pos = ctx.input(|i| i.pointer.hover_pos());
+            let target_pane = hover_pos.and_then(|pos| {
+                let panel_rect = self.last_panel_rect?;
+                let ws = self.active_workspace();
+                if let Some(zoomed_id) = ws.zoomed {
+                    if panel_rect.contains(pos) {
+                        return Some(zoomed_id);
+                    }
+                    return None;
+                }
+                let layout = ws.tree.layout(panel_rect);
+                layout
+                    .iter()
+                    .find(|(_, rect)| rect.contains(pos))
+                    .map(|(id, _)| *id)
+            });
+            if let Some(pane_id) = target_pane {
+                if pane_id != self.focused_pane_id() {
+                    self.set_focus(pane_id);
                 }
             }
         }
@@ -1974,6 +2016,15 @@ impl AmuxApp {
             let max_offset = total.saturating_sub(rows);
             let new_offset = surface.scroll_offset as isize - lines;
             surface.scroll_offset = (new_offset.max(0) as usize).min(max_offset);
+        }
+    }
+
+    fn do_clear_scrollback(&mut self) {
+        let focused_id = self.focused_pane_id();
+        if let Some(managed) = self.panes.get_mut(&focused_id) {
+            let surface = managed.active_surface_mut();
+            surface.pane.erase_scrollback();
+            surface.scroll_offset = 0;
         }
     }
 
@@ -3310,6 +3361,12 @@ fn render_pane(
 
     // Fill the full allocated rect first to avoid artifacts when terminal is smaller
     painter.rect_filled(rect, 0.0, bg_default);
+
+    // Dim unfocused panes with a semi-transparent overlay
+    if !is_focused {
+        let dim_overlay = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+        painter.rect_filled(rect, 0.0, dim_overlay);
+    }
 
     let total = screen.scrollback_rows();
     let end = total.saturating_sub(scroll_offset);
