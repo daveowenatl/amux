@@ -38,6 +38,7 @@ pub struct CellData {
     pub bg: [f32; 4],
     pub bold: bool,
     pub italic: bool,
+    pub hyperlink_url: Option<String>,
 }
 
 /// Selection range for highlight rendering.
@@ -151,6 +152,8 @@ impl TerminalSnapshot {
                     }
                 }
 
+                let hyperlink_url = attrs.hyperlink().map(|h| h.uri().to_string());
+
                 cells.push(CellData {
                     col: col_idx,
                     row: row_idx,
@@ -159,6 +162,7 @@ impl TerminalSnapshot {
                     bg: srgba_to_f32(bg),
                     bold: attrs.intensity() == wezterm_term::Intensity::Bold,
                     italic: attrs.italic(),
+                    hyperlink_url,
                 });
             }
         }
