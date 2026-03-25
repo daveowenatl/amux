@@ -1,3 +1,5 @@
+mod sidebar;
+
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::{mpsc, Arc};
@@ -413,19 +415,19 @@ impl ManagedPane {
 }
 
 /// A workspace shown in the sidebar. Owns the split tree.
-struct Workspace {
-    id: u64,
-    title: String,
-    tree: PaneTree,
-    focused_pane: PaneId,
-    zoomed: Option<PaneId>,
-    dragging_divider: Option<DragState>,
-    last_pane_sizes: HashMap<PaneId, (usize, usize)>,
+pub(crate) struct Workspace {
+    pub(crate) id: u64,
+    pub(crate) title: String,
+    pub(crate) tree: PaneTree,
+    pub(crate) focused_pane: PaneId,
+    pub(crate) zoomed: Option<PaneId>,
+    pub(crate) dragging_divider: Option<DragState>,
+    pub(crate) last_pane_sizes: HashMap<PaneId, (usize, usize)>,
 }
 
-struct SidebarState {
-    visible: bool,
-    width: f32,
+pub(crate) struct SidebarState {
+    pub(crate) visible: bool,
+    pub(crate) width: f32,
 }
 
 struct DragState {
@@ -887,7 +889,23 @@ impl eframe::App for AmuxApp {
 
         // Render sidebar
         if self.sidebar.visible {
-            self.render_sidebar(ctx);
+            let sidebar_actions = sidebar::render_sidebar(
+                ctx,
+                &mut self.sidebar,
+                &self.workspaces,
+                self.active_workspace_idx,
+                &self.notifications,
+            );
+            for action in sidebar_actions {
+                match action {
+                    sidebar::SidebarAction::SwitchWorkspace(idx) => {
+                        self.active_workspace_idx = idx;
+                    }
+                    sidebar::SidebarAction::CreateWorkspace => {
+                        self.create_workspace(None);
+                    }
+                }
+            }
         }
 
         // Render main content
@@ -1351,146 +1369,6 @@ impl AmuxApp {
                 }
             }
         }
-    }
-
-    // --- Sidebar ---
-
-    fn render_sidebar(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("sidebar")
-            .resizable(true)
-            .default_width(self.sidebar.width)
-            .min_width(120.0)
-            .max_width(400.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(egui::Color32::from_gray(30))
-                    .inner_margin(8.0),
-            )
-            .show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
-
-                ui.label(
-                    egui::RichText::new("Workspaces")
-                        .strong()
-                        .color(egui::Color32::from_gray(180)),
-                );
-                ui.add_space(4.0);
-
-                let active_idx = self.active_workspace_idx;
-                let mut switch_to: Option<usize> = None;
-
-                for (idx, ws) in self.workspaces.iter().enumerate() {
-                    let is_active = idx == active_idx;
-                    let bg = if is_active {
-                        egui::Color32::from_gray(55)
-                    } else {
-                        egui::Color32::TRANSPARENT
-                    };
-
-                    let pane_ids: Vec<u64> = ws.tree.iter_panes();
-                    let unread = self.notifications.workspace_unread_count(&pane_ids);
-                    let has_status = self.notifications.workspace_status(ws.id).is_some();
-                    let row_height = if has_status { 38.0 } else { 24.0 };
-
-                    let response = ui.horizontal(|ui| {
-                        let (rect, response) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), row_height),
-                            egui::Sense::click(),
-                        );
-                        if ui.is_rect_visible(rect) {
-                            ui.painter().rect_filled(rect, 4.0, bg);
-                            let text_color = if is_active {
-                                egui::Color32::WHITE
-                            } else {
-                                egui::Color32::from_gray(160)
-                            };
-                            ui.painter().text(
-                                rect.min + egui::vec2(8.0, 4.0),
-                                egui::Align2::LEFT_TOP,
-                                &ws.title,
-                                egui::FontId::proportional(14.0),
-                                text_color,
-                            );
-
-                            // Unread badge or pane count
-                            if unread > 0 {
-                                let badge_center =
-                                    egui::pos2(rect.right() - 16.0, rect.min.y + 12.0);
-                                ui.painter().circle_filled(
-                                    badge_center,
-                                    8.0,
-                                    egui::Color32::from_rgb(40, 120, 255),
-                                );
-                                ui.painter().text(
-                                    badge_center,
-                                    egui::Align2::CENTER_CENTER,
-                                    format!("{}", unread),
-                                    egui::FontId::proportional(9.0),
-                                    egui::Color32::WHITE,
-                                );
-                            } else {
-                                let count = ws.tree.iter_panes().len();
-                                ui.painter().text(
-                                    egui::pos2(rect.right() - 8.0, rect.min.y + 4.0),
-                                    egui::Align2::RIGHT_TOP,
-                                    format!("{}", count),
-                                    egui::FontId::proportional(11.0),
-                                    egui::Color32::from_gray(100),
-                                );
-                            }
-
-                            // Status pill
-                            if let Some(status) = self.notifications.workspace_status(ws.id) {
-                                let (pill_color, default_text) = match status.state {
-                                    amux_notify::AgentState::Active => {
-                                        (egui::Color32::from_rgb(50, 180, 80), "active")
-                                    }
-                                    amux_notify::AgentState::Waiting => {
-                                        (egui::Color32::from_rgb(230, 170, 40), "waiting")
-                                    }
-                                    amux_notify::AgentState::Idle => {
-                                        (egui::Color32::from_gray(100), "idle")
-                                    }
-                                };
-                                let label = status.label.as_deref().unwrap_or(default_text);
-                                let pill_pos = egui::pos2(rect.min.x + 8.0, rect.min.y + 22.0);
-                                let text_width = label.len() as f32 * 5.5 + 8.0;
-                                let pill_rect = egui::Rect::from_min_size(
-                                    pill_pos,
-                                    egui::vec2(text_width.min(rect.width() - 32.0), 14.0),
-                                );
-                                ui.painter().rect_filled(pill_rect, 7.0, pill_color);
-                                ui.painter().text(
-                                    pill_rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    label,
-                                    egui::FontId::proportional(9.0),
-                                    egui::Color32::WHITE,
-                                );
-                            }
-                        }
-                        response
-                    });
-                    if response.inner.clicked() && !is_active {
-                        switch_to = Some(idx);
-                    }
-                }
-
-                if let Some(idx) = switch_to {
-                    self.active_workspace_idx = idx;
-                }
-
-                ui.add_space(8.0);
-
-                if ui
-                    .button(
-                        egui::RichText::new("+ New Workspace").color(egui::Color32::from_gray(140)),
-                    )
-                    .clicked()
-                {
-                    self.create_workspace(None);
-                }
-            });
     }
 
     // --- Resize ---
