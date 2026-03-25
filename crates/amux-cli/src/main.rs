@@ -109,8 +109,11 @@ enum Command {
     /// Set the working directory for a surface
     #[command(name = "set-cwd")]
     SetCwd {
-        /// Working directory path
-        cwd: String,
+        /// Working directory path (omit to clear)
+        cwd: Option<String>,
+        /// Clear CWD metadata
+        #[arg(long)]
+        clear: bool,
         /// Target surface ID (defaults to AMUX_SURFACE_ID)
         #[arg(long)]
         surface: Option<String>,
@@ -497,19 +500,20 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         // --- Metadata commands ---
-        Command::SetCwd { cwd, surface } => {
+        Command::SetCwd {
+            cwd,
+            clear,
+            surface,
+        } => {
             let surface_id = surface
                 .or_else(|| std::env::var("AMUX_SURFACE_ID").ok())
                 .unwrap_or_else(|| "default".to_string());
-            let resp = client
-                .call(
-                    "surface.set_cwd",
-                    serde_json::json!({
-                        "surface_id": surface_id,
-                        "cwd": cwd,
-                    }),
-                )
-                .await?;
+            let params = if clear {
+                serde_json::json!({ "surface_id": surface_id })
+            } else {
+                serde_json::json!({ "surface_id": surface_id, "cwd": cwd })
+            };
+            let resp = client.call("surface.set_cwd", params).await?;
             if cli.json {
                 print_response(&resp, true);
             } else if resp.ok {

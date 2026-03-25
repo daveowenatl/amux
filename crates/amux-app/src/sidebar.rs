@@ -785,9 +785,14 @@ fn truncate_text(ui: &egui::Ui, text: &str, font: &egui::FontId, max_width: f32)
 /// Shorten a path for sidebar display: replace $HOME with ~.
 fn shorten_path(path: &str) -> String {
     if let Some(home) = dirs::home_dir() {
-        let home_str = home.to_string_lossy();
-        if let Some(rest) = path.strip_prefix(home_str.as_ref()) {
-            return format!("~{rest}");
+        let p = std::path::Path::new(path);
+        if let Ok(rest) = p.strip_prefix(&home) {
+            let rest_str = rest.to_string_lossy();
+            return if rest_str.is_empty() {
+                "~".to_string()
+            } else {
+                format!("~/{rest_str}")
+            };
         }
     }
     path.to_string()

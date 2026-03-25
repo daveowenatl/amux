@@ -501,7 +501,13 @@ fn restore_session(
             "waiting" => amux_notify::AgentState::Waiting,
             _ => amux_notify::AgentState::Idle,
         };
-        store.set_status(*ws_id, state, saved_status.label.clone(), None, None);
+        store.set_status(
+            *ws_id,
+            state,
+            saved_status.label.clone(),
+            saved_status.task.clone(),
+            saved_status.message.clone(),
+        );
     }
 
     let active_idx = session
@@ -717,17 +723,23 @@ fn spawn_surface(
     cmd.env("AMUX_SURFACE_ID", surface_id.to_string());
     cmd.env("TERM", "xterm-256color");
 
-    if let Some(dir) = cwd {
+    let actual_cwd = if let Some(dir) = cwd {
         let path = std::path::Path::new(dir);
         if path.is_dir() {
             cmd.cwd(path);
+            Some(dir.to_string())
         } else {
             tracing::warn!("Saved working dir no longer exists: {}", dir);
             if let Some(home) = dirs::home_dir() {
-                cmd.cwd(home);
+                cmd.cwd(&home);
+                Some(home.to_string_lossy().to_string())
+            } else {
+                None
             }
         }
-    }
+    } else {
+        None
+    };
 
     let mut pane = TerminalPane::spawn(cols, rows, cmd, config.clone())?;
 
@@ -763,9 +775,9 @@ fn spawn_surface(
         }
     });
 
-    // Initialize metadata with CWD if provided (e.g. from session restore)
+    // Initialize metadata with the actual CWD used (may differ from saved if dir was removed)
     let metadata = SurfaceMetadata {
-        cwd: cwd.map(|s| s.to_string()),
+        cwd: actual_cwd,
         ..Default::default()
     };
 
@@ -3591,7 +3603,7 @@ impl AmuxApp {
                         let surface = self.resolve_surface_mut(&params.surface_id);
                         match surface {
                             Some(sf) => {
-                                sf.metadata.cwd = Some(params.cwd);
+                                sf.metadata.cwd = params.cwd.filter(|s| !s.is_empty());
                                 Response::ok(req.id.clone(), serde_json::json!({}))
                             }
                             None => Response::err(req.id.clone(), "not_found", "surface not found"),

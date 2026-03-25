@@ -56,10 +56,18 @@ _amux_report_pr() {
         return 0
     }
 
+    # Use timeout/gtimeout if available, otherwise run gh directly
+    local timeout_cmd=""
+    if command -v timeout >/dev/null 2>&1; then
+        timeout_cmd="timeout 10"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        timeout_cmd="gtimeout 10"
+    fi
+
     local gh_output=""
     gh_output="$(
         cd "$repo_path" 2>/dev/null \
-            && timeout 10 gh pr view "$branch" \
+            && $timeout_cmd gh pr view "$branch" \
                 --json number,title,state \
                 --jq '[.number, .title, .state] | @tsv' \
                 2>/dev/null

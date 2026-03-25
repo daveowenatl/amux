@@ -102,7 +102,8 @@ pub struct StatusSetParams {
 #[derive(Debug, Deserialize)]
 pub struct SetCwdParams {
     pub surface_id: String,
-    pub cwd: String,
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
