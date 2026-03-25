@@ -1,7 +1,7 @@
 // Foreground pass: renders one textured quad per visible glyph.
 // Uses instancing: unit quad vertices are shared, per-instance data provides
-// position/size/UV/color. The atlas texture contains alpha masks; the fragment
-// shader multiplies the sampled alpha by the instance foreground color.
+// position/size/UV/color. Supports both monochrome (alpha-only) and color (emoji)
+// atlas textures, selected by the is_color instance flag.
 
 struct Viewport {
     size: vec2<f32>,
@@ -11,8 +11,10 @@ struct Viewport {
 var<uniform> viewport: Viewport;
 
 @group(1) @binding(0)
-var atlas_texture: texture_2d<f32>;
+var mono_atlas: texture_2d<f32>;
 @group(1) @binding(1)
+var color_atlas: texture_2d<f32>;
+@group(1) @binding(2)
 var atlas_sampler: sampler;
 
 struct VertexInput {
@@ -29,12 +31,15 @@ struct InstanceInput {
     @location(4) uv_max: vec2<f32>,
     // Foreground color (linear RGBA).
     @location(5) color: vec4<f32>,
+    // is_color flag (x component): 1.0 = color emoji, 0.0 = monochrome.
+    @location(6) is_color_pad: vec4<f32>,
 }
 
 struct VertexOutput {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) is_color: f32,
 }
 
 @vertex
@@ -53,11 +58,19 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     out.clip_pos = vec4<f32>(ndc, 0.0, 1.0);
     out.uv = uv;
     out.color = instance.color;
+    out.is_color = instance.is_color_pad.x;
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let alpha = textureSample(atlas_texture, atlas_sampler, in.uv).r;
-    return vec4<f32>(in.color.rgb * alpha, alpha * in.color.a);
+    if in.is_color > 0.5 {
+        // Color emoji: sample RGBA directly from color atlas, premultiply alpha.
+        let texel = textureSample(color_atlas, atlas_sampler, in.uv);
+        return vec4<f32>(texel.rgb * texel.a, texel.a);
+    } else {
+        // Monochrome glyph: sample alpha from mono atlas, multiply by fg color.
+        let alpha = textureSample(mono_atlas, atlas_sampler, in.uv).r;
+        return vec4<f32>(in.color.rgb * alpha, alpha * in.color.a);
+    }
 }

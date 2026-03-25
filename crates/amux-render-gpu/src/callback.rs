@@ -249,7 +249,8 @@ impl CallbackTrait for TerminalPaintCallback {
         if resources.atlas_bind_group_dirty {
             resources.fg_pipeline.update_atlas_bind_group(
                 device,
-                &resources.atlas.texture_view,
+                resources.atlas.mono_texture_view(),
+                resources.atlas.color_texture_view(),
                 &resources.atlas.sampler,
             );
             resources.atlas_bind_group_dirty = false;
@@ -387,6 +388,8 @@ fn shape_and_rasterize(
                     uv_min: [entry.uv[0], entry.uv[1]],
                     uv_max: [entry.uv[2], entry.uv[3]],
                     color,
+                    is_color: if entry.is_color { 1.0 } else { 0.0 },
+                    _pad: [0.0; 3],
                 });
 
                 resources.atlas_bind_group_dirty = true;

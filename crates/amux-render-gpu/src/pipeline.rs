@@ -213,6 +213,9 @@ pub struct CellFgInstance {
     pub uv_max: [f32; 2],
     /// Foreground color (linear RGBA).
     pub color: [f32; 4],
+    /// 1.0 for color emoji, 0.0 for monochrome glyphs.
+    pub is_color: f32,
+    pub _pad: [f32; 3],
 }
 
 /// Foreground rendering pipeline: instanced textured quads for glyphs.
@@ -252,11 +255,12 @@ impl ForegroundPipeline {
                 }],
             });
 
-        // Group 1: atlas texture + sampler
+        // Group 1: mono atlas + color atlas + sampler
         let atlas_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("fg_atlas_bind_group_layout"),
                 entries: &[
+                    // binding 0: mono atlas (R8Unorm)
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
                         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -267,8 +271,20 @@ impl ForegroundPipeline {
                         },
                         count: None,
                     },
+                    // binding 1: color atlas (Rgba8UnormSrgb)
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // binding 2: shared sampler
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
@@ -306,6 +322,7 @@ impl ForegroundPipeline {
                             3 => Float32x2, // uv_min
                             4 => Float32x2, // uv_max
                             5 => Float32x4, // color
+                            6 => Float32x4, // is_color + padding
                         ],
                     },
                 ],
@@ -380,11 +397,12 @@ impl ForegroundPipeline {
         }
     }
 
-    /// Update the atlas bind group when the atlas texture changes.
+    /// Update the atlas bind group when atlas textures change.
     pub fn update_atlas_bind_group(
         &mut self,
         device: &wgpu::Device,
-        texture_view: &wgpu::TextureView,
+        mono_view: &wgpu::TextureView,
+        color_view: &wgpu::TextureView,
         sampler: &wgpu::Sampler,
     ) {
         self.atlas_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -393,10 +411,14 @@ impl ForegroundPipeline {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(texture_view),
+                    resource: wgpu::BindingResource::TextureView(mono_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
+                    resource: wgpu::BindingResource::TextureView(color_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
                     resource: wgpu::BindingResource::Sampler(sampler),
                 },
             ],
