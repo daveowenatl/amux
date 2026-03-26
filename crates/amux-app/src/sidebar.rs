@@ -17,9 +17,6 @@ const TEXT_ACTIVE: Color32 = Color32::WHITE;
 const TEXT_INACTIVE: Color32 = Color32::from_gray(180);
 const TEXT_SECONDARY: Color32 = Color32::from_gray(140);
 const BADGE_ACTIVE_BG: Color32 = Color32::from_rgba_premultiplied(64, 64, 64, 64);
-const STATUS_GREEN: Color32 = Color32::from_rgb(50, 180, 80);
-const STATUS_ORANGE: Color32 = Color32::from_rgb(230, 170, 40);
-const STATUS_GRAY: Color32 = Color32::from_gray(100);
 const NEW_BTN_TEXT: Color32 = Color32::from_gray(140);
 const NEW_BTN_HOVER: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
 const CLOSE_BTN_COLOR: Color32 = Color32::from_rgba_premultiplied(140, 140, 140, 179);
@@ -39,9 +36,6 @@ const ROW_CORNER_RADIUS: f32 = 6.0;
 const TITLE_FONT_SIZE: f32 = 12.5;
 const BADGE_RADIUS: f32 = 8.0;
 const BADGE_FONT_SIZE: f32 = 9.0;
-const PILL_FONT_SIZE: f32 = 9.0;
-const PILL_HEIGHT: f32 = 14.0;
-const PILL_CORNER_RADIUS: f32 = 7.0;
 const COUNT_FONT_SIZE: f32 = 10.0;
 const NOTIF_FONT_SIZE: f32 = 10.0;
 const NOTIF_PREVIEW_HEIGHT: f32 = 24.0;
@@ -51,9 +45,6 @@ const PROGRESS_BAR_HEIGHT: f32 = 3.0;
 const DROP_INDICATOR_HEIGHT: f32 = 2.0;
 const METADATA_FONT_SIZE: f32 = 10.0;
 const METADATA_LINE_HEIGHT: f32 = 16.0;
-const PR_MERGED_COLOR: Color32 = Color32::from_rgb(130, 80, 223); // purple for merged
-const PR_OPEN_COLOR: Color32 = Color32::from_rgb(0, 145, 255);
-const PR_CLOSED_COLOR: Color32 = Color32::from_gray(100);
 #[cfg(target_os = "macos")]
 const TRAFFIC_LIGHT_SPACER: f32 = 28.0;
 
@@ -324,7 +315,7 @@ fn render_workspace_row(
         row_h += METADATA_LINE_HEIGHT + 2.0;
     }
     if has_status {
-        row_h += PILL_HEIGHT + 4.0;
+        row_h += METADATA_LINE_HEIGHT + 4.0;
     }
     if has_git_or_cwd {
         row_h += METADATA_LINE_HEIGHT + 2.0;
@@ -489,9 +480,12 @@ fn render_workspace_row(
     } else {
         let title_pos = rect.min + egui::vec2(content_left, ROW_V_PAD);
         let title_font = egui::FontId::proportional(TITLE_FONT_SIZE);
-        // Show agent task as title if available, with star prefix like cmux
+        // Show agent task as title if available, with star prefix like cmux.
+        // Fall back to surface title (OSC 0/2), then workspace title.
         let display_title = if let Some(task) = status.as_ref().and_then(|s| s.task.as_ref()) {
             format!("\u{2731} {task}")
+        } else if let Some(st) = metadata.and_then(|m| m.surface_title.as_ref()) {
+            st.clone()
         } else {
             ws.title.clone()
         };
@@ -555,47 +549,44 @@ fn render_workspace_row(
         );
     }
 
-    // --- Status pill ---
+    // --- Status indicator (icon + text, matching cmux) ---
     let mut content_bottom = rect.min.y + ROW_V_PAD + title_line_h;
+
+    // Metadata text color: light grey
+    let meta_color = Color32::from_gray(190);
+    // Status indicator color: blue when unselected, white when selected
+    let status_color = if is_active {
+        Color32::WHITE
+    } else {
+        ACCENT_BLUE
+    };
+
     if let Some(status) = &status {
-        let (pill_color, default_text) = match status.state {
-            amux_notify::AgentState::Active => (STATUS_GREEN, "active"),
-            amux_notify::AgentState::Waiting => (STATUS_ORANGE, "waiting"),
-            amux_notify::AgentState::Idle => (STATUS_GRAY, "idle"),
+        let (icon, default_text) = match status.state {
+            amux_notify::AgentState::Active => ("\u{26A1}", "Running"), // ⚡
+            amux_notify::AgentState::Waiting => ("\u{1F514}", "Needs input"), // 🔔
+            amux_notify::AgentState::Idle => ("\u{23F8}\u{FE0E}", "Idle"), // ⏸︎
         };
         let label = status.label.as_deref().unwrap_or(default_text);
         content_bottom += 4.0;
-        let pill_y = content_bottom;
-        let pill_x = rect.min.x + content_left;
-
-        let pill_font = egui::FontId::proportional(PILL_FONT_SIZE);
-        let text_galley =
-            ui.painter()
-                .layout_no_wrap(label.to_string(), pill_font.clone(), Color32::WHITE);
-        let text_w = text_galley.size().x;
-        let pill_w = (text_w + 10.0).min(avail_w - content_left - ROW_H_PAD);
-
-        let pill_rect =
-            egui::Rect::from_min_size(egui::pos2(pill_x, pill_y), egui::vec2(pill_w, PILL_HEIGHT));
-        ui.painter()
-            .rect_filled(pill_rect, PILL_CORNER_RADIUS, pill_color);
+        let status_x = rect.min.x + content_left;
+        let max_w = avail_w - content_left - ROW_H_PAD;
+        let status_font = egui::FontId::proportional(METADATA_FONT_SIZE);
+        let status_text = format!("{icon} {label}");
+        let truncated = truncate_text(ui, &status_text, &status_font, max_w);
         ui.painter().text(
-            pill_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            label,
-            pill_font,
-            Color32::WHITE,
+            egui::pos2(status_x, content_bottom),
+            egui::Align2::LEFT_TOP,
+            &truncated,
+            status_font,
+            status_color,
         );
-        content_bottom += PILL_HEIGHT;
+        content_bottom += METADATA_LINE_HEIGHT;
     }
 
     // --- Agent message (subtitle) ---
     if let Some(message) = status.as_ref().and_then(|s| s.message.as_ref()) {
-        let msg_color = if is_active {
-            Color32::from_rgba_premultiplied(204, 204, 204, 204)
-        } else {
-            TEXT_SECONDARY
-        };
+        let msg_color = meta_color;
         content_bottom += 2.0;
         let msg_x = rect.min.x + content_left;
         let max_w = avail_w - content_left - ROW_H_PAD;
@@ -618,11 +609,7 @@ fn render_workspace_row(
     // --- Git branch + CWD line ---
     if let Some(meta) = metadata {
         if meta.git_branch.is_some() || meta.cwd.is_some() {
-            let line_color = if is_active {
-                Color32::from_rgba_premultiplied(180, 180, 180, 204)
-            } else {
-                TEXT_SECONDARY
-            };
+            let line_color = meta_color;
             content_bottom += 2.0;
             let line_x = rect.min.x + content_left;
             let max_w = avail_w - content_left - ROW_H_PAD;
@@ -652,11 +639,7 @@ fn render_workspace_row(
         // --- PR badge ---
         if let Some(pr_num) = meta.pr_number {
             let pr_state = meta.pr_state.as_deref().unwrap_or("open");
-            let pr_color = match pr_state {
-                "merged" => PR_MERGED_COLOR,
-                "open" => PR_OPEN_COLOR,
-                _ => PR_CLOSED_COLOR,
-            };
+            let pr_color = meta_color;
             content_bottom += 2.0;
             let pr_x = rect.min.x + content_left;
             let max_w = avail_w - content_left - ROW_H_PAD;
@@ -679,11 +662,7 @@ fn render_workspace_row(
         .filter(|_| !has_agent_message)
         .filter(|n| !n.body.is_empty())
     {
-        let notif_color = if is_active {
-            Color32::from_rgba_premultiplied(204, 204, 204, 204)
-        } else {
-            TEXT_SECONDARY
-        };
+        let notif_color = meta_color;
         content_bottom += 2.0;
         let notif_x = rect.min.x + content_left;
         let max_w = avail_w - content_left - ROW_H_PAD;

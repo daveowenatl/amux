@@ -349,9 +349,18 @@ impl NotificationStore {
         message: Option<String>,
     ) {
         let existing = self.workspace_statuses.get(&workspace_id);
-        // Preserve task/message if not explicitly provided in this call
-        let task = task.or_else(|| existing.and_then(|s| s.task.clone()));
-        let message = message.or_else(|| existing.and_then(|s| s.message.clone()));
+        // Normalize empty strings to None, then preserve existing if not provided.
+        // Some("") means "clear", None means "keep previous".
+        let task = match task {
+            Some(s) if s.is_empty() => None,
+            Some(s) => Some(s),
+            None => existing.and_then(|s| s.task.clone()),
+        };
+        let message = match message {
+            Some(s) if s.is_empty() => None,
+            Some(s) => Some(s),
+            None => existing.and_then(|s| s.message.clone()),
+        };
         self.workspace_statuses.insert(
             workspace_id,
             WorkspaceStatus {

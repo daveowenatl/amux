@@ -531,6 +531,104 @@ fn default_shell() -> String {
     }
 }
 
+/// Write shell integration files to ~/.config/amux/shell/ and set env vars to
+/// auto-inject them. For zsh: ZDOTDIR override. For bash: PROMPT_COMMAND bootstrap.
+/// Matching cmux's approach — no user dotfile modification required.
+fn inject_shell_integration(shell: &str, cmd: &mut CommandBuilder) {
+    let shell_name = std::path::Path::new(shell)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("");
+
+    let Some(integration_dir) = ensure_shell_integration_dir() else {
+        return;
+    };
+
+    cmd.env(
+        "AMUX_SHELL_INTEGRATION_DIR",
+        integration_dir.to_string_lossy().as_ref(),
+    );
+
+    match shell_name {
+        "zsh" => {
+            let zsh_dir = integration_dir.join("zsh");
+            // Save user's original ZDOTDIR (if set) so bootstrap can restore it
+            if let Ok(original) = std::env::var("ZDOTDIR") {
+                cmd.env("AMUX_ZSH_ZDOTDIR", &original);
+            }
+            cmd.env("ZDOTDIR", zsh_dir.to_string_lossy().as_ref());
+        }
+        "bash" => {
+            // Bootstrap integration via PROMPT_COMMAND on first interactive prompt.
+            // This runs once, then restores any original PROMPT_COMMAND.
+            let bash_script = integration_dir.join("amux-bash-integration.bash");
+            let bootstrap = format!(
+                concat!(
+                    "unset PROMPT_COMMAND; ",
+                    "if [[ -r \"{}\" ]]; then source \"{}\"; fi",
+                ),
+                bash_script.display(),
+                bash_script.display(),
+            );
+            cmd.env("PROMPT_COMMAND", &bootstrap);
+        }
+        _ => {}
+    }
+}
+
+/// Ensure shell integration scripts are written to ~/.config/amux/shell/.
+/// Returns the directory path, or None on failure.
+fn ensure_shell_integration_dir() -> Option<std::path::PathBuf> {
+    let config_dir = dirs::config_dir()?.join("amux").join("shell");
+
+    // Write zsh bootstrap files
+    let zsh_dir = config_dir.join("zsh");
+    if std::fs::create_dir_all(&zsh_dir).is_err() {
+        return None;
+    }
+
+    // Embed integration scripts at compile time
+    let files: &[(&str, &str)] = &[
+        (
+            "zsh/.zshenv",
+            include_str!("../../../resources/shell-integration/zsh/.zshenv"),
+        ),
+        (
+            "zsh/.zprofile",
+            include_str!("../../../resources/shell-integration/zsh/.zprofile"),
+        ),
+        (
+            "zsh/.zshrc",
+            include_str!("../../../resources/shell-integration/zsh/.zshrc"),
+        ),
+        (
+            "zsh/.zlogin",
+            include_str!("../../../resources/shell-integration/zsh/.zlogin"),
+        ),
+        (
+            "amux-zsh-integration.zsh",
+            include_str!("../../../resources/shell-integration/amux-zsh-integration.zsh"),
+        ),
+        (
+            "amux-bash-integration.bash",
+            include_str!("../../../resources/shell-integration/amux-bash-integration.bash"),
+        ),
+    ];
+
+    for (name, content) in files {
+        let path = config_dir.join(name);
+        // Only write if content changed (avoid unnecessary disk writes)
+        let needs_write = std::fs::read_to_string(&path)
+            .map(|existing| existing != *content)
+            .unwrap_or(true);
+        if needs_write && std::fs::write(&path, content).is_err() {
+            return None;
+        }
+    }
+
+    Some(config_dir)
+}
+
 fn cleanup_addr(addr: &amux_ipc::IpcAddr) {
     match addr {
         #[cfg(unix)]
@@ -554,6 +652,8 @@ pub(crate) struct SurfaceMetadata {
     pub(crate) pr_number: Option<u32>,
     pub(crate) pr_title: Option<String>,
     pub(crate) pr_state: Option<String>, // "open", "merged", "closed"
+    /// Surface title from OSC 0/2 (window title set by shell/agent).
+    pub(crate) surface_title: Option<String>,
 }
 
 /// A terminal tab within a pane. Each pane can have multiple surfaces.
@@ -716,6 +816,20 @@ fn spawn_surface(
     cmd.env("AMUX_WORKSPACE_ID", workspace_id.to_string());
     cmd.env("AMUX_SURFACE_ID", surface_id.to_string());
     cmd.env("TERM", "xterm-256color");
+
+    // Point AMUX_BIN to the CLI binary so shell integration scripts can invoke it
+    // without relying on PATH (macOS path_helper in /etc/zprofile rebuilds PATH).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let cli_bin = exe_dir.join("amux");
+            if cli_bin.exists() {
+                cmd.env("AMUX_BIN", cli_bin.to_string_lossy().as_ref());
+            }
+        }
+    }
+
+    // Auto-inject shell integration (matching cmux's ZDOTDIR/PROMPT_COMMAND approach)
+    inject_shell_integration(&shell, &mut cmd);
 
     let actual_cwd = if let Some(dir) = cwd {
         let path = std::path::Path::new(dir);
@@ -2455,7 +2569,16 @@ impl AmuxApp {
     fn workspace_metadata(&self, workspace: &Workspace) -> SurfaceMetadata {
         self.panes
             .get(&workspace.focused_pane)
-            .map(|mp| mp.active_surface().metadata.clone())
+            .map(|mp| {
+                let sf = mp.active_surface();
+                let mut meta = sf.metadata.clone();
+                // Capture the surface's OSC title for sidebar display
+                let title = sf.pane.title();
+                if !title.is_empty() {
+                    meta.surface_title = Some(title.to_string());
+                }
+                meta
+            })
             .unwrap_or_default()
     }
 

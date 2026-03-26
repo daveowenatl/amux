@@ -1,5 +1,6 @@
 use amux_ipc::{read_last_addr, IpcAddr, IpcClient};
 use clap::{Parser, Subcommand};
+use std::io::Read as _;
 
 #[derive(Parser)]
 #[command(name = "amux", about = "Terminal multiplexer for AI coding agents")]
@@ -200,6 +201,22 @@ enum Command {
     /// Install shell integration scripts
     #[command(name = "install-shell-integration")]
     InstallShellIntegration,
+    /// Handle a Claude Code hook event (reads JSON from stdin)
+    #[command(name = "claude-hook")]
+    ClaudeHook {
+        /// Hook event name (PreToolUse, Stop, UserPromptSubmit, etc.)
+        event: String,
+    },
+    /// Install agent hooks into Claude Code settings
+    #[command(name = "install-hooks")]
+    InstallHooks {
+        /// Install Claude Code hooks
+        #[arg(long)]
+        claude: bool,
+        /// Uninstall hooks instead of installing
+        #[arg(long)]
+        uninstall: bool,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -209,6 +226,19 @@ async fn main() -> anyhow::Result<()> {
     // These commands are direct filesystem operations — handle before IPC connection.
     if matches!(cli.command, Command::InstallShellIntegration) {
         install_shell_integration()?;
+        return Ok(());
+    }
+    if let Command::InstallHooks { claude, uninstall } = &cli.command {
+        if *claude {
+            if *uninstall {
+                uninstall_claude_hooks()?;
+            } else {
+                install_claude_hooks()?;
+            }
+        } else {
+            eprintln!("Specify --claude to install Claude Code hooks");
+            std::process::exit(1);
+        }
         return Ok(());
     }
     if matches!(cli.command, Command::SessionClear) {
@@ -677,7 +707,10 @@ async fn main() -> anyhow::Result<()> {
                 print_response(&resp, false);
             }
         }
-        Command::SessionClear | Command::InstallShellIntegration => {
+        Command::ClaudeHook { event } => {
+            handle_claude_hook(&mut client, &event).await?;
+        }
+        Command::SessionClear | Command::InstallShellIntegration | Command::InstallHooks { .. } => {
             unreachable!("handled before IPC connection");
         }
     }
@@ -839,6 +872,304 @@ fn print_pane_list(result: &serde_json::Value) {
             println!("pane:{}{} {}x{} [{}]", id, focus_marker, cols, rows, status);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code hook handling
+// ---------------------------------------------------------------------------
+
+/// Read stdin JSON and translate Claude Code hook events into amux status updates.
+async fn handle_claude_hook(client: &mut IpcClient, event: &str) -> anyhow::Result<()> {
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+    let data: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
+
+    let ws_id = std::env::var("AMUX_WORKSPACE_ID").unwrap_or_else(|_| "0".to_string());
+
+    match event {
+        "UserPromptSubmit" => {
+            // User submitted a prompt — set status to active with the prompt as task
+            let prompt = data
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let task = if prompt.len() > 80 {
+                format!("{}...", &prompt[..77])
+            } else {
+                prompt
+            };
+            let mut params = serde_json::json!({
+                "workspace_id": ws_id,
+                "state": "active",
+                "label": "Running",
+            });
+            if !task.is_empty() {
+                params["task"] = serde_json::json!(task);
+            }
+            // Clear previous message on new prompt
+            params["message"] = serde_json::json!("");
+            client.call("status.set", params).await?;
+        }
+        "PreToolUse" => {
+            // Claude is about to use a tool — update message with tool description
+            let tool_name = data.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
+            let tool_input = data.get("tool_input");
+            let description = describe_tool_use(tool_name, tool_input);
+            let params = serde_json::json!({
+                "workspace_id": ws_id,
+                "state": "active",
+                "label": "Running",
+                "message": description,
+            });
+            client.call("status.set", params).await?;
+        }
+        "Notification" => {
+            // Claude needs attention (permission prompt, etc.)
+            let params = serde_json::json!({
+                "workspace_id": ws_id,
+                "state": "waiting",
+                "label": "Needs input",
+            });
+            client.call("status.set", params).await?;
+        }
+        "Stop" => {
+            // Claude finished its turn — set to idle, clear task/message
+            let params = serde_json::json!({
+                "workspace_id": ws_id,
+                "state": "idle",
+                "label": "Idle",
+                "task": "",
+                "message": "",
+            });
+            client.call("status.set", params).await?;
+        }
+        "SubagentStart" => {
+            let agent_name = data
+                .get("agent_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("subagent");
+            let description = format!("Running {agent_name}");
+            let params = serde_json::json!({
+                "workspace_id": ws_id,
+                "state": "active",
+                "label": "Running",
+                "message": description,
+            });
+            client.call("status.set", params).await?;
+        }
+        _ => {
+            // SessionStart, SessionEnd, PostToolUse, SubagentStop — no status change needed
+        }
+    }
+
+    Ok(())
+}
+
+/// Generate a human-readable description of a tool use, matching cmux's describeToolUse().
+fn describe_tool_use(tool_name: &str, tool_input: Option<&serde_json::Value>) -> String {
+    let input = tool_input.unwrap_or(&serde_json::Value::Null);
+
+    match tool_name {
+        "Read" => {
+            let path = input
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let filename = std::path::Path::new(path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or(path);
+            format!("Reading {filename}")
+        }
+        "Edit" => {
+            let path = input
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let filename = std::path::Path::new(path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or(path);
+            format!("Editing {filename}")
+        }
+        "Write" => {
+            let path = input
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let filename = std::path::Path::new(path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or(path);
+            format!("Writing {filename}")
+        }
+        "Bash" => {
+            let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            let short = if cmd.len() > 60 {
+                format!("{}...", &cmd[..57])
+            } else {
+                cmd.to_string()
+            };
+            format!("Running {short}")
+        }
+        "Glob" => {
+            let pattern = input.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
+            format!("Searching {pattern}")
+        }
+        "Grep" => {
+            let pattern = input.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            format!("Grep {pattern}")
+        }
+        "WebFetch" => "Fetching URL".to_string(),
+        "WebSearch" => {
+            let query = input.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            format!("Search: {query}")
+        }
+        "Agent" => {
+            let desc = input
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("subagent");
+            desc.to_string()
+        }
+        _ => tool_name.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code hook installation
+// ---------------------------------------------------------------------------
+
+fn install_claude_hooks() -> anyhow::Result<()> {
+    let settings_path = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
+        .join(".claude")
+        .join("settings.json");
+
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        let content = std::fs::read_to_string(&settings_path)?;
+        serde_json::from_str(&content)?
+    } else {
+        std::fs::create_dir_all(settings_path.parent().unwrap())?;
+        serde_json::json!({})
+    };
+
+    // Build hook entries for each event
+    let amux_hook = |event: &str, timeout: u64| -> serde_json::Value {
+        serde_json::json!({
+            "matcher": "",
+            "hooks": [{
+                "type": "command",
+                "command": format!("\"${{AMUX_BIN:-amux}}\" claude-hook {event}"),
+                "timeout": timeout
+            }]
+        })
+    };
+
+    let hooks = serde_json::json!({
+        "UserPromptSubmit": [amux_hook("UserPromptSubmit", 5)],
+        "PreToolUse": [amux_hook("PreToolUse", 5)],
+        "Notification": [amux_hook("Notification", 5)],
+        "Stop": [amux_hook("Stop", 5)],
+        "SubagentStart": [amux_hook("SubagentStart", 5)],
+    });
+
+    // Merge with existing hooks (don't clobber non-amux hooks)
+    if let Some(existing_hooks) = settings.get_mut("hooks") {
+        if let Some(existing_obj) = existing_hooks.as_object_mut() {
+            for (event, hook_entries) in hooks.as_object().unwrap() {
+                // Remove any existing amux hooks for this event, keep others
+                if let Some(existing_entries) = existing_obj.get_mut(event) {
+                    if let Some(arr) = existing_entries.as_array_mut() {
+                        arr.retain(|entry| {
+                            !entry
+                                .get("hooks")
+                                .and_then(|h| h.as_array())
+                                .map(|hooks| {
+                                    hooks.iter().any(|h| {
+                                        h.get("command")
+                                            .and_then(|c| c.as_str())
+                                            .is_some_and(|c| c.contains("amux claude-hook"))
+                                    })
+                                })
+                                .unwrap_or(false)
+                        });
+                        // Append our hooks
+                        if let Some(new_arr) = hook_entries.as_array() {
+                            arr.extend(new_arr.iter().cloned());
+                        }
+                    }
+                } else {
+                    existing_obj.insert(event.clone(), hook_entries.clone());
+                }
+            }
+        }
+    } else {
+        settings["hooks"] = hooks;
+    }
+
+    let formatted = serde_json::to_string_pretty(&settings)?;
+    std::fs::write(&settings_path, formatted)?;
+
+    println!("Claude Code hooks installed to {}", settings_path.display());
+    println!();
+    println!(
+        "Hooks registered for: UserPromptSubmit, PreToolUse, Notification, Stop, SubagentStart"
+    );
+    println!("Restart Claude Code for hooks to take effect.");
+
+    Ok(())
+}
+
+fn uninstall_claude_hooks() -> anyhow::Result<()> {
+    let settings_path = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
+        .join(".claude")
+        .join("settings.json");
+
+    if !settings_path.exists() {
+        println!("No Claude Code settings found. Nothing to uninstall.");
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&settings_path)?;
+    let mut settings: serde_json::Value = serde_json::from_str(&content)?;
+
+    if let Some(hooks) = settings.get_mut("hooks") {
+        if let Some(hooks_obj) = hooks.as_object_mut() {
+            for (_event, entries) in hooks_obj.iter_mut() {
+                if let Some(arr) = entries.as_array_mut() {
+                    arr.retain(|entry| {
+                        !entry
+                            .get("hooks")
+                            .and_then(|h| h.as_array())
+                            .map(|hooks| {
+                                hooks.iter().any(|h| {
+                                    h.get("command")
+                                        .and_then(|c| c.as_str())
+                                        .is_some_and(|c| c.contains("amux claude-hook"))
+                                })
+                            })
+                            .unwrap_or(false)
+                    });
+                }
+            }
+            // Remove empty event arrays
+            hooks_obj.retain(|_, v| v.as_array().map(|a| !a.is_empty()).unwrap_or(true));
+            // Remove hooks key entirely if empty
+            if hooks_obj.is_empty() {
+                settings.as_object_mut().unwrap().remove("hooks");
+            }
+        }
+    }
+
+    let formatted = serde_json::to_string_pretty(&settings)?;
+    std::fs::write(&settings_path, formatted)?;
+
+    println!("Claude Code hooks uninstalled.");
+
+    Ok(())
 }
 
 fn install_shell_integration() -> anyhow::Result<()> {

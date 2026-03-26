@@ -4,6 +4,9 @@
 # Guard: only activate inside amux
 [[ -n "$AMUX_SOCKET_PATH" ]] || return 0
 
+# Resolve amux binary (AMUX_BIN set by amux-app, fallback to PATH)
+_AMUX_CMD="${AMUX_BIN:-amux}"
+
 # ---------------------------------------------------------------------------
 # Throttle state
 # ---------------------------------------------------------------------------
@@ -24,7 +27,7 @@ _amux_report_git() {
     [[ -n "$repo_path" ]] || return 0
 
     git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1 || {
-        amux set-git --clear >/dev/null 2>&1
+        "$_AMUX_CMD" set-git --clear >/dev/null 2>&1
         return 0
     }
 
@@ -34,9 +37,9 @@ _amux_report_git() {
         local first
         first="$(git -C "$repo_path" status --porcelain -uno 2>/dev/null | head -1)"
         [[ -n "$first" ]] && dirty_flag="--dirty"
-        amux set-git --branch "$branch" $dirty_flag >/dev/null 2>&1
+        "$_AMUX_CMD" set-git --branch "$branch" $dirty_flag >/dev/null 2>&1
     else
-        amux set-git --clear >/dev/null 2>&1
+        "$_AMUX_CMD" set-git --clear >/dev/null 2>&1
     fi
 }
 
@@ -48,14 +51,14 @@ _amux_report_pr() {
     [[ -n "$repo_path" ]] || return 0
     [[ -d "$repo_path" ]] || return 0
     command -v gh >/dev/null 2>&1 || {
-        amux set-pr --clear >/dev/null 2>&1
+        "$_AMUX_CMD" set-pr --clear >/dev/null 2>&1
         return 0
     }
 
     local branch
     branch="$(git -C "$repo_path" branch --show-current 2>/dev/null)"
     [[ -n "$branch" ]] || {
-        amux set-pr --clear >/dev/null 2>&1
+        "$_AMUX_CMD" set-pr --clear >/dev/null 2>&1
         return 0
     }
 
@@ -77,7 +80,7 @@ _amux_report_pr() {
     )" || true
 
     if [[ -z "$gh_output" ]]; then
-        amux set-pr --clear >/dev/null 2>&1
+        "$_AMUX_CMD" set-pr --clear >/dev/null 2>&1
         return 0
     fi
 
@@ -87,7 +90,7 @@ _amux_report_pr() {
     [[ -n "$number" ]] || return 0
 
     local state_lower="${state,,}"
-    amux set-pr --number "$number" --title "$title" --state "$state_lower" >/dev/null 2>&1
+    "$_AMUX_CMD" set-pr --number "$number" --title "$title" --state "$state_lower" >/dev/null 2>&1
 }
 
 _amux_stop_pr_poll() {
@@ -134,7 +137,7 @@ _amux_prompt_command() {
     # CWD: report on change
     if [[ "$pwd" != "$_AMUX_PWD_LAST" ]]; then
         _AMUX_PWD_LAST="$pwd"
-        amux set-cwd "$pwd" >/dev/null 2>&1 &
+        "$_AMUX_CMD" set-cwd "$pwd" >/dev/null 2>&1 &
         disown $! 2>/dev/null || true
     fi
 
@@ -169,7 +172,7 @@ _amux_prompt_command() {
     if (( should_restart_pr )); then
         _AMUX_PR_FORCE=0
         if [[ -n "$_AMUX_PR_POLL_PWD" && "$pwd" != "$_AMUX_PR_POLL_PWD" ]]; then
-            amux set-pr --clear >/dev/null 2>&1 &
+            "$_AMUX_CMD" set-pr --clear >/dev/null 2>&1 &
             disown $! 2>/dev/null || true
         fi
         _amux_start_pr_poll "$pwd" 1
