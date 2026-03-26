@@ -478,9 +478,14 @@ impl CallbackTrait for TerminalPaintCallback {
                         if cell.text.chars().nth(1).is_none() {
                             let fg_color = maybe_linearize(cell.fg, linearize);
                             if emit_custom_glyph(
-                                ch, cell.col, cell.row, fg_color,
-                                self.phys_rect.x, self.phys_rect.y,
-                                self.cell_width, self.cell_height,
+                                ch,
+                                cell.col,
+                                cell.row,
+                                fg_color,
+                                self.phys_rect.x,
+                                self.phys_rect.y,
+                                self.cell_width,
+                                self.cell_height,
                                 &mut bg_instances,
                             ) {
                                 continue;
@@ -544,9 +549,14 @@ impl CallbackTrait for TerminalPaintCallback {
                         if cell.text.chars().nth(1).is_none() {
                             let fg_color = maybe_linearize(cell.fg, linearize);
                             if emit_custom_glyph(
-                                ch, cell.col, cell.row, fg_color,
-                                self.phys_rect.x, self.phys_rect.y,
-                                self.cell_width, self.cell_height,
+                                ch,
+                                cell.col,
+                                cell.row,
+                                fg_color,
+                                self.phys_rect.x,
+                                self.phys_rect.y,
+                                self.cell_width,
+                                self.cell_height,
                                 &mut bg_instances,
                             ) {
                                 continue;
