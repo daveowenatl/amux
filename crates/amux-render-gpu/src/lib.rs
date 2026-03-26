@@ -1,5 +1,6 @@
 mod atlas;
 mod callback;
+mod custom_glyphs;
 mod pipeline;
 pub mod snapshot;
 
@@ -56,7 +57,9 @@ impl GpuRenderer {
         // Measure cell dimensions via cosmic-text (same approach as amux-render-soft).
         let line_height = (font_size * 1.3).ceil();
         let metrics = Metrics::new(font_size, line_height);
-        let cell_width = measure_cell_width(&mut font_system, metrics);
+        // Ceil cell width to an integer pixel to prevent hairline gaps between
+        // adjacent cells caused by fractional coordinates accumulating rounding errors.
+        let cell_width = measure_cell_width(&mut font_system, metrics).ceil();
         let cell_height = line_height;
 
         // Register resources in egui's callback_resources.

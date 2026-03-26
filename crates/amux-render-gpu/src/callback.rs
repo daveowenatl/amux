@@ -321,8 +321,8 @@ impl CallbackTrait for TerminalPaintCallback {
         let snap = &self.snapshot;
         let linearize = resources.target_is_srgb;
 
-        // --- Background instances (always rebuilt — cheap) ---
-        let mut bg_instances = Vec::with_capacity(snap.cells.len() + 1);
+        // --- Background instances (span-based to avoid hairline gaps) ---
+        let mut bg_instances = Vec::with_capacity(snap.cells.len() / 4 + 1);
 
         // Full-rect background quad (absolute physical pixel positions)
         let default_bg = maybe_linearize(snap.default_bg, linearize);
@@ -332,17 +332,92 @@ impl CallbackTrait for TerminalPaintCallback {
             color: default_bg,
         });
 
-        for cell in &snap.cells {
-            if cell.bg == snap.default_bg {
-                continue;
+        // Batch consecutive cells on the same row with the same bg into spans.
+        // This eliminates sub-pixel gaps between adjacent cell backgrounds.
+        {
+            let mut span_row: Option<usize> = None;
+            let mut span_col_start: usize = 0;
+            let mut span_col_end: usize = 0;
+            let mut span_bg: [f32; 4] = [0.0; 4];
+
+            let flush_span = |instances: &mut Vec<CellBgInstance>,
+                              row: usize,
+                              col_start: usize,
+                              col_end: usize,
+                              color: [f32; 4],
+                              phys_rect: &PhysRect,
+                              cell_w: f32,
+                              cell_h: f32| {
+                let px = phys_rect.x + col_start as f32 * cell_w;
+                let py = phys_rect.y + row as f32 * cell_h;
+                let w = (col_end - col_start) as f32 * cell_w;
+                instances.push(CellBgInstance {
+                    pos: [px, py],
+                    size: [w, cell_h],
+                    color,
+                });
+            };
+
+            for cell in &snap.cells {
+                if cell.bg == snap.default_bg {
+                    // Flush pending span
+                    if let Some(r) = span_row {
+                        flush_span(
+                            &mut bg_instances,
+                            r,
+                            span_col_start,
+                            span_col_end,
+                            span_bg,
+                            &self.phys_rect,
+                            self.cell_width,
+                            self.cell_height,
+                        );
+                        span_row = None;
+                    }
+                    continue;
+                }
+
+                let bg = maybe_linearize(cell.bg, linearize);
+
+                // Try to extend current span
+                if let Some(r) = span_row {
+                    if cell.row == r && cell.col == span_col_end && bg == span_bg {
+                        span_col_end = cell.col + 1;
+                        continue;
+                    }
+                    // Flush previous span
+                    flush_span(
+                        &mut bg_instances,
+                        r,
+                        span_col_start,
+                        span_col_end,
+                        span_bg,
+                        &self.phys_rect,
+                        self.cell_width,
+                        self.cell_height,
+                    );
+                }
+
+                // Start new span
+                span_row = Some(cell.row);
+                span_col_start = cell.col;
+                span_col_end = cell.col + 1;
+                span_bg = bg;
             }
-            let px = self.phys_rect.x + cell.col as f32 * self.cell_width;
-            let py = self.phys_rect.y + cell.row as f32 * self.cell_height;
-            bg_instances.push(CellBgInstance {
-                pos: [px, py],
-                size: [self.cell_width, self.cell_height],
-                color: maybe_linearize(cell.bg, linearize),
-            });
+
+            // Flush last span
+            if let Some(r) = span_row {
+                flush_span(
+                    &mut bg_instances,
+                    r,
+                    span_col_start,
+                    span_col_end,
+                    span_bg,
+                    &self.phys_rect,
+                    self.cell_width,
+                    self.cell_height,
+                );
+            }
         }
 
         // --- Foreground instances (glyphs) ---
@@ -356,6 +431,34 @@ impl CallbackTrait for TerminalPaintCallback {
             for cell in &snap.cells {
                 if cell.text.is_empty() || cell.text == " " {
                     continue;
+                }
+
+                // Check for procedurally-rendered box-drawing / block characters.
+                // These are emitted as solid-color bg quads using the cell's fg color,
+                // bypassing font shaping entirely for pixel-perfect line connections.
+                if cell.text.len() <= 4 {
+                    let mut chars = cell.text.chars();
+                    if let Some(ch) = chars.next() {
+                        if chars.next().is_none() {
+                            if let Some(rects) = crate::custom_glyphs::custom_glyph_rects(ch) {
+                                let fg_color = maybe_linearize(cell.fg, linearize);
+                                let cell_px = self.phys_rect.x + cell.col as f32 * self.cell_width;
+                                let cell_py = self.phys_rect.y + cell.row as f32 * self.cell_height;
+                                for r in rects {
+                                    let px = (cell_px + r.x * self.cell_width).round();
+                                    let py = (cell_py + r.y * self.cell_height).round();
+                                    let pw = (r.w * self.cell_width).round().max(1.0);
+                                    let ph = (r.h * self.cell_height).round().max(1.0);
+                                    bg_instances.push(CellBgInstance {
+                                        pos: [px, py],
+                                        size: [pw, ph],
+                                        color: fg_color,
+                                    });
+                                }
+                                continue;
+                            }
+                        }
+                    }
                 }
 
                 let color = maybe_linearize(cell.fg, linearize);
@@ -406,6 +509,31 @@ impl CallbackTrait for TerminalPaintCallback {
             for cell in &snap.cells {
                 if cell.text.is_empty() || cell.text == " " {
                     continue;
+                }
+                // Re-emit custom glyph rects (they live in bg_instances, not cached glyphs).
+                if cell.text.len() <= 4 {
+                    let mut chars = cell.text.chars();
+                    if let Some(ch) = chars.next() {
+                        if chars.next().is_none() {
+                            if let Some(rects) = crate::custom_glyphs::custom_glyph_rects(ch) {
+                                let fg_color = maybe_linearize(cell.fg, linearize);
+                                let cell_px = self.phys_rect.x + cell.col as f32 * self.cell_width;
+                                let cell_py = self.phys_rect.y + cell.row as f32 * self.cell_height;
+                                for r in rects {
+                                    let px = (cell_px + r.x * self.cell_width).round();
+                                    let py = (cell_py + r.y * self.cell_height).round();
+                                    let pw = (r.w * self.cell_width).round().max(1.0);
+                                    let ph = (r.h * self.cell_height).round().max(1.0);
+                                    bg_instances.push(CellBgInstance {
+                                        pos: [px, py],
+                                        size: [pw, ph],
+                                        color: fg_color,
+                                    });
+                                }
+                                continue;
+                            }
+                        }
+                    }
                 }
                 color_map.insert((cell.col, cell.row), maybe_linearize(cell.fg, linearize));
             }
