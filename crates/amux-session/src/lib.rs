@@ -62,6 +62,8 @@ pub struct SavedSurface {
     pub pr_title: Option<String>,
     #[serde(default)]
     pub pr_state: Option<String>,
+    #[serde(default)]
+    pub user_title: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -189,6 +191,7 @@ mod tests {
                     pr_number: None,
                     pr_title: None,
                     pr_state: None,
+                    user_title: None,
                 }],
                 active_surface_idx: 0,
             },
@@ -277,6 +280,18 @@ mod tests {
 
         clear_path(&path).unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn deserialize_without_user_title_defaults_to_none() {
+        // Simulate an older session file that predates the user_title field.
+        let json = r#"{
+            "id": 0, "title": "zsh", "working_dir": "/tmp", "scrollback": "",
+            "cols": 80, "rows": 24, "git_branch": null, "git_dirty": false,
+            "pr_number": null, "pr_title": null, "pr_state": null
+        }"#;
+        let surface: SavedSurface = serde_json::from_str(json).unwrap();
+        assert!(surface.user_title.is_none());
     }
 
     #[test]

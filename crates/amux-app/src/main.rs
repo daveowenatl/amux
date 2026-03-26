@@ -61,9 +61,15 @@ fn get_cwd_from_pid(pid: u32) -> Option<String> {
     None
 }
 
-const DEFAULT_FONT_SIZE: f32 = 12.0;
+const DEFAULT_FONT_SIZE: f32 = 14.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
 const TAB_BAR_HEIGHT: f32 = 24.0;
+/// Visual padding below the terminal grid (does not reduce PTY rows).
+/// Painted with TERMINAL_BG so it blends with the terminal background.
+const TERMINAL_BOTTOM_PAD: f32 = 4.0;
+/// Default terminal background color, used for padding strips and unfilled areas.
+/// Will be replaced by palette-based color when color scheme config is added.
+const TERMINAL_BG: egui::Color32 = egui::Color32::from_gray(0);
 
 // ---------------------------------------------------------------------------
 // App config (loaded from ~/.config/amux/config.toml)
@@ -273,6 +279,7 @@ fn main() -> anyhow::Result<()> {
                 ime_preedit: None,
                 selection_changed: false,
                 tab_drag: None,
+                rename_modal: None,
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
             }))
@@ -334,9 +341,6 @@ fn fresh_startup(
         sidebar: SidebarState {
             visible: true,
             width: DEFAULT_SIDEBAR_WIDTH,
-            renaming: None,
-            rename_buf: String::new(),
-            rename_just_opened: false,
             drag: None,
         },
         notifications: NotificationStore::new(),
@@ -380,6 +384,7 @@ fn restore_session(
                         surface.metadata.pr_number = saved_sf.pr_number;
                         surface.metadata.pr_title = saved_sf.pr_title.clone();
                         surface.metadata.pr_state = saved_sf.pr_state.clone();
+                        surface.user_title = saved_sf.user_title.clone();
                         surfaces.push(surface);
                     }
                     Err(e) => {
@@ -459,9 +464,6 @@ fn restore_session(
     let sidebar = SidebarState {
         visible: session.sidebar.visible,
         width: session.sidebar.width,
-        renaming: None,
-        rename_buf: String::new(),
-        rename_just_opened: false,
         drag: None,
     };
 
@@ -682,6 +684,8 @@ struct PaneSurface {
     scroll_offset: usize,
     scroll_accum: f32,
     metadata: SurfaceMetadata,
+    /// User-set title override. When set, takes precedence over OSC 0/2 title.
+    user_title: Option<String>,
 }
 
 /// A leaf in the split tree. Each pane has its own tab bar with surfaces.
@@ -717,12 +721,6 @@ pub(crate) struct Workspace {
 pub(crate) struct SidebarState {
     pub(crate) visible: bool,
     pub(crate) width: f32,
-    /// When set, the workspace at this index is being renamed in-place.
-    pub(crate) renaming: Option<usize>,
-    /// Buffer for the in-progress rename text.
-    pub(crate) rename_buf: String,
-    /// True on the first frame after rename starts (to skip focus-loss exit).
-    pub(crate) rename_just_opened: bool,
     /// Drag reorder state.
     pub(crate) drag: Option<SidebarDragState>,
 }
@@ -925,6 +923,7 @@ fn spawn_surface(
         scroll_offset: 0,
         scroll_accum: 0.0,
         metadata,
+        user_title: None,
     })
 }
 
@@ -957,8 +956,24 @@ struct AmuxApp {
     selection_changed: bool,
     /// Drag state for tab reordering within a pane.
     tab_drag: Option<TabDragState>,
+    /// Rename modal state for workspaces and tabs.
+    rename_modal: Option<RenameModal>,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
+}
+
+/// What is being renamed — workspace or tab (surface).
+/// Uses stable IDs rather than indices so background reorder/close can't
+/// cause the modal to rename the wrong item.
+enum RenameTarget {
+    Workspace(u64),
+    Tab { pane_id: PaneId, surface_id: u64 },
+}
+
+struct RenameModal {
+    target: RenameTarget,
+    buf: String,
+    just_opened: bool,
 }
 
 struct TabDragState {
@@ -1074,6 +1089,7 @@ impl AmuxApp {
                                 pr_number: sf.metadata.pr_number,
                                 pr_title: sf.metadata.pr_title.clone(),
                                 pr_state: sf.metadata.pr_state.clone(),
+                                user_title: sf.user_title.clone(),
                             }
                         })
                         .collect();
@@ -1246,7 +1262,11 @@ impl eframe::App for AmuxApp {
         // Handle keyboard/paste input -> focused pane's active surface only
         // (blocked during copy mode — all keys go through handle_copy_mode_key)
         let mut sent_input = false;
-        if !shortcut_consumed && self.copy_mode.is_none() {
+        if !shortcut_consumed
+            && self.copy_mode.is_none()
+            && self.rename_modal.is_none()
+            && self.find_state.is_none()
+        {
             sent_input = self.handle_input(ctx);
         }
 
@@ -1282,9 +1302,14 @@ impl eframe::App for AmuxApp {
                     sidebar::SidebarAction::CloseWorkspace(idx) => {
                         self.close_workspace_at(idx);
                     }
-                    sidebar::SidebarAction::RenameWorkspace(idx, new_name) => {
+                    sidebar::SidebarAction::StartRenameWorkspace(idx) => {
                         if idx < self.workspaces.len() {
-                            self.workspaces[idx].title = new_name;
+                            let ws_id = self.workspaces[idx].id;
+                            self.rename_modal = Some(RenameModal {
+                                target: RenameTarget::Workspace(ws_id),
+                                buf: self.workspaces[idx].title.clone(),
+                                just_opened: true,
+                            });
                         }
                     }
                     sidebar::SidebarAction::MarkWorkspaceRead(idx) => {
@@ -1340,7 +1365,7 @@ impl eframe::App for AmuxApp {
                     // Zoomed mode: render single pane fullscreen
                     let content_rect = egui::Rect::from_min_max(
                         egui::pos2(panel_rect.min.x, panel_rect.min.y + TAB_BAR_HEIGHT),
-                        panel_rect.max,
+                        egui::pos2(panel_rect.max.x, panel_rect.max.y - TERMINAL_BOTTOM_PAD),
                     );
                     let sel_changed = self.handle_selection_mouse(ui, zoomed_id, content_rect);
                     if sel_changed {
@@ -1376,7 +1401,7 @@ impl eframe::App for AmuxApp {
                         if id == focused {
                             let content_rect = egui::Rect::from_min_max(
                                 egui::pos2(rect.min.x, rect.min.y + TAB_BAR_HEIGHT),
-                                rect.max,
+                                egui::pos2(rect.max.x, rect.max.y - TERMINAL_BOTTOM_PAD),
                             );
                             let sel_changed = self.handle_selection_mouse(ui, id, content_rect);
                             if sel_changed {
@@ -1402,7 +1427,7 @@ impl eframe::App for AmuxApp {
                     }
                 }
 
-                ui.allocate_rect(panel_rect, egui::Sense::click_and_drag());
+                ui.allocate_rect(panel_rect, egui::Sense::hover());
             });
 
         // Notification panel overlay
@@ -1413,6 +1438,11 @@ impl eframe::App for AmuxApp {
         // Find bar overlay
         if self.find_state.is_some() {
             self.render_find_bar(ctx);
+        }
+
+        // Rename modal
+        if self.rename_modal.is_some() {
+            self.render_rename_modal(ctx);
         }
 
         // Hyperlink hover detection + Cmd+click handling
@@ -1487,7 +1517,16 @@ impl AmuxApp {
             egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), TAB_BAR_HEIGHT));
         let content_rect = egui::Rect::from_min_max(
             egui::pos2(rect.min.x, rect.min.y + TAB_BAR_HEIGHT),
-            rect.max,
+            egui::pos2(rect.max.x, rect.max.y - TERMINAL_BOTTOM_PAD),
+        );
+        // Paint bottom padding strip with terminal background color.
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(rect.min.x, rect.max.y - TERMINAL_BOTTOM_PAD),
+                rect.max,
+            ),
+            0.0,
+            TERMINAL_BG,
         );
 
         {
@@ -1501,19 +1540,25 @@ impl AmuxApp {
             // Get pointer state for hover detection and drag
             let hover_pos = ui.input(|i| i.pointer.hover_pos());
             let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+
             let any_released = ui.input(|i| i.pointer.any_released());
             let primary_down = ui.input(|i| i.pointer.primary_down());
             let interact_pos = ui.input(|i| i.pointer.interact_pos());
 
             // Track actions to apply after rendering
             let mut switch_to: Option<usize> = None;
+
             let mut close_tab: Option<usize> = None;
             let mut tab_rects: Vec<egui::Rect> = Vec::new();
             let mut drag_start: Option<usize> = None;
+            let mut start_rename_tab: Option<usize> = None;
 
             for (idx, surface) in managed.surfaces.iter().enumerate() {
                 let is_active = idx == active_idx;
-                let raw_title = surface.pane.title();
+                let raw_title = surface
+                    .user_title
+                    .as_deref()
+                    .unwrap_or_else(|| surface.pane.title());
                 let label = if raw_title.is_empty() {
                     format!("tab {}", surface.id)
                 } else if raw_title.chars().count() > 20 {
@@ -1526,7 +1571,7 @@ impl AmuxApp {
                 let text_galley =
                     painter.layout_no_wrap(label.clone(), tab_font.clone(), egui::Color32::WHITE);
                 let text_width = text_galley.size().x;
-                let tab_w = text_width + 24.0;
+                let tab_w = (text_width + 24.0).max(120.0);
 
                 let this_tab = egui::Rect::from_min_size(
                     egui::pos2(x, tab_rect.min.y),
@@ -1536,15 +1581,24 @@ impl AmuxApp {
 
                 let tab_hovered = hover_pos.is_some_and(|p| this_tab.contains(p));
 
-                // Tab background
+                // Tab background + border
+                let border_color = egui::Color32::from_gray(55);
                 if is_active {
                     painter.rect_filled(this_tab, 0.0, egui::Color32::from_gray(50));
-                    let underline = egui::Rect::from_min_size(
-                        egui::pos2(x, tab_rect.max.y - 2.0),
+                    // Active highlight at the top
+                    let topline = egui::Rect::from_min_size(
+                        egui::pos2(x, tab_rect.min.y),
                         egui::vec2(tab_w, 2.0),
                     );
-                    painter.rect_filled(underline, 0.0, egui::Color32::from_rgb(80, 140, 220));
+                    painter.rect_filled(topline, 0.0, egui::Color32::from_rgb(80, 140, 220));
                 }
+                // 1px border around each tab
+                painter.rect_stroke(
+                    this_tab,
+                    0.0,
+                    egui::Stroke::new(1.0, border_color),
+                    egui::StrokeKind::Outside,
+                );
 
                 let text_color = if is_active {
                     egui::Color32::WHITE
@@ -1571,6 +1625,20 @@ impl AmuxApp {
                     };
                     sidebar::paint_close_x(painter, close_center, 3.5, close_color);
                 }
+
+                // Right-click context menu
+                let tab_id = ui.id().with("tab_ctx").with(pane_id).with(idx);
+                let tab_response = ui.interact(this_tab, tab_id, egui::Sense::click());
+                tab_response.context_menu(|ui| {
+                    if ui.button("Rename Tab").clicked() {
+                        start_rename_tab = Some(idx);
+                        ui.close_menu();
+                    }
+                    if ui.button("Close Tab").clicked() {
+                        close_tab = Some(idx);
+                        ui.close_menu();
+                    }
+                });
 
                 // Hit testing (primary button only)
                 if primary_pressed {
@@ -1718,12 +1786,35 @@ impl AmuxApp {
                 }
                 let managed = self.panes.get_mut(&pane_id).unwrap();
                 managed.surfaces.remove(idx);
-                if managed.active_surface_idx >= managed.surfaces.len() {
+                if idx < managed.active_surface_idx {
+                    managed.active_surface_idx -= 1;
+                } else if managed.active_surface_idx >= managed.surfaces.len() {
                     managed.active_surface_idx = managed.surfaces.len() - 1;
                 }
             } else if let Some(idx) = switch_to {
                 let managed = self.panes.get_mut(&pane_id).unwrap();
                 managed.active_surface_idx = idx;
+            }
+
+            // Open rename modal for tab
+            if let Some(idx) = start_rename_tab {
+                if let Some(managed) = self.panes.get(&pane_id) {
+                    if idx < managed.surfaces.len() {
+                        let surface = &managed.surfaces[idx];
+                        let current_title = surface
+                            .user_title
+                            .clone()
+                            .unwrap_or_else(|| surface.pane.title().to_string());
+                        self.rename_modal = Some(RenameModal {
+                            target: RenameTarget::Tab {
+                                pane_id,
+                                surface_id: surface.id,
+                            },
+                            buf: current_title,
+                            just_opened: true,
+                        });
+                    }
+                }
             }
         }
 
@@ -1882,8 +1973,8 @@ impl AmuxApp {
     fn resize_pane_if_needed(&mut self, id: PaneId, rect: egui::Rect, ui: &egui::Ui) {
         let (cell_width, cell_height) = self.cell_dimensions(ui);
 
-        // Account for tab bar height (always shown)
-        let content_height = rect.height() - TAB_BAR_HEIGHT;
+        // Account for tab bar height (always shown) and visual bottom padding.
+        let content_height = rect.height() - TAB_BAR_HEIGHT - TERMINAL_BOTTOM_PAD;
 
         let cols = (rect.width() / cell_width).floor() as usize;
         let rows = (content_height / cell_height).floor() as usize;
@@ -2052,6 +2143,11 @@ impl AmuxApp {
     // --- Shortcuts ---
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) -> bool {
+        // Skip terminal shortcuts when a modal text field has focus — let egui
+        // handle Cmd+V, Cmd+C, etc. for the text widget instead.
+        if self.rename_modal.is_some() || self.find_state.is_some() {
+            return false;
+        }
         let events = ctx.input(|i| i.events.clone());
 
         for event in &events {
@@ -2658,7 +2754,7 @@ impl AmuxApp {
             let cols = dim_cols.max(1) as f32;
             let rows = dim_rows.max(1) as f32;
             let cell_w = pane_rect.width() / cols;
-            let cell_h = (pane_rect.height() - TAB_BAR_HEIGHT) / rows;
+            let cell_h = (pane_rect.height() - TAB_BAR_HEIGHT - TERMINAL_BOTTOM_PAD) / rows;
             let x = pane_rect.min.x + cursor.x as f32 * cell_w;
             let y = pane_rect.min.y + TAB_BAR_HEIGHT + cursor.y as f32 * cell_h;
             ctx.send_viewport_cmd(egui::ViewportCommand::IMERect(egui::Rect::from_min_size(
@@ -2696,7 +2792,7 @@ impl AmuxApp {
             let cols = dim_cols.max(1) as f32;
             let rows = dim_rows.max(1) as f32;
             let cell_w = pane_rect.width() / cols;
-            let cell_h = (pane_rect.height() - TAB_BAR_HEIGHT) / rows;
+            let cell_h = (pane_rect.height() - TAB_BAR_HEIGHT - TERMINAL_BOTTOM_PAD) / rows;
             let x = pane_rect.min.x + cursor.x as f32 * cell_w;
             let y = pane_rect.min.y + TAB_BAR_HEIGHT + cursor.y as f32 * cell_h;
 
@@ -3032,6 +3128,82 @@ impl AmuxApp {
         // Trim trailing whitespace per line
         let trimmed: Vec<&str> = result.lines().map(|l| l.trim_end()).collect();
         Some(trimmed.join("\n"))
+    }
+
+    fn render_rename_modal(&mut self, ctx: &egui::Context) {
+        let mut apply: Option<String> = None;
+        let mut cancel = false;
+
+        let title = match &self.rename_modal.as_ref().unwrap().target {
+            RenameTarget::Workspace(_) => "Rename Workspace",
+            RenameTarget::Tab { .. } => "Rename Tab",
+        };
+
+        let modal = self.rename_modal.as_mut().unwrap();
+        let just_opened = modal.just_opened;
+
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .fixed_size([280.0, 0.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Name:");
+                    let response = ui.text_edit_singleline(&mut modal.buf);
+                    if just_opened {
+                        response.request_focus();
+                        modal.just_opened = false;
+                    }
+                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        apply = Some(modal.buf.trim().to_string());
+                    }
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("OK").clicked() {
+                        apply = Some(modal.buf.trim().to_string());
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        // Also close on Escape
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            cancel = true;
+        }
+
+        if let Some(new_name) = apply {
+            if !new_name.is_empty() {
+                match &self.rename_modal.as_ref().unwrap().target {
+                    RenameTarget::Workspace(ws_id) => {
+                        let ws_id = *ws_id;
+                        if let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == ws_id) {
+                            ws.title = new_name;
+                        }
+                    }
+                    RenameTarget::Tab {
+                        pane_id,
+                        surface_id,
+                    } => {
+                        let pane_id = *pane_id;
+                        let surface_id = *surface_id;
+                        if let Some(managed) = self.panes.get_mut(&pane_id) {
+                            if let Some(surface) =
+                                managed.surfaces.iter_mut().find(|s| s.id == surface_id)
+                            {
+                                surface.user_title = Some(new_name);
+                            }
+                        }
+                    }
+                }
+            }
+            self.rename_modal = None;
+        } else if cancel {
+            self.rename_modal = None;
+        }
     }
 
     fn render_find_bar(&mut self, ctx: &egui::Context) {
