@@ -64,6 +64,12 @@ fn get_cwd_from_pid(pid: u32) -> Option<String> {
 const DEFAULT_FONT_SIZE: f32 = 14.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
 const TAB_BAR_HEIGHT: f32 = 24.0;
+/// Visual padding below the terminal grid (does not reduce PTY rows).
+/// Painted with TERMINAL_BG so it blends with the terminal background.
+const TERMINAL_BOTTOM_PAD: f32 = 4.0;
+/// Default terminal background color, used for padding strips and unfilled areas.
+/// Will be replaced by palette-based color when color scheme config is added.
+const TERMINAL_BG: egui::Color32 = egui::Color32::from_gray(0);
 
 // ---------------------------------------------------------------------------
 // App config (loaded from ~/.config/amux/config.toml)
@@ -1359,7 +1365,7 @@ impl eframe::App for AmuxApp {
                     // Zoomed mode: render single pane fullscreen
                     let content_rect = egui::Rect::from_min_max(
                         egui::pos2(panel_rect.min.x, panel_rect.min.y + TAB_BAR_HEIGHT),
-                        panel_rect.max,
+                        egui::pos2(panel_rect.max.x, panel_rect.max.y - TERMINAL_BOTTOM_PAD),
                     );
                     let sel_changed = self.handle_selection_mouse(ui, zoomed_id, content_rect);
                     if sel_changed {
@@ -1395,7 +1401,7 @@ impl eframe::App for AmuxApp {
                         if id == focused {
                             let content_rect = egui::Rect::from_min_max(
                                 egui::pos2(rect.min.x, rect.min.y + TAB_BAR_HEIGHT),
-                                rect.max,
+                                egui::pos2(rect.max.x, rect.max.y - TERMINAL_BOTTOM_PAD),
                             );
                             let sel_changed = self.handle_selection_mouse(ui, id, content_rect);
                             if sel_changed {
@@ -1511,7 +1517,16 @@ impl AmuxApp {
             egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), TAB_BAR_HEIGHT));
         let content_rect = egui::Rect::from_min_max(
             egui::pos2(rect.min.x, rect.min.y + TAB_BAR_HEIGHT),
-            rect.max,
+            egui::pos2(rect.max.x, rect.max.y - TERMINAL_BOTTOM_PAD),
+        );
+        // Paint bottom padding strip with terminal background color.
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(rect.min.x, rect.max.y - TERMINAL_BOTTOM_PAD),
+                rect.max,
+            ),
+            0.0,
+            TERMINAL_BG,
         );
 
         {
@@ -1958,9 +1973,8 @@ impl AmuxApp {
     fn resize_pane_if_needed(&mut self, id: PaneId, rect: egui::Rect, ui: &egui::Ui) {
         let (cell_width, cell_height) = self.cell_dimensions(ui);
 
-        // Account for tab bar height (always shown) and a 1-row bottom margin
-        // that acts as visual padding below terminal content.
-        let content_height = rect.height() - TAB_BAR_HEIGHT - cell_height;
+        // Account for tab bar height (always shown) and visual bottom padding.
+        let content_height = rect.height() - TAB_BAR_HEIGHT - TERMINAL_BOTTOM_PAD;
 
         let cols = (rect.width() / cell_width).floor() as usize;
         let rows = (content_height / cell_height).floor() as usize;
@@ -2740,8 +2754,7 @@ impl AmuxApp {
             let cols = dim_cols.max(1) as f32;
             let rows = dim_rows.max(1) as f32;
             let cell_w = pane_rect.width() / cols;
-            // Use content area minus 1-row bottom margin, matching resize_pane_if_needed.
-            let cell_h = (pane_rect.height() - TAB_BAR_HEIGHT) / (rows + 1.0);
+            let cell_h = (pane_rect.height() - TAB_BAR_HEIGHT - TERMINAL_BOTTOM_PAD) / rows;
             let x = pane_rect.min.x + cursor.x as f32 * cell_w;
             let y = pane_rect.min.y + TAB_BAR_HEIGHT + cursor.y as f32 * cell_h;
             ctx.send_viewport_cmd(egui::ViewportCommand::IMERect(egui::Rect::from_min_size(
@@ -2779,8 +2792,7 @@ impl AmuxApp {
             let cols = dim_cols.max(1) as f32;
             let rows = dim_rows.max(1) as f32;
             let cell_w = pane_rect.width() / cols;
-            // Use content area minus 1-row bottom margin, matching resize_pane_if_needed.
-            let cell_h = (pane_rect.height() - TAB_BAR_HEIGHT) / (rows + 1.0);
+            let cell_h = (pane_rect.height() - TAB_BAR_HEIGHT - TERMINAL_BOTTOM_PAD) / rows;
             let x = pane_rect.min.x + cursor.x as f32 * cell_w;
             let y = pane_rect.min.y + TAB_BAR_HEIGHT + cursor.y as f32 * cell_h;
 
