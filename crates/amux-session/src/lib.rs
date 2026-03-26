@@ -62,6 +62,8 @@ pub struct SavedSurface {
     pub pr_title: Option<String>,
     #[serde(default)]
     pub pr_state: Option<String>,
+    #[serde(default)]
+    pub user_title: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -189,6 +191,7 @@ mod tests {
                     pr_number: None,
                     pr_title: None,
                     pr_state: None,
+                    user_title: None,
                 }],
                 active_surface_idx: 0,
             },
