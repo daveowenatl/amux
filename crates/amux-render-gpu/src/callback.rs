@@ -12,6 +12,45 @@ use crate::pipeline::{
 };
 use crate::snapshot::TerminalSnapshot;
 
+#[allow(clippy::too_many_arguments)]
+/// Emit procedural rectangle quads for a custom glyph (box-drawing, block, shade).
+/// Returns `true` if the character was handled, `false` if it should fall through
+/// to normal font shaping.
+fn emit_custom_glyph(
+    ch: char,
+    col: usize,
+    row: usize,
+    fg_color: [f32; 4],
+    phys_x: f32,
+    phys_y: f32,
+    cell_width: f32,
+    cell_height: f32,
+    bg_instances: &mut Vec<CellBgInstance>,
+) -> bool {
+    if let Some(rects) = crate::custom_glyphs::custom_glyph_rects(ch) {
+        let cell_px = phys_x + col as f32 * cell_width;
+        let cell_py = phys_y + row as f32 * cell_height;
+        for r in rects {
+            // Round both edges and derive size from the difference so adjacent
+            // cells meet exactly without gaps or overlaps at fractional DPI.
+            let x0 = (cell_px + r.x * cell_width).round();
+            let y0 = (cell_py + r.y * cell_height).round();
+            let x1 = (cell_px + (r.x + r.w) * cell_width).round();
+            let y1 = (cell_py + (r.y + r.h) * cell_height).round();
+            let pw = (x1 - x0).max(1.0);
+            let ph = (y1 - y0).max(1.0);
+            bg_instances.push(CellBgInstance {
+                pos: [x0, y0],
+                size: [pw, ph],
+                color: fg_color,
+            });
+        }
+        true
+    } else {
+        false
+    }
+}
+
 /// Compute a simple hash of highlight ranges for dirty tracking.
 fn hash_highlight_ranges(ranges: &[(usize, usize, usize)]) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -434,27 +473,16 @@ impl CallbackTrait for TerminalPaintCallback {
                 }
 
                 // Check for procedurally-rendered box-drawing / block characters.
-                // These are emitted as solid-color bg quads using the cell's fg color,
-                // bypassing font shaping entirely for pixel-perfect line connections.
                 if cell.text.len() <= 4 {
-                    let mut chars = cell.text.chars();
-                    if let Some(ch) = chars.next() {
-                        if chars.next().is_none() {
-                            if let Some(rects) = crate::custom_glyphs::custom_glyph_rects(ch) {
-                                let fg_color = maybe_linearize(cell.fg, linearize);
-                                let cell_px = self.phys_rect.x + cell.col as f32 * self.cell_width;
-                                let cell_py = self.phys_rect.y + cell.row as f32 * self.cell_height;
-                                for r in rects {
-                                    let px = (cell_px + r.x * self.cell_width).round();
-                                    let py = (cell_py + r.y * self.cell_height).round();
-                                    let pw = (r.w * self.cell_width).round().max(1.0);
-                                    let ph = (r.h * self.cell_height).round().max(1.0);
-                                    bg_instances.push(CellBgInstance {
-                                        pos: [px, py],
-                                        size: [pw, ph],
-                                        color: fg_color,
-                                    });
-                                }
+                    if let Some(ch) = cell.text.chars().next() {
+                        if cell.text.chars().nth(1).is_none() {
+                            let fg_color = maybe_linearize(cell.fg, linearize);
+                            if emit_custom_glyph(
+                                ch, cell.col, cell.row, fg_color,
+                                self.phys_rect.x, self.phys_rect.y,
+                                self.cell_width, self.cell_height,
+                                &mut bg_instances,
+                            ) {
                                 continue;
                             }
                         }
@@ -512,24 +540,15 @@ impl CallbackTrait for TerminalPaintCallback {
                 }
                 // Re-emit custom glyph rects (they live in bg_instances, not cached glyphs).
                 if cell.text.len() <= 4 {
-                    let mut chars = cell.text.chars();
-                    if let Some(ch) = chars.next() {
-                        if chars.next().is_none() {
-                            if let Some(rects) = crate::custom_glyphs::custom_glyph_rects(ch) {
-                                let fg_color = maybe_linearize(cell.fg, linearize);
-                                let cell_px = self.phys_rect.x + cell.col as f32 * self.cell_width;
-                                let cell_py = self.phys_rect.y + cell.row as f32 * self.cell_height;
-                                for r in rects {
-                                    let px = (cell_px + r.x * self.cell_width).round();
-                                    let py = (cell_py + r.y * self.cell_height).round();
-                                    let pw = (r.w * self.cell_width).round().max(1.0);
-                                    let ph = (r.h * self.cell_height).round().max(1.0);
-                                    bg_instances.push(CellBgInstance {
-                                        pos: [px, py],
-                                        size: [pw, ph],
-                                        color: fg_color,
-                                    });
-                                }
+                    if let Some(ch) = cell.text.chars().next() {
+                        if cell.text.chars().nth(1).is_none() {
+                            let fg_color = maybe_linearize(cell.fg, linearize);
+                            if emit_custom_glyph(
+                                ch, cell.col, cell.row, fg_color,
+                                self.phys_rect.x, self.phys_rect.y,
+                                self.cell_width, self.cell_height,
+                                &mut bg_instances,
+                            ) {
                                 continue;
                             }
                         }

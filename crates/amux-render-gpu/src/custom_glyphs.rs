@@ -578,29 +578,33 @@ pub fn custom_glyph_rects(ch: char) -> Option<&'static [CustomRect]> {
         // =================================================================
         // SHADE CHARACTERS
         // =================================================================
-        // ░ ▒ ▓ — rendered as full-cell blocks with reduced alpha.
-        // We approximate by using partial coverage patterns, but since our
-        // rendering path uses opaque rectangles, we use a checkerboard-like
-        // approximation: horizontal stripes.
-        // For now, render as full blocks (the alpha will be handled by the
-        // caller if needed, or we can revisit with a proper dithering approach).
+        // ░ ▒ ▓ — shade characters approximated with horizontal stripes.
+        // True shade rendering needs alpha blending (shader support); we
+        // approximate coverage by distributing opaque stripe area across
+        // the cell. This is a known limitation — results are banded rather
+        // than uniformly dithered.
 
-        // ░ Light shade (25%)
+        // ░ Light shade (~25% coverage: 4 thin stripes)
         0x2591 => rects![
-            block(0.0, 0.0 / 4.0, 1.0, 0.5 / 4.0),
-            block(0.0, 1.0 / 4.0, 1.0, 0.5 / 4.0),
-            block(0.0, 2.0 / 4.0, 1.0, 0.5 / 4.0),
-            block(0.0, 3.0 / 4.0, 1.0, 0.5 / 4.0),
+            block(0.0, 0.0 / 4.0, 1.0, 1.0 / 16.0),
+            block(0.0, 1.0 / 4.0, 1.0, 1.0 / 16.0),
+            block(0.0, 2.0 / 4.0, 1.0, 1.0 / 16.0),
+            block(0.0, 3.0 / 4.0, 1.0, 1.0 / 16.0),
         ],
-        // ▒ Medium shade (50%)
+        // ▒ Medium shade (~50% coverage: 4 medium stripes)
         0x2592 => rects![
-            block(0.0, 0.0, 1.0, 1.0 / 8.0),
-            block(0.0, 2.0 / 8.0, 1.0, 1.0 / 8.0),
-            block(0.0, 4.0 / 8.0, 1.0, 1.0 / 8.0),
-            block(0.0, 6.0 / 8.0, 1.0, 1.0 / 8.0),
+            block(0.0, 0.0 / 4.0, 1.0, 1.0 / 8.0),
+            block(0.0, 1.0 / 4.0, 1.0, 1.0 / 8.0),
+            block(0.0, 2.0 / 4.0, 1.0, 1.0 / 8.0),
+            block(0.0, 3.0 / 4.0, 1.0, 1.0 / 8.0),
         ],
-        // ▓ Dark shade (75%)
-        0x2593 => rects![block(0.0, 0.0, 1.0, 1.0)],
+        // ▓ Dark shade (~75% coverage: full cell minus thin gaps)
+        0x2593 => rects![
+            block(0.0, 0.0, 1.0, 3.0 / 16.0),
+            block(0.0, 1.0 / 4.0, 1.0, 3.0 / 16.0),
+            block(0.0, 2.0 / 4.0, 1.0, 3.0 / 16.0),
+            block(0.0, 3.0 / 4.0, 1.0, 3.0 / 16.0),
+        ],
 
         _ => None,
     }

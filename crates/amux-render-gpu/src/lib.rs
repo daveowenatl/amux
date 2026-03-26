@@ -142,7 +142,7 @@ impl GpuRenderer {
             .callback_resources
             .get_mut::<TerminalGpuResources>()
         {
-            let cell_width = measure_cell_width(&mut r.font_system, metrics);
+            let cell_width = measure_cell_width(&mut r.font_system, metrics).ceil();
             r.metrics = metrics;
             // Clear all pane render states to force full rebuild with new metrics.
             r.pane_states.clear();
