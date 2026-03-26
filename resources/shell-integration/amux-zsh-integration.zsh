@@ -315,9 +315,27 @@ _amux_zshexit() {
 }
 
 # ---------------------------------------------------------------------------
+# PATH fix: re-prepend amux bin dir after path_helper clobbers it
+# ---------------------------------------------------------------------------
+_amux_fix_path() {
+    if [[ -n "${AMUX_SHELL_INTEGRATION_DIR:-}" ]]; then
+        # bin dir is sibling of shell dir: ~/.config/amux/bin
+        local bin_dir="${AMUX_SHELL_INTEGRATION_DIR%/shell}/bin"
+        if [[ -d "$bin_dir" ]]; then
+            # Remove existing entry and re-prepend
+            local -a parts=("${(@s/:/)PATH}")
+            parts=("${(@)parts:#$bin_dir}")
+            PATH="${bin_dir}:${(j/:/)parts}"
+        fi
+    fi
+    add-zsh-hook -d precmd _amux_fix_path
+}
+
+# ---------------------------------------------------------------------------
 # Register hooks
 # ---------------------------------------------------------------------------
 autoload -Uz add-zsh-hook
 add-zsh-hook preexec _amux_preexec
 add-zsh-hook precmd _amux_precmd
 add-zsh-hook zshexit _amux_zshexit
+add-zsh-hook precmd _amux_fix_path

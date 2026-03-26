@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# amux claude wrapper — injects hooks via --settings so agent status flows
+# back into amux without touching ~/.claude/settings.json.
+#
+# When running inside an amux terminal (AMUX_SURFACE_ID is set), this wrapper
+# intercepts `claude` invocations to inject --settings with hook definitions.
+# Outside amux (or when the socket is down), it passes through unchanged.
+
+# Find the real claude binary, skipping our own directory.
+find_real_claude() {
+    local self_dir
+    self_dir="$(cd "$(dirname "$0")" && pwd)"
+    local IFS=:
+    for d in $PATH; do
+        [[ "$d" == "$self_dir" ]] && continue
+        [[ -x "$d/claude" ]] && printf '%s' "$d/claude" && return 0
+    done
+    return 1
+}
+
+# Return 0 only when AMUX_SOCKET_PATH points to a live amux socket.
+amux_socket_available() {
+    local socket="${AMUX_SOCKET_PATH:-}"
+    [[ -n "$socket" && -S "$socket" ]] || return 1
+
+    local amux_bin="${AMUX_BIN:-amux}"
+    [[ -x "$amux_bin" ]] || amux_bin="$(command -v amux 2>/dev/null || true)"
+    [[ -n "$amux_bin" ]] || return 1
+
+    # Bounded check so claude startup doesn't block behind a hung socket.
+    "$amux_bin" --socket "$socket" ping >/dev/null 2>&1
+}
+
+# Pass through if not in an amux terminal or the socket is unavailable.
+IN_AMUX=0
+if [[ -n "${AMUX_SURFACE_ID:-}" ]]; then
+    IN_AMUX=1
+fi
+
+if [[ "$IN_AMUX" == "0" ]] || ! amux_socket_available; then
+    REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
+    exec "$REAL_CLAUDE" "$@"
+fi
+
+# Find real claude.
+REAL_CLAUDE="$(find_real_claude)" || { echo "Error: claude not found in PATH" >&2; exit 127; }
+
+# Pass through subcommands that don't support session/hook flags.
+case "${1:-}" in
+    mcp|config|api-key|rc|remote-control) exec "$REAL_CLAUDE" "$@" ;;
+esac
+
+# Unset CLAUDECODE to avoid "nested session" detection — amux terminals are
+# independent sessions even when the parent shell was launched from Claude Code.
+unset CLAUDECODE
+
+# Check if the user already specified a session/resume flag.
+SKIP_SESSION_ID=false
+for arg in "$@"; do
+    case "$arg" in
+        --resume|--resume=*|--session-id|--session-id=*|--continue|-c)
+            SKIP_SESSION_ID=true
+            break
+            ;;
+    esac
+done
+
+# Export the wrapper's PID. Because we exec claude below, this PID becomes
+# the actual claude process PID.
+export AMUX_CLAUDE_PID=$$
+
+# Resolve the amux CLI binary for hook commands.
+AMUX_CMD="${AMUX_BIN:-amux}"
+
+# Build hooks settings JSON.
+# Claude Code merges --settings additively with the user's own settings.json.
+HOOKS_JSON="{\"hooks\":{\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"\\\"${AMUX_CMD}\\\" claude-hook UserPromptSubmit\",\"timeout\":5}]}],\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"\\\"${AMUX_CMD}\\\" claude-hook PreToolUse\",\"timeout\":5}]}],\"Notification\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"\\\"${AMUX_CMD}\\\" claude-hook Notification\",\"timeout\":5}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"\\\"${AMUX_CMD}\\\" claude-hook Stop\",\"timeout\":5}]}],\"SubagentStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"\\\"${AMUX_CMD}\\\" claude-hook SubagentStart\",\"timeout\":5}]}]}}"
+
+if [[ "$SKIP_SESSION_ID" == true ]]; then
+    exec "$REAL_CLAUDE" --settings "$HOOKS_JSON" "$@"
+else
+    SESSION_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+    exec "$REAL_CLAUDE" --session-id "$SESSION_ID" --settings "$HOOKS_JSON" "$@"
+fi

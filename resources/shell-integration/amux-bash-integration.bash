@@ -203,12 +203,31 @@ _amux_cleanup() {
 }
 
 # ---------------------------------------------------------------------------
+# PATH fix: re-prepend amux bin dir after path_helper clobbers it
+# ---------------------------------------------------------------------------
+_amux_fix_path_done=0
+_amux_fix_path() {
+    [[ "$_amux_fix_path_done" == "1" ]] && return
+    _amux_fix_path_done=1
+    if [[ -n "${AMUX_SHELL_INTEGRATION_DIR:-}" ]]; then
+        local bin_dir="${AMUX_SHELL_INTEGRATION_DIR%/shell}/bin"
+        if [[ -d "$bin_dir" ]]; then
+            local new_path=":${PATH}:"
+            new_path="${new_path//:${bin_dir}:/:}"
+            new_path="${new_path#:}"
+            new_path="${new_path%:}"
+            PATH="${bin_dir}:${new_path}"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Register hooks
 # ---------------------------------------------------------------------------
 if [[ -z "$PROMPT_COMMAND" ]]; then
-    PROMPT_COMMAND="_amux_prompt_command"
+    PROMPT_COMMAND="_amux_fix_path;_amux_prompt_command"
 elif [[ "$PROMPT_COMMAND" != *"_amux_prompt_command"* ]]; then
-    PROMPT_COMMAND="_amux_prompt_command;$PROMPT_COMMAND"
+    PROMPT_COMMAND="_amux_fix_path;_amux_prompt_command;$PROMPT_COMMAND"
 fi
 
 trap '_amux_preexec_trap' DEBUG

@@ -336,7 +336,7 @@ impl NotificationStore {
         self.notifications
             .iter()
             .rev()
-            .find(|n| n.workspace_id == workspace_id)
+            .find(|n| n.workspace_id == workspace_id && !n.read)
     }
 
     /// Set workspace agent status. Clears any existing progress bar.

@@ -1042,104 +1042,40 @@ fn describe_tool_use(tool_name: &str, tool_input: Option<&serde_json::Value>) ->
 // ---------------------------------------------------------------------------
 
 fn install_claude_hooks() -> anyhow::Result<()> {
-    let settings_path = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
-        .join(".claude")
-        .join("settings.json");
-
-    let mut settings: serde_json::Value = if settings_path.exists() {
-        let content = std::fs::read_to_string(&settings_path)?;
-        serde_json::from_str(&content)?
-    } else {
-        std::fs::create_dir_all(settings_path.parent().unwrap())?;
-        serde_json::json!({})
-    };
-
-    // Build hook entries for each event
-    let amux_hook = |event: &str, timeout: u64| -> serde_json::Value {
-        serde_json::json!({
-            "matcher": "",
-            "hooks": [{
-                "type": "command",
-                "command": format!("\"${{AMUX_BIN:-amux}}\" claude-hook {event}"),
-                "timeout": timeout
-            }]
-        })
-    };
-
-    let hooks = serde_json::json!({
-        "UserPromptSubmit": [amux_hook("UserPromptSubmit", 5)],
-        "PreToolUse": [amux_hook("PreToolUse", 5)],
-        "Notification": [amux_hook("Notification", 5)],
-        "Stop": [amux_hook("Stop", 5)],
-        "SubagentStart": [amux_hook("SubagentStart", 5)],
-    });
-
-    // Merge with existing hooks (don't clobber non-amux hooks)
-    if let Some(existing_hooks) = settings.get_mut("hooks") {
-        if let Some(existing_obj) = existing_hooks.as_object_mut() {
-            for (event, hook_entries) in hooks.as_object().unwrap() {
-                // Remove any existing amux hooks for this event, keep others
-                if let Some(existing_entries) = existing_obj.get_mut(event) {
-                    if let Some(arr) = existing_entries.as_array_mut() {
-                        arr.retain(|entry| {
-                            !entry
-                                .get("hooks")
-                                .and_then(|h| h.as_array())
-                                .map(|hooks| {
-                                    hooks.iter().any(|h| {
-                                        h.get("command")
-                                            .and_then(|c| c.as_str())
-                                            .is_some_and(|c| c.contains("amux claude-hook"))
-                                    })
-                                })
-                                .unwrap_or(false)
-                        });
-                        // Append our hooks
-                        if let Some(new_arr) = hook_entries.as_array() {
-                            arr.extend(new_arr.iter().cloned());
-                        }
-                    }
-                } else {
-                    existing_obj.insert(event.clone(), hook_entries.clone());
-                }
-            }
-        }
-    } else {
-        settings["hooks"] = hooks;
+    // Hooks are now injected automatically via a claude wrapper script that
+    // amux-app writes to ~/.config/amux/bin/claude and prepends to PATH.
+    // This command cleans up any old settings.json hooks and informs the user.
+    let removed = cleanup_legacy_claude_hooks()?;
+    if removed {
+        println!("Cleaned up legacy hooks from ~/.claude/settings.json.");
     }
-
-    let formatted = serde_json::to_string_pretty(&settings)?;
-    std::fs::write(&settings_path, formatted)?;
-
-    println!("Claude Code hooks installed to {}", settings_path.display());
-    println!();
-    println!(
-        "Hooks registered for: UserPromptSubmit, PreToolUse, Notification, Stop, SubagentStart"
-    );
-    println!("Restart Claude Code for hooks to take effect.");
-
+    println!("Claude Code hooks are now automatic — no manual installation needed.");
+    println!("amux injects hooks via a wrapper script when Claude Code is launched inside amux.");
+    println!("Hooks only activate inside amux terminals; outside amux, Claude Code runs normally.");
     Ok(())
 }
 
-fn uninstall_claude_hooks() -> anyhow::Result<()> {
+/// Remove any amux claude-hook entries from ~/.claude/settings.json.
+/// Returns true if any were removed.
+fn cleanup_legacy_claude_hooks() -> anyhow::Result<bool> {
     let settings_path = dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
         .join(".claude")
         .join("settings.json");
 
     if !settings_path.exists() {
-        println!("No Claude Code settings found. Nothing to uninstall.");
-        return Ok(());
+        return Ok(false);
     }
 
     let content = std::fs::read_to_string(&settings_path)?;
     let mut settings: serde_json::Value = serde_json::from_str(&content)?;
 
+    let mut removed_any = false;
     if let Some(hooks) = settings.get_mut("hooks") {
         if let Some(hooks_obj) = hooks.as_object_mut() {
             for (_event, entries) in hooks_obj.iter_mut() {
                 if let Some(arr) = entries.as_array_mut() {
+                    let before = arr.len();
                     arr.retain(|entry| {
                         !entry
                             .get("hooks")
@@ -1148,27 +1084,39 @@ fn uninstall_claude_hooks() -> anyhow::Result<()> {
                                 hooks.iter().any(|h| {
                                     h.get("command")
                                         .and_then(|c| c.as_str())
-                                        .is_some_and(|c| c.contains("amux claude-hook"))
+                                        .is_some_and(|c| c.contains("claude-hook"))
                                 })
                             })
                             .unwrap_or(false)
                     });
+                    if arr.len() < before {
+                        removed_any = true;
+                    }
                 }
             }
             // Remove empty event arrays
             hooks_obj.retain(|_, v| v.as_array().map(|a| !a.is_empty()).unwrap_or(true));
-            // Remove hooks key entirely if empty
             if hooks_obj.is_empty() {
                 settings.as_object_mut().unwrap().remove("hooks");
             }
         }
     }
 
-    let formatted = serde_json::to_string_pretty(&settings)?;
-    std::fs::write(&settings_path, formatted)?;
+    if removed_any {
+        let formatted = serde_json::to_string_pretty(&settings)?;
+        std::fs::write(&settings_path, formatted)?;
+    }
 
-    println!("Claude Code hooks uninstalled.");
+    Ok(removed_any)
+}
 
+fn uninstall_claude_hooks() -> anyhow::Result<()> {
+    let removed = cleanup_legacy_claude_hooks()?;
+    if removed {
+        println!("Claude Code hooks removed from ~/.claude/settings.json.");
+    } else {
+        println!("No amux hooks found in ~/.claude/settings.json.");
+    }
     Ok(())
 }
 

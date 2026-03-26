@@ -465,44 +465,30 @@ fn restore_session(
         drag: None,
     };
 
-    // Restore notifications (without Instant-dependent fields)
+    // Restore only already-read notifications (unread ones are stale — the
+    // agent that created them is gone after restart).
     let mut store = NotificationStore::new();
     for saved_n in &session.notifications {
+        if !saved_n.read {
+            continue;
+        }
         let source = match saved_n.source.as_str() {
             "toast" => NotificationSource::Toast,
             "bell" => NotificationSource::Bell,
             _ => NotificationSource::Cli,
         };
-        if saved_n.read {
-            store.push_read(
-                saved_n.workspace_id,
-                saved_n.pane_id,
-                saved_n.surface_id,
-                saved_n.title.clone(),
-                saved_n.body.clone(),
-                source,
-            );
-        } else {
-            store.push(
-                saved_n.workspace_id,
-                saved_n.pane_id,
-                saved_n.surface_id,
-                saved_n.title.clone(),
-                saved_n.body.clone(),
-                source,
-            );
-        }
+        store.push_read(
+            saved_n.workspace_id,
+            saved_n.pane_id,
+            saved_n.surface_id,
+            saved_n.title.clone(),
+            saved_n.body.clone(),
+            source,
+        );
     }
 
-    // Restore workspace statuses
-    for (ws_id, saved_status) in &session.workspace_statuses {
-        let state = match saved_status.state.as_str() {
-            "active" => amux_notify::AgentState::Active,
-            "waiting" => amux_notify::AgentState::Waiting,
-            _ => amux_notify::AgentState::Idle,
-        };
-        store.set_status(*ws_id, state, saved_status.label.clone(), None, None);
-    }
+    // Don't restore workspace statuses — agent processes don't survive restart,
+    // so any Active/Waiting state would be stale. They start as Idle implicitly.
 
     let active_idx = session
         .active_workspace_idx
@@ -629,6 +615,38 @@ fn ensure_shell_integration_dir() -> Option<std::path::PathBuf> {
     Some(config_dir)
 }
 
+/// Ensure the claude wrapper script is written to ~/.config/amux/bin/claude.
+/// Returns the bin directory path, or None on failure.
+fn ensure_claude_wrapper_dir() -> Option<std::path::PathBuf> {
+    // Use ~/.config/amux/bin/ instead of dirs::config_dir() because on macOS
+    // that returns ~/Library/Application Support/ which has a space — spaces
+    // in PATH entries break many tools.
+    let bin_dir = dirs::home_dir()?.join(".config").join("amux").join("bin");
+    if std::fs::create_dir_all(&bin_dir).is_err() {
+        return None;
+    }
+
+    let wrapper_path = bin_dir.join("claude");
+    let wrapper_content = include_str!("../../../resources/bin/claude");
+
+    let needs_write = std::fs::read_to_string(&wrapper_path)
+        .map(|existing| existing != wrapper_content)
+        .unwrap_or(true);
+
+    if needs_write {
+        if std::fs::write(&wrapper_path, wrapper_content).is_err() {
+            return None;
+        }
+        // Make executable (unix)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    Some(bin_dir)
+}
 fn cleanup_addr(addr: &amux_ipc::IpcAddr) {
     match addr {
         #[cfg(unix)]
@@ -825,6 +843,17 @@ fn spawn_surface(
             if cli_bin.exists() {
                 cmd.env("AMUX_BIN", cli_bin.to_string_lossy().as_ref());
             }
+        }
+    }
+
+    // Prepend amux bin dir (containing claude wrapper) to PATH so hooks are
+    // injected at runtime via --settings, scoped to amux sessions only.
+    if let Some(bin_dir) = ensure_claude_wrapper_dir() {
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        let bin_str = bin_dir.to_string_lossy();
+        if !current_path.split(':').any(|d| d == bin_str.as_ref()) {
+            let sep = if current_path.is_empty() { "" } else { ":" };
+            cmd.env("PATH", format!("{bin_str}{sep}{current_path}"));
         }
     }
 
@@ -1241,6 +1270,11 @@ impl eframe::App for AmuxApp {
                 match action {
                     sidebar::SidebarAction::SwitchWorkspace(idx) => {
                         self.active_workspace_idx = idx;
+                        // Mark notifications read when switching to a workspace
+                        if idx < self.workspaces.len() {
+                            let pane_ids: Vec<u64> = self.workspaces[idx].tree.iter_panes();
+                            self.notifications.mark_workspace_read(&pane_ids);
+                        }
                     }
                     sidebar::SidebarAction::CreateWorkspace => {
                         self.create_workspace(None);

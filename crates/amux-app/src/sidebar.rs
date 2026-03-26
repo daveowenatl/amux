@@ -705,9 +705,13 @@ fn render_workspace_row(
         }
     }
 
-    // --- Click to switch workspace ---
-    if response.clicked() && !is_active && !is_renaming {
-        actions.push(SidebarAction::SwitchWorkspace(idx));
+    // --- Click to switch workspace or mark read ---
+    if response.clicked() && !is_renaming {
+        if is_active {
+            actions.push(SidebarAction::MarkWorkspaceRead(idx));
+        } else {
+            actions.push(SidebarAction::SwitchWorkspace(idx));
+        }
     }
 
     (actions, rect)
