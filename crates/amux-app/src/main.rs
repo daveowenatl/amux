@@ -373,7 +373,15 @@ fn restore_session(
                     cwd,
                     scrollback,
                 ) {
-                    Ok(surface) => surfaces.push(surface),
+                    Ok(mut surface) => {
+                        // Restore git/PR metadata from session
+                        surface.metadata.git_branch = saved_sf.git_branch.clone();
+                        surface.metadata.git_dirty = saved_sf.git_dirty;
+                        surface.metadata.pr_number = saved_sf.pr_number;
+                        surface.metadata.pr_title = saved_sf.pr_title.clone();
+                        surface.metadata.pr_state = saved_sf.pr_state.clone();
+                        surfaces.push(surface);
+                    }
                     Err(e) => {
                         tracing::warn!(
                             "Failed to restore surface {} in pane {}: {}",
@@ -457,44 +465,30 @@ fn restore_session(
         drag: None,
     };
 
-    // Restore notifications (without Instant-dependent fields)
+    // Restore only already-read notifications (unread ones are stale — the
+    // agent that created them is gone after restart).
     let mut store = NotificationStore::new();
     for saved_n in &session.notifications {
+        if !saved_n.read {
+            continue;
+        }
         let source = match saved_n.source.as_str() {
             "toast" => NotificationSource::Toast,
             "bell" => NotificationSource::Bell,
             _ => NotificationSource::Cli,
         };
-        if saved_n.read {
-            store.push_read(
-                saved_n.workspace_id,
-                saved_n.pane_id,
-                saved_n.surface_id,
-                saved_n.title.clone(),
-                saved_n.body.clone(),
-                source,
-            );
-        } else {
-            store.push(
-                saved_n.workspace_id,
-                saved_n.pane_id,
-                saved_n.surface_id,
-                saved_n.title.clone(),
-                saved_n.body.clone(),
-                source,
-            );
-        }
+        store.push_read(
+            saved_n.workspace_id,
+            saved_n.pane_id,
+            saved_n.surface_id,
+            saved_n.title.clone(),
+            saved_n.body.clone(),
+            source,
+        );
     }
 
-    // Restore workspace statuses
-    for (ws_id, saved_status) in &session.workspace_statuses {
-        let state = match saved_status.state.as_str() {
-            "active" => amux_notify::AgentState::Active,
-            "waiting" => amux_notify::AgentState::Waiting,
-            _ => amux_notify::AgentState::Idle,
-        };
-        store.set_status(*ws_id, state, saved_status.label.clone());
-    }
+    // Don't restore workspace statuses — agent processes don't survive restart,
+    // so any Active/Waiting state would be stale. They start as Idle implicitly.
 
     let active_idx = session
         .active_workspace_idx
@@ -523,6 +517,136 @@ fn default_shell() -> String {
     }
 }
 
+/// Write shell integration files to ~/.config/amux/shell/ and set env vars to
+/// auto-inject them. For zsh: ZDOTDIR override. For bash: PROMPT_COMMAND bootstrap.
+/// Matching cmux's approach — no user dotfile modification required.
+fn inject_shell_integration(shell: &str, cmd: &mut CommandBuilder) {
+    let shell_name = std::path::Path::new(shell)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("");
+
+    let Some(integration_dir) = ensure_shell_integration_dir() else {
+        return;
+    };
+
+    cmd.env(
+        "AMUX_SHELL_INTEGRATION_DIR",
+        integration_dir.to_string_lossy().as_ref(),
+    );
+
+    match shell_name {
+        "zsh" => {
+            let zsh_dir = integration_dir.join("zsh");
+            // Save user's original ZDOTDIR (if set) so bootstrap can restore it
+            if let Ok(original) = std::env::var("ZDOTDIR") {
+                cmd.env("AMUX_ZSH_ZDOTDIR", &original);
+            }
+            cmd.env("ZDOTDIR", zsh_dir.to_string_lossy().as_ref());
+        }
+        "bash" => {
+            // Bootstrap integration via PROMPT_COMMAND on first interactive prompt.
+            // This runs once, then restores any original PROMPT_COMMAND.
+            let bash_script = integration_dir.join("amux-bash-integration.bash");
+            let bootstrap = format!(
+                concat!(
+                    "unset PROMPT_COMMAND; ",
+                    "if [[ -r \"{}\" ]]; then source \"{}\"; fi",
+                ),
+                bash_script.display(),
+                bash_script.display(),
+            );
+            cmd.env("PROMPT_COMMAND", &bootstrap);
+        }
+        _ => {}
+    }
+}
+
+/// Ensure shell integration scripts are written to ~/.config/amux/shell/.
+/// Returns the directory path, or None on failure.
+fn ensure_shell_integration_dir() -> Option<std::path::PathBuf> {
+    let config_dir = dirs::config_dir()?.join("amux").join("shell");
+
+    // Write zsh bootstrap files
+    let zsh_dir = config_dir.join("zsh");
+    if std::fs::create_dir_all(&zsh_dir).is_err() {
+        return None;
+    }
+
+    // Embed integration scripts at compile time
+    let files: &[(&str, &str)] = &[
+        (
+            "zsh/.zshenv",
+            include_str!("../../../resources/shell-integration/zsh/.zshenv"),
+        ),
+        (
+            "zsh/.zprofile",
+            include_str!("../../../resources/shell-integration/zsh/.zprofile"),
+        ),
+        (
+            "zsh/.zshrc",
+            include_str!("../../../resources/shell-integration/zsh/.zshrc"),
+        ),
+        (
+            "zsh/.zlogin",
+            include_str!("../../../resources/shell-integration/zsh/.zlogin"),
+        ),
+        (
+            "amux-zsh-integration.zsh",
+            include_str!("../../../resources/shell-integration/amux-zsh-integration.zsh"),
+        ),
+        (
+            "amux-bash-integration.bash",
+            include_str!("../../../resources/shell-integration/amux-bash-integration.bash"),
+        ),
+    ];
+
+    for (name, content) in files {
+        let path = config_dir.join(name);
+        // Only write if content changed (avoid unnecessary disk writes)
+        let needs_write = std::fs::read_to_string(&path)
+            .map(|existing| existing != *content)
+            .unwrap_or(true);
+        if needs_write && std::fs::write(&path, content).is_err() {
+            return None;
+        }
+    }
+
+    Some(config_dir)
+}
+
+/// Ensure the claude wrapper script is written to ~/.config/amux/bin/claude.
+/// Returns the bin directory path, or None on failure.
+fn ensure_claude_wrapper_dir() -> Option<std::path::PathBuf> {
+    // Use ~/.config/amux/bin/ instead of dirs::config_dir() because on macOS
+    // that returns ~/Library/Application Support/ which has a space — spaces
+    // in PATH entries break many tools.
+    let bin_dir = dirs::home_dir()?.join(".config").join("amux").join("bin");
+    if std::fs::create_dir_all(&bin_dir).is_err() {
+        return None;
+    }
+
+    let wrapper_path = bin_dir.join("claude");
+    let wrapper_content = include_str!("../../../resources/bin/claude");
+
+    let needs_write = std::fs::read_to_string(&wrapper_path)
+        .map(|existing| existing != wrapper_content)
+        .unwrap_or(true);
+
+    if needs_write {
+        if std::fs::write(&wrapper_path, wrapper_content).is_err() {
+            return None;
+        }
+        // Make executable (unix)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    Some(bin_dir)
+}
 fn cleanup_addr(addr: &amux_ipc::IpcAddr) {
     match addr {
         #[cfg(unix)]
@@ -537,6 +661,19 @@ fn cleanup_addr(addr: &amux_ipc::IpcAddr) {
 // --- Data Model ---
 // Hierarchy: Workspace > PaneTree (splits) > Pane (each has tab bar) > Surface (terminal tab)
 
+/// Per-surface metadata reported by shell integration, agent hooks, or OSC sequences.
+#[derive(Default, Clone)]
+pub(crate) struct SurfaceMetadata {
+    pub(crate) cwd: Option<String>,
+    pub(crate) git_branch: Option<String>,
+    pub(crate) git_dirty: bool,
+    pub(crate) pr_number: Option<u32>,
+    pub(crate) pr_title: Option<String>,
+    pub(crate) pr_state: Option<String>, // "open", "merged", "closed"
+    /// Surface title from OSC 0/2 (window title set by shell/agent).
+    pub(crate) surface_title: Option<String>,
+}
+
 /// A terminal tab within a pane. Each pane can have multiple surfaces.
 struct PaneSurface {
     id: u64,
@@ -544,6 +681,7 @@ struct PaneSurface {
     byte_rx: mpsc::Receiver<Vec<u8>>,
     scroll_offset: usize,
     scroll_accum: f32,
+    metadata: SurfaceMetadata,
 }
 
 /// A leaf in the split tree. Each pane has its own tab bar with surfaces.
@@ -697,17 +835,48 @@ fn spawn_surface(
     cmd.env("AMUX_SURFACE_ID", surface_id.to_string());
     cmd.env("TERM", "xterm-256color");
 
-    if let Some(dir) = cwd {
-        let path = std::path::Path::new(dir);
-        if path.is_dir() {
-            cmd.cwd(path);
-        } else {
-            tracing::warn!("Saved working dir no longer exists: {}", dir);
-            if let Some(home) = dirs::home_dir() {
-                cmd.cwd(home);
+    // Point AMUX_BIN to the CLI binary so shell integration scripts can invoke it
+    // without relying on PATH (macOS path_helper in /etc/zprofile rebuilds PATH).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let cli_bin = exe_dir.join("amux");
+            if cli_bin.exists() {
+                cmd.env("AMUX_BIN", cli_bin.to_string_lossy().as_ref());
             }
         }
     }
+
+    // Prepend amux bin dir (containing claude wrapper) to PATH so hooks are
+    // injected at runtime via --settings, scoped to amux sessions only.
+    if let Some(bin_dir) = ensure_claude_wrapper_dir() {
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        let bin_str = bin_dir.to_string_lossy();
+        if !current_path.split(':').any(|d| d == bin_str.as_ref()) {
+            let sep = if current_path.is_empty() { "" } else { ":" };
+            cmd.env("PATH", format!("{bin_str}{sep}{current_path}"));
+        }
+    }
+
+    // Auto-inject shell integration (matching cmux's ZDOTDIR/PROMPT_COMMAND approach)
+    inject_shell_integration(&shell, &mut cmd);
+
+    let actual_cwd = if let Some(dir) = cwd {
+        let path = std::path::Path::new(dir);
+        if path.is_dir() {
+            cmd.cwd(path);
+            Some(dir.to_string())
+        } else {
+            tracing::warn!("Saved working dir no longer exists: {}", dir);
+            if let Some(home) = dirs::home_dir() {
+                cmd.cwd(&home);
+                Some(home.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let mut pane = TerminalPane::spawn(cols, rows, cmd, config.clone())?;
 
@@ -743,12 +912,19 @@ fn spawn_surface(
         }
     });
 
+    // Initialize metadata with the actual CWD used (may differ from saved if dir was removed)
+    let metadata = SurfaceMetadata {
+        cwd: actual_cwd,
+        ..Default::default()
+    };
+
     Ok(PaneSurface {
         id: surface_id,
         pane,
         byte_rx,
         scroll_offset: 0,
         scroll_accum: 0.0,
+        metadata,
     })
 }
 
@@ -875,15 +1051,15 @@ impl AmuxApp {
                         .surfaces
                         .iter()
                         .map(|sf| {
-                            let working_dir = sf
-                                .pane
-                                .working_dir()
-                                .and_then(|url| url.to_file_path().ok())
-                                .map(|p| p.to_string_lossy().to_string())
-                                .or_else(|| {
-                                    // Fallback: query the child process's cwd via OS APIs
-                                    sf.pane.child_pid().and_then(get_cwd_from_pid)
-                                });
+                            // Prefer shell-reported CWD (metadata.cwd from set-cwd/OSC 7),
+                            // then fall back to pane.working_dir() and OS-level queries.
+                            let working_dir = sf.metadata.cwd.clone().or_else(|| {
+                                sf.pane
+                                    .working_dir()
+                                    .and_then(|url| url.to_file_path().ok())
+                                    .map(|p| p.to_string_lossy().to_string())
+                                    .or_else(|| sf.pane.child_pid().and_then(get_cwd_from_pid))
+                            });
                             let scrollback = sf.pane.read_scrollback_text(4096);
                             let (cols, rows) = sf.pane.dimensions();
                             amux_session::SavedSurface {
@@ -893,6 +1069,11 @@ impl AmuxApp {
                                 scrollback,
                                 cols: cols as u16,
                                 rows: rows as u16,
+                                git_branch: sf.metadata.git_branch.clone(),
+                                git_dirty: sf.metadata.git_dirty,
+                                pr_number: sf.metadata.pr_number,
+                                pr_title: sf.metadata.pr_title.clone(),
+                                pr_state: sf.metadata.pr_state.clone(),
                             }
                         })
                         .collect();
@@ -952,6 +1133,9 @@ impl AmuxApp {
                                 }
                                 .to_string(),
                                 label: status.label.clone(),
+                                // task/message are transient agent state — don't persist
+                                task: None,
+                                message: None,
                             },
                         )
                     })
@@ -1068,17 +1252,29 @@ impl eframe::App for AmuxApp {
 
         // Render sidebar
         if self.sidebar.visible {
+            // Build workspace metadata map for sidebar display
+            let workspace_metadata: std::collections::HashMap<u64, SurfaceMetadata> = self
+                .workspaces
+                .iter()
+                .map(|ws| (ws.id, self.workspace_metadata(ws)))
+                .collect();
             let sidebar_actions = sidebar::render_sidebar(
                 ctx,
                 &mut self.sidebar,
                 &self.workspaces,
                 self.active_workspace_idx,
                 &self.notifications,
+                &workspace_metadata,
             );
             for action in sidebar_actions {
                 match action {
                     sidebar::SidebarAction::SwitchWorkspace(idx) => {
                         self.active_workspace_idx = idx;
+                        // Mark notifications read when switching to a workspace
+                        if idx < self.workspaces.len() {
+                            let pane_ids: Vec<u64> = self.workspaces[idx].tree.iter_panes();
+                            self.notifications.mark_workspace_read(&pane_ids);
+                        }
                     }
                     sidebar::SidebarAction::CreateWorkspace => {
                         self.create_workspace(None);
@@ -2362,8 +2558,25 @@ impl AmuxApp {
                 NotificationEvent::Bell => {
                     (String::new(), "Bell".to_string(), NotificationSource::Bell)
                 }
-                // Title and directory changes are not user-facing notifications
-                NotificationEvent::TitleChanged(_) | NotificationEvent::WorkingDirectoryChanged => {
+                NotificationEvent::TitleChanged(_) => {
+                    continue;
+                }
+                NotificationEvent::WorkingDirectoryChanged => {
+                    // Store the CWD from OSC 7 into surface metadata
+                    if let Some(managed) = self.panes.get_mut(&pane_id) {
+                        for surface in &mut managed.surfaces {
+                            if surface.id == surface_id {
+                                let cwd = surface
+                                    .pane
+                                    .working_dir()
+                                    .and_then(|url| url.to_file_path().ok())
+                                    .map(|p| p.to_string_lossy().to_string());
+                                if cwd.is_some() {
+                                    surface.metadata.cwd = cwd;
+                                }
+                            }
+                        }
+                    }
                     continue;
                 }
             };
@@ -2384,6 +2597,23 @@ impl AmuxApp {
             .iter()
             .find(|ws| ws.tree.iter_panes().contains(&pane_id))
             .map(|ws| ws.id)
+    }
+
+    /// Aggregate metadata from the focused surface of the focused pane in a workspace.
+    fn workspace_metadata(&self, workspace: &Workspace) -> SurfaceMetadata {
+        self.panes
+            .get(&workspace.focused_pane)
+            .map(|mp| {
+                let sf = mp.active_surface();
+                let mut meta = sf.metadata.clone();
+                // Capture the surface's OSC title for sidebar display
+                let title = sf.pane.title();
+                if !title.is_empty() {
+                    meta.surface_title = Some(title.to_string());
+                }
+                meta
+            })
+            .unwrap_or_default()
     }
 
     fn jump_to_latest_unread(&mut self) {
@@ -3518,6 +3748,56 @@ impl AmuxApp {
                 }
                 Response::ok(req.id.clone(), serde_json::json!({"surfaces": surfaces}))
             }
+            "surface.set_cwd" => {
+                match serde_json::from_value::<amux_ipc::methods::SetCwdParams>(req.params.clone())
+                {
+                    Ok(params) => {
+                        let surface = self.resolve_surface_mut(&params.surface_id);
+                        match surface {
+                            Some(sf) => {
+                                sf.metadata.cwd = params.cwd.filter(|s| !s.is_empty());
+                                Response::ok(req.id.clone(), serde_json::json!({}))
+                            }
+                            None => Response::err(req.id.clone(), "not_found", "surface not found"),
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "surface.set_git" => {
+                match serde_json::from_value::<amux_ipc::methods::SetGitParams>(req.params.clone())
+                {
+                    Ok(params) => {
+                        let surface = self.resolve_surface_mut(&params.surface_id);
+                        match surface {
+                            Some(sf) => {
+                                sf.metadata.git_branch = params.branch;
+                                sf.metadata.git_dirty = params.dirty;
+                                Response::ok(req.id.clone(), serde_json::json!({}))
+                            }
+                            None => Response::err(req.id.clone(), "not_found", "surface not found"),
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "surface.set_pr" => {
+                match serde_json::from_value::<amux_ipc::methods::SetPrParams>(req.params.clone()) {
+                    Ok(params) => {
+                        let surface = self.resolve_surface_mut(&params.surface_id);
+                        match surface {
+                            Some(sf) => {
+                                sf.metadata.pr_number = params.number;
+                                sf.metadata.pr_title = params.title;
+                                sf.metadata.pr_state = params.state;
+                                Response::ok(req.id.clone(), serde_json::json!({}))
+                            }
+                            None => Response::err(req.id.clone(), "not_found", "surface not found"),
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
             "surface.send_text" => {
                 match serde_json::from_value::<amux_ipc::methods::SendTextParams>(
                     req.params.clone(),
@@ -3939,7 +4219,13 @@ impl AmuxApp {
                             "waiting" => amux_notify::AgentState::Waiting,
                             _ => amux_notify::AgentState::Idle,
                         };
-                        self.notifications.set_status(ws_id, state, params.label);
+                        self.notifications.set_status(
+                            ws_id,
+                            state,
+                            params.label,
+                            params.task,
+                            params.message,
+                        );
                         Response::ok(req.id.clone(), serde_json::json!({}))
                     }
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),

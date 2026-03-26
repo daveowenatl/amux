@@ -1,5 +1,6 @@
 use amux_ipc::{read_last_addr, IpcAddr, IpcClient};
 use clap::{Parser, Subcommand};
+use std::io::Read as _;
 
 #[derive(Parser)]
 #[command(name = "amux", about = "Terminal multiplexer for AI coding agents")]
@@ -106,6 +107,54 @@ enum Command {
         /// Surface ID to focus
         surface_id: String,
     },
+    /// Set the working directory for a surface
+    #[command(name = "set-cwd")]
+    SetCwd {
+        /// Working directory path (omit to clear)
+        #[arg(conflicts_with = "clear")]
+        cwd: Option<String>,
+        /// Clear CWD metadata
+        #[arg(long)]
+        clear: bool,
+        /// Target surface ID (defaults to AMUX_SURFACE_ID)
+        #[arg(long)]
+        surface: Option<String>,
+    },
+    /// Set git branch info for a surface
+    #[command(name = "set-git")]
+    SetGit {
+        /// Branch name (omit to clear)
+        #[arg(long, conflicts_with = "clear")]
+        branch: Option<String>,
+        /// Working tree has uncommitted changes
+        #[arg(long, conflicts_with = "clear")]
+        dirty: bool,
+        /// Clear git info
+        #[arg(long)]
+        clear: bool,
+        /// Target surface ID (defaults to AMUX_SURFACE_ID)
+        #[arg(long)]
+        surface: Option<String>,
+    },
+    /// Set PR info for a surface
+    #[command(name = "set-pr")]
+    SetPr {
+        /// PR number
+        #[arg(long, conflicts_with = "clear")]
+        number: Option<u32>,
+        /// PR title
+        #[arg(long, conflicts_with = "clear")]
+        title: Option<String>,
+        /// PR state: open, merged, closed
+        #[arg(long, conflicts_with = "clear")]
+        state: Option<String>,
+        /// Clear PR info
+        #[arg(long)]
+        clear: bool,
+        /// Target surface ID (defaults to AMUX_SURFACE_ID)
+        #[arg(long)]
+        surface: Option<String>,
+    },
     /// Set workspace agent status (displayed as a sidebar pill)
     #[command(name = "set-status")]
     SetStatus {
@@ -113,6 +162,12 @@ enum Command {
         state: String,
         /// Optional label text
         label: Option<String>,
+        /// Agent's current task description
+        #[arg(long)]
+        task: Option<String>,
+        /// Agent's latest message
+        #[arg(long)]
+        message: Option<String>,
         /// Target workspace ID (defaults to AMUX_WORKSPACE_ID)
         #[arg(long)]
         workspace: Option<String>,
@@ -143,14 +198,49 @@ enum Command {
     /// Clear saved session data
     #[command(name = "session-clear")]
     SessionClear,
+    /// Install shell integration scripts
+    #[command(name = "install-shell-integration")]
+    InstallShellIntegration,
+    /// Handle a Claude Code hook event (reads JSON from stdin)
+    #[command(name = "claude-hook")]
+    ClaudeHook {
+        /// Hook event name (PreToolUse, Stop, UserPromptSubmit, etc.)
+        event: String,
+    },
+    /// Install agent hooks into Claude Code settings
+    #[command(name = "install-hooks")]
+    InstallHooks {
+        /// Install Claude Code hooks
+        #[arg(long)]
+        claude: bool,
+        /// Uninstall hooks instead of installing
+        #[arg(long)]
+        uninstall: bool,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // SessionClear is a direct filesystem operation — handle before IPC connection
-    // so it works even when the server isn't running.
+    // These commands are direct filesystem operations — handle before IPC connection.
+    if matches!(cli.command, Command::InstallShellIntegration) {
+        install_shell_integration()?;
+        return Ok(());
+    }
+    if let Command::InstallHooks { claude, uninstall } = &cli.command {
+        if *claude {
+            if *uninstall {
+                uninstall_claude_hooks()?;
+            } else {
+                install_claude_hooks()?;
+            }
+        } else {
+            eprintln!("Specify --claude to install Claude Code hooks");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if matches!(cli.command, Command::SessionClear) {
         match amux_session::clear() {
             Ok(()) => {
@@ -440,10 +530,95 @@ async fn main() -> anyhow::Result<()> {
                 print_response(&resp, false);
             }
         }
+        // --- Metadata commands ---
+        Command::SetCwd {
+            cwd,
+            clear,
+            surface,
+        } => {
+            let surface_id = surface
+                .or_else(|| std::env::var("AMUX_SURFACE_ID").ok())
+                .unwrap_or_else(|| "default".to_string());
+            let params = if clear {
+                serde_json::json!({ "surface_id": surface_id })
+            } else {
+                serde_json::json!({ "surface_id": surface_id, "cwd": cwd })
+            };
+            let resp = client.call("surface.set_cwd", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("CWD set");
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::SetGit {
+            branch,
+            dirty,
+            clear,
+            surface,
+        } => {
+            let surface_id = surface
+                .or_else(|| std::env::var("AMUX_SURFACE_ID").ok())
+                .unwrap_or_else(|| "default".to_string());
+            let params = if clear {
+                serde_json::json!({
+                    "surface_id": surface_id,
+                })
+            } else {
+                serde_json::json!({
+                    "surface_id": surface_id,
+                    "branch": branch,
+                    "dirty": dirty,
+                })
+            };
+            let resp = client.call("surface.set_git", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("Git info set");
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::SetPr {
+            number,
+            title,
+            state,
+            clear,
+            surface,
+        } => {
+            let surface_id = surface
+                .or_else(|| std::env::var("AMUX_SURFACE_ID").ok())
+                .unwrap_or_else(|| "default".to_string());
+            let params = if clear {
+                serde_json::json!({
+                    "surface_id": surface_id,
+                })
+            } else {
+                serde_json::json!({
+                    "surface_id": surface_id,
+                    "number": number,
+                    "title": title,
+                    "state": state,
+                })
+            };
+            let resp = client.call("surface.set_pr", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("PR info set");
+            } else {
+                print_response(&resp, false);
+            }
+        }
         // --- Notification / Status commands ---
         Command::SetStatus {
             state,
             label,
+            task,
+            message,
             workspace,
         } => {
             let ws_id = workspace
@@ -455,6 +630,12 @@ async fn main() -> anyhow::Result<()> {
             });
             if let Some(l) = label {
                 params["label"] = serde_json::json!(l);
+            }
+            if let Some(t) = task {
+                params["task"] = serde_json::json!(t);
+            }
+            if let Some(m) = message {
+                params["message"] = serde_json::json!(m);
             }
             let resp = client.call("status.set", params).await?;
             if cli.json {
@@ -526,7 +707,10 @@ async fn main() -> anyhow::Result<()> {
                 print_response(&resp, false);
             }
         }
-        Command::SessionClear => {
+        Command::ClaudeHook { event } => {
+            handle_claude_hook(&mut client, &event).await?;
+        }
+        Command::SessionClear | Command::InstallShellIntegration | Command::InstallHooks { .. } => {
             unreachable!("handled before IPC connection");
         }
     }
@@ -688,4 +872,288 @@ fn print_pane_list(result: &serde_json::Value) {
             println!("pane:{}{} {}x{} [{}]", id, focus_marker, cols, rows, status);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code hook handling
+// ---------------------------------------------------------------------------
+
+/// Read stdin JSON and translate Claude Code hook events into amux status updates.
+async fn handle_claude_hook(client: &mut IpcClient, event: &str) -> anyhow::Result<()> {
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+    let data: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
+
+    let ws_id = std::env::var("AMUX_WORKSPACE_ID").unwrap_or_else(|_| "0".to_string());
+
+    match event {
+        "UserPromptSubmit" => {
+            // User submitted a prompt — set status to active with the prompt as task
+            let prompt = data
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let task = if prompt.len() > 80 {
+                format!("{}...", &prompt[..77])
+            } else {
+                prompt
+            };
+            let mut params = serde_json::json!({
+                "workspace_id": ws_id,
+                "state": "active",
+                "label": "Running",
+            });
+            if !task.is_empty() {
+                params["task"] = serde_json::json!(task);
+            }
+            // Clear previous message on new prompt
+            params["message"] = serde_json::json!("");
+            client.call("status.set", params).await?;
+        }
+        "PreToolUse" => {
+            // Claude is about to use a tool — update message with tool description
+            let tool_name = data.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
+            let tool_input = data.get("tool_input");
+            let description = describe_tool_use(tool_name, tool_input);
+            let params = serde_json::json!({
+                "workspace_id": ws_id,
+                "state": "active",
+                "label": "Running",
+                "message": description,
+            });
+            client.call("status.set", params).await?;
+        }
+        "Notification" => {
+            // Claude needs attention (permission prompt, etc.)
+            let params = serde_json::json!({
+                "workspace_id": ws_id,
+                "state": "waiting",
+                "label": "Needs input",
+            });
+            client.call("status.set", params).await?;
+        }
+        "Stop" => {
+            // Claude finished its turn — set to idle, clear task/message
+            let params = serde_json::json!({
+                "workspace_id": ws_id,
+                "state": "idle",
+                "label": "Idle",
+                "task": "",
+                "message": "",
+            });
+            client.call("status.set", params).await?;
+        }
+        "SubagentStart" => {
+            let agent_name = data
+                .get("agent_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("subagent");
+            let description = format!("Running {agent_name}");
+            let params = serde_json::json!({
+                "workspace_id": ws_id,
+                "state": "active",
+                "label": "Running",
+                "message": description,
+            });
+            client.call("status.set", params).await?;
+        }
+        _ => {
+            // SessionStart, SessionEnd, PostToolUse, SubagentStop — no status change needed
+        }
+    }
+
+    Ok(())
+}
+
+/// Generate a human-readable description of a tool use, matching cmux's describeToolUse().
+fn describe_tool_use(tool_name: &str, tool_input: Option<&serde_json::Value>) -> String {
+    let input = tool_input.unwrap_or(&serde_json::Value::Null);
+
+    match tool_name {
+        "Read" => {
+            let path = input
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let filename = std::path::Path::new(path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or(path);
+            format!("Reading {filename}")
+        }
+        "Edit" => {
+            let path = input
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let filename = std::path::Path::new(path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or(path);
+            format!("Editing {filename}")
+        }
+        "Write" => {
+            let path = input
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let filename = std::path::Path::new(path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or(path);
+            format!("Writing {filename}")
+        }
+        "Bash" => {
+            let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            let short = if cmd.len() > 60 {
+                format!("{}...", &cmd[..57])
+            } else {
+                cmd.to_string()
+            };
+            format!("Running {short}")
+        }
+        "Glob" => {
+            let pattern = input.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
+            format!("Searching {pattern}")
+        }
+        "Grep" => {
+            let pattern = input.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            format!("Grep {pattern}")
+        }
+        "WebFetch" => "Fetching URL".to_string(),
+        "WebSearch" => {
+            let query = input.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            format!("Search: {query}")
+        }
+        "Agent" => {
+            let desc = input
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("subagent");
+            desc.to_string()
+        }
+        _ => tool_name.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code hook installation
+// ---------------------------------------------------------------------------
+
+fn install_claude_hooks() -> anyhow::Result<()> {
+    // Hooks are now injected automatically via a claude wrapper script that
+    // amux-app writes to ~/.config/amux/bin/claude and prepends to PATH.
+    // This command cleans up any old settings.json hooks and informs the user.
+    let removed = cleanup_legacy_claude_hooks()?;
+    if removed {
+        println!("Cleaned up legacy hooks from ~/.claude/settings.json.");
+    }
+    println!("Claude Code hooks are now automatic — no manual installation needed.");
+    println!("amux injects hooks via a wrapper script when Claude Code is launched inside amux.");
+    println!("Hooks only activate inside amux terminals; outside amux, Claude Code runs normally.");
+    Ok(())
+}
+
+/// Remove any amux claude-hook entries from ~/.claude/settings.json.
+/// Returns true if any were removed.
+fn cleanup_legacy_claude_hooks() -> anyhow::Result<bool> {
+    let settings_path = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
+        .join(".claude")
+        .join("settings.json");
+
+    if !settings_path.exists() {
+        return Ok(false);
+    }
+
+    let content = std::fs::read_to_string(&settings_path)?;
+    let mut settings: serde_json::Value = serde_json::from_str(&content)?;
+
+    let mut removed_any = false;
+    if let Some(hooks) = settings.get_mut("hooks") {
+        if let Some(hooks_obj) = hooks.as_object_mut() {
+            for (_event, entries) in hooks_obj.iter_mut() {
+                if let Some(arr) = entries.as_array_mut() {
+                    let before = arr.len();
+                    arr.retain(|entry| {
+                        !entry
+                            .get("hooks")
+                            .and_then(|h| h.as_array())
+                            .map(|hooks| {
+                                hooks.iter().any(|h| {
+                                    h.get("command")
+                                        .and_then(|c| c.as_str())
+                                        .is_some_and(|c| c.contains("claude-hook"))
+                                })
+                            })
+                            .unwrap_or(false)
+                    });
+                    if arr.len() < before {
+                        removed_any = true;
+                    }
+                }
+            }
+            // Remove empty event arrays
+            hooks_obj.retain(|_, v| v.as_array().map(|a| !a.is_empty()).unwrap_or(true));
+            if hooks_obj.is_empty() {
+                settings.as_object_mut().unwrap().remove("hooks");
+            }
+        }
+    }
+
+    if removed_any {
+        let formatted = serde_json::to_string_pretty(&settings)?;
+        std::fs::write(&settings_path, formatted)?;
+    }
+
+    Ok(removed_any)
+}
+
+fn uninstall_claude_hooks() -> anyhow::Result<()> {
+    let removed = cleanup_legacy_claude_hooks()?;
+    if removed {
+        println!("Claude Code hooks removed from ~/.claude/settings.json.");
+    } else {
+        println!("No amux hooks found in ~/.claude/settings.json.");
+    }
+    Ok(())
+}
+
+fn install_shell_integration() -> anyhow::Result<()> {
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("amux")
+        .join("shell");
+    std::fs::create_dir_all(&config_dir)?;
+
+    let zsh_script = include_str!("../../../resources/shell-integration/amux-zsh-integration.zsh");
+    let bash_script =
+        include_str!("../../../resources/shell-integration/amux-bash-integration.bash");
+
+    let zsh_path = config_dir.join("amux-zsh-integration.zsh");
+    let bash_path = config_dir.join("amux-bash-integration.bash");
+
+    std::fs::write(&zsh_path, zsh_script)?;
+    std::fs::write(&bash_path, bash_script)?;
+
+    println!("Shell integration scripts installed to:");
+    println!("  {}", zsh_path.display());
+    println!("  {}", bash_path.display());
+    println!();
+    println!("Add one of the following to your shell config:");
+    println!();
+    println!("  # For zsh (~/.zshrc):");
+    println!(
+        "  [[ -n \"$AMUX_SOCKET_PATH\" ]] && source \"{}\"",
+        zsh_path.display()
+    );
+    println!();
+    println!("  # For bash (~/.bashrc):");
+    println!(
+        "  [[ -n \"$AMUX_SOCKET_PATH\" ]] && source \"{}\"",
+        bash_path.display()
+    );
+
+    Ok(())
 }

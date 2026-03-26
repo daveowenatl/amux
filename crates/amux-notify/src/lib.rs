@@ -48,6 +48,10 @@ pub struct WorkspaceStatus {
     pub updated_at: Instant,
     /// Optional progress value (0.0–1.0) for progress bar display.
     pub progress: Option<f32>,
+    /// Agent's current task description (shown as title line in sidebar).
+    pub task: Option<String>,
+    /// Agent's latest message (shown as subtitle in sidebar).
+    pub message: Option<String>,
 }
 
 /// A single notification entry.
@@ -332,11 +336,31 @@ impl NotificationStore {
         self.notifications
             .iter()
             .rev()
-            .find(|n| n.workspace_id == workspace_id)
+            .find(|n| n.workspace_id == workspace_id && !n.read)
     }
 
     /// Set workspace agent status. Clears any existing progress bar.
-    pub fn set_status(&mut self, workspace_id: u64, state: AgentState, label: Option<String>) {
+    pub fn set_status(
+        &mut self,
+        workspace_id: u64,
+        state: AgentState,
+        label: Option<String>,
+        task: Option<String>,
+        message: Option<String>,
+    ) {
+        let existing = self.workspace_statuses.get(&workspace_id);
+        // Normalize empty strings to None, then preserve existing if not provided.
+        // Some("") means "clear", None means "keep previous".
+        let task = match task {
+            Some(s) if s.is_empty() => None,
+            Some(s) => Some(s),
+            None => existing.and_then(|s| s.task.clone()),
+        };
+        let message = match message {
+            Some(s) if s.is_empty() => None,
+            Some(s) => Some(s),
+            None => existing.and_then(|s| s.message.clone()),
+        };
         self.workspace_statuses.insert(
             workspace_id,
             WorkspaceStatus {
@@ -344,6 +368,8 @@ impl NotificationStore {
                 label,
                 updated_at: Instant::now(),
                 progress: None,
+                task,
+                message,
             },
         );
     }
@@ -559,12 +585,18 @@ mod tests {
     #[test]
     fn workspace_status_roundtrip() {
         let mut store = NotificationStore::new();
-        store.set_status(1, AgentState::Active, Some("Running tests".into()));
+        store.set_status(
+            1,
+            AgentState::Active,
+            Some("Running tests".into()),
+            None,
+            None,
+        );
         let status = store.workspace_status(1).unwrap();
         assert_eq!(status.state, AgentState::Active);
         assert_eq!(status.label.as_deref(), Some("Running tests"));
 
-        store.set_status(1, AgentState::Idle, None);
+        store.set_status(1, AgentState::Idle, None, None, None);
         let status = store.workspace_status(1).unwrap();
         assert_eq!(status.state, AgentState::Idle);
         assert!(status.label.is_none());
@@ -656,7 +688,7 @@ mod tests {
     fn progress_lifecycle() {
         let mut store = NotificationStore::new();
         // set_status creates entry with no progress
-        store.set_status(1, AgentState::Active, Some("Building".into()));
+        store.set_status(1, AgentState::Active, Some("Building".into()), None, None);
         assert!(store.workspace_status(1).unwrap().progress.is_none());
 
         // set_progress adds progress
@@ -664,7 +696,7 @@ mod tests {
         assert_eq!(store.workspace_status(1).unwrap().progress, Some(0.5));
 
         // set_status clears progress
-        store.set_status(1, AgentState::Idle, None);
+        store.set_status(1, AgentState::Idle, None, None, None);
         assert!(store.workspace_status(1).unwrap().progress.is_none());
     }
 }

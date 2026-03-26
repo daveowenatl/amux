@@ -52,6 +52,16 @@ pub struct SavedSurface {
     pub scrollback: String,
     pub cols: u16,
     pub rows: u16,
+    #[serde(default)]
+    pub git_branch: Option<String>,
+    #[serde(default)]
+    pub git_dirty: bool,
+    #[serde(default)]
+    pub pr_number: Option<u32>,
+    #[serde(default)]
+    pub pr_title: Option<String>,
+    #[serde(default)]
+    pub pr_state: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -77,6 +87,10 @@ pub struct SavedWorkspaceStatus {
     pub state: String,
     #[serde(default)]
     pub label: Option<String>,
+    #[serde(default)]
+    pub task: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 // --- File Operations ---
@@ -170,6 +184,11 @@ mod tests {
                     scrollback: "$ echo hello\nhello\n".to_string(),
                     cols: 80,
                     rows: 24,
+                    git_branch: None,
+                    git_dirty: false,
+                    pr_number: None,
+                    pr_title: None,
+                    pr_state: None,
                 }],
                 active_surface_idx: 0,
             },

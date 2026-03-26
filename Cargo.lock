@@ -121,6 +121,7 @@ dependencies = [
  "amux-session",
  "anyhow",
  "clap",
+ "dirs",
  "serde_json",
  "tokio",
 ]
