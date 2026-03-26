@@ -957,9 +957,11 @@ struct AmuxApp {
 }
 
 /// What is being renamed — workspace or tab (surface).
+/// Uses stable IDs rather than indices so background reorder/close can't
+/// cause the modal to rename the wrong item.
 enum RenameTarget {
-    Workspace(usize),
-    Tab { pane_id: PaneId, surface_idx: usize },
+    Workspace(u64),
+    Tab { pane_id: PaneId, surface_id: u64 },
 }
 
 struct RenameModal {
@@ -1296,8 +1298,9 @@ impl eframe::App for AmuxApp {
                     }
                     sidebar::SidebarAction::StartRenameWorkspace(idx) => {
                         if idx < self.workspaces.len() {
+                            let ws_id = self.workspaces[idx].id;
                             self.rename_modal = Some(RenameModal {
-                                target: RenameTarget::Workspace(idx),
+                                target: RenameTarget::Workspace(ws_id),
                                 buf: self.workspaces[idx].title.clone(),
                                 just_opened: true,
                             });
@@ -1768,7 +1771,9 @@ impl AmuxApp {
                 }
                 let managed = self.panes.get_mut(&pane_id).unwrap();
                 managed.surfaces.remove(idx);
-                if managed.active_surface_idx >= managed.surfaces.len() {
+                if idx < managed.active_surface_idx {
+                    managed.active_surface_idx -= 1;
+                } else if managed.active_surface_idx >= managed.surfaces.len() {
                     managed.active_surface_idx = managed.surfaces.len() - 1;
                 }
             } else if let Some(idx) = switch_to {
@@ -1788,7 +1793,7 @@ impl AmuxApp {
                         self.rename_modal = Some(RenameModal {
                             target: RenameTarget::Tab {
                                 pane_id,
-                                surface_idx: idx,
+                                surface_id: surface.id,
                             },
                             buf: current_title,
                             just_opened: true,
@@ -2124,6 +2129,11 @@ impl AmuxApp {
     // --- Shortcuts ---
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) -> bool {
+        // Skip terminal shortcuts when a modal text field has focus — let egui
+        // handle Cmd+V, Cmd+C, etc. for the text widget instead.
+        if self.rename_modal.is_some() || self.find_state.is_some() {
+            return false;
+        }
         let events = ctx.input(|i| i.events.clone());
 
         for event in &events {
@@ -2730,7 +2740,8 @@ impl AmuxApp {
             let cols = dim_cols.max(1) as f32;
             let rows = dim_rows.max(1) as f32;
             let cell_w = pane_rect.width() / cols;
-            let cell_h = (pane_rect.height() - TAB_BAR_HEIGHT) / rows;
+            // Use content area minus 1-row bottom margin, matching resize_pane_if_needed.
+            let cell_h = (pane_rect.height() - TAB_BAR_HEIGHT) / (rows + 1.0);
             let x = pane_rect.min.x + cursor.x as f32 * cell_w;
             let y = pane_rect.min.y + TAB_BAR_HEIGHT + cursor.y as f32 * cell_h;
             ctx.send_viewport_cmd(egui::ViewportCommand::IMERect(egui::Rect::from_min_size(
@@ -2768,7 +2779,8 @@ impl AmuxApp {
             let cols = dim_cols.max(1) as f32;
             let rows = dim_rows.max(1) as f32;
             let cell_w = pane_rect.width() / cols;
-            let cell_h = (pane_rect.height() - TAB_BAR_HEIGHT) / rows;
+            // Use content area minus 1-row bottom margin, matching resize_pane_if_needed.
+            let cell_h = (pane_rect.height() - TAB_BAR_HEIGHT) / (rows + 1.0);
             let x = pane_rect.min.x + cursor.x as f32 * cell_w;
             let y = pane_rect.min.y + TAB_BAR_HEIGHT + cursor.y as f32 * cell_h;
 
@@ -3154,21 +3166,23 @@ impl AmuxApp {
         if let Some(new_name) = apply {
             if !new_name.is_empty() {
                 match &self.rename_modal.as_ref().unwrap().target {
-                    RenameTarget::Workspace(idx) => {
-                        let idx = *idx;
-                        if idx < self.workspaces.len() {
-                            self.workspaces[idx].title = new_name;
+                    RenameTarget::Workspace(ws_id) => {
+                        let ws_id = *ws_id;
+                        if let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == ws_id) {
+                            ws.title = new_name;
                         }
                     }
                     RenameTarget::Tab {
                         pane_id,
-                        surface_idx,
+                        surface_id,
                     } => {
                         let pane_id = *pane_id;
-                        let surface_idx = *surface_idx;
+                        let surface_id = *surface_id;
                         if let Some(managed) = self.panes.get_mut(&pane_id) {
-                            if surface_idx < managed.surfaces.len() {
-                                managed.surfaces[surface_idx].user_title = Some(new_name);
+                            if let Some(surface) =
+                                managed.surfaces.iter_mut().find(|s| s.id == surface_id)
+                            {
+                                surface.user_title = Some(new_name);
                             }
                         }
                     }
