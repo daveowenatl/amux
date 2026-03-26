@@ -68,7 +68,7 @@ pub(crate) enum SidebarAction {
     SwitchWorkspace(usize),
     CreateWorkspace,
     CloseWorkspace(usize),
-    RenameWorkspace(usize, String),
+    StartRenameWorkspace(usize),
     MarkWorkspaceRead(usize),
     ReorderWorkspace(usize, usize),
     SetWorkspaceColor(usize, Option<[u8; 4]>),
@@ -303,7 +303,6 @@ fn render_workspace_row(
     let has_agent_message = status.as_ref().and_then(|s| s.message.as_ref()).is_some();
     let latest_notif = notifications.latest_for_workspace(ws.id);
     let has_notif_text = !has_agent_message && latest_notif.is_some_and(|n| !n.body.is_empty());
-    let is_renaming = state.renaming == Some(idx);
     let has_color = ws.color.is_some();
     let has_git_or_cwd = metadata.is_some_and(|m| m.git_branch.is_some() || m.cwd.is_some());
     let has_pr = metadata.is_some_and(|m| m.pr_number.is_some());
@@ -344,7 +343,7 @@ fn render_workspace_row(
     let hovered = response.hovered();
 
     // --- Drag initiation ---
-    if response.drag_started() && state.drag.is_none() && !is_renaming {
+    if response.drag_started() && state.drag.is_none() {
         state.drag = Some(SidebarDragState {
             source_idx: idx,
             current_y: rect.center().y,
@@ -362,9 +361,7 @@ fn render_workspace_row(
     // --- Context menu ---
     response.context_menu(|ui| {
         if ui.button("Rename Workspace").clicked() {
-            state.renaming = Some(idx);
-            state.rename_buf = ws.title.clone();
-            state.rename_just_opened = true;
+            actions.push(SidebarAction::StartRenameWorkspace(idx));
             ui.close_menu();
         }
         if ui.button("Close Workspace").clicked() {
@@ -434,50 +431,14 @@ fn render_workspace_row(
 
     let close_btn_reserve = CLOSE_BTN_SIZE + 4.0;
     let badge_reserve = BADGE_RADIUS * 2.0 + 4.0;
-    let right_reserve = if hovered && !is_renaming {
+    let right_reserve = if hovered {
         close_btn_reserve
     } else {
         badge_reserve
     };
     let max_title_w = avail_w - content_left - ROW_H_PAD - right_reserve;
 
-    if is_renaming {
-        let title_rect = egui::Rect::from_min_size(
-            rect.min + egui::vec2(content_left, ROW_V_PAD),
-            egui::vec2(max_title_w, title_line_h),
-        );
-        let rename_id = ui.id().with("rename").with(idx);
-        let mut text_edit = egui::TextEdit::singleline(&mut state.rename_buf)
-            .id(rename_id)
-            .font(egui::FontId::proportional(TITLE_FONT_SIZE))
-            .text_color(title_color)
-            .desired_width(max_title_w)
-            .frame(false);
-        text_edit = text_edit.background_color(Color32::from_rgba_premultiplied(0, 0, 0, 180));
-
-        let te_response = ui.put(title_rect, text_edit);
-        if !te_response.has_focus() {
-            te_response.request_focus();
-        }
-
-        let confirmed = ui.input(|i| i.key_pressed(egui::Key::Enter));
-        let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
-
-        let lost_focus = !te_response.has_focus() && !state.rename_just_opened;
-        state.rename_just_opened = false;
-
-        if confirmed || (lost_focus && !cancelled) {
-            let new_name = state.rename_buf.trim().to_string();
-            if !new_name.is_empty() && new_name != ws.title {
-                actions.push(SidebarAction::RenameWorkspace(idx, new_name));
-            }
-            state.renaming = None;
-            state.rename_buf.clear();
-        } else if cancelled {
-            state.renaming = None;
-            state.rename_buf.clear();
-        }
-    } else {
+    {
         let title_pos = rect.min + egui::vec2(content_left, ROW_V_PAD);
         let title_font = egui::FontId::proportional(TITLE_FONT_SIZE);
         // Show agent task as title if available, with star prefix like cmux.
@@ -502,7 +463,7 @@ fn render_workspace_row(
     // --- Close button on hover (replaces badge) or badge/count ---
     let badge_center_y = rect.min.y + ROW_V_PAD + title_line_h / 2.0;
 
-    if hovered && !is_renaming {
+    if hovered {
         let btn_center = egui::pos2(
             rect.right() - ROW_H_PAD - CLOSE_BTN_SIZE / 2.0,
             badge_center_y,
@@ -706,7 +667,7 @@ fn render_workspace_row(
     }
 
     // --- Click to switch workspace or mark read ---
-    if response.clicked() && !is_renaming {
+    if response.clicked() {
         if is_active {
             actions.push(SidebarAction::MarkWorkspaceRead(idx));
         } else {
