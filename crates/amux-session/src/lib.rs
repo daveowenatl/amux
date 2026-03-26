@@ -283,6 +283,18 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_without_user_title_defaults_to_none() {
+        // Simulate an older session file that predates the user_title field.
+        let json = r#"{
+            "id": 0, "title": "zsh", "working_dir": "/tmp", "scrollback": "",
+            "cols": 80, "rows": 24, "git_branch": null, "git_dirty": false,
+            "pr_number": null, "pr_title": null, "pr_state": null
+        }"#;
+        let surface: SavedSurface = serde_json::from_str(json).unwrap();
+        assert!(surface.user_title.is_none());
+    }
+
+    #[test]
     fn load_rejects_empty_workspaces() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("session.json");
