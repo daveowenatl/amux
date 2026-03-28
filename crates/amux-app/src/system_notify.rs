@@ -80,15 +80,18 @@ impl SystemNotifier {
                             } else {
                                 "-c"
                             };
+                            // Use .status() instead of .spawn() to wait for
+                            // and reap the child process, avoiding zombies.
                             match std::process::Command::new(shell)
                                 .arg(flag)
                                 .arg(&command)
                                 .env("AMUX_NOTIFICATION_TITLE", &title)
                                 .env("AMUX_NOTIFICATION_BODY", &body)
                                 .env("AMUX_NOTIFICATION_SOURCE", &source)
+                                .stdin(std::process::Stdio::null())
                                 .stdout(std::process::Stdio::null())
                                 .stderr(std::process::Stdio::null())
-                                .spawn()
+                                .status()
                             {
                                 Ok(_) => {}
                                 Err(e) => {
