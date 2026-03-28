@@ -79,12 +79,59 @@ const TERMINAL_BG: egui::Color32 = egui::Color32::from_gray(0);
 #[serde(default)]
 struct AppConfig {
     font_size: f32,
+    notifications: NotificationConfig,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             font_size: DEFAULT_FONT_SIZE,
+            notifications: NotificationConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(default)]
+struct NotificationConfig {
+    /// Deliver OS-native toast notifications when the app is unfocused.
+    system_notifications: bool,
+    /// Automatically move workspaces to the top of the sidebar on notification.
+    auto_reorder_workspaces: bool,
+    /// Show unread count on macOS dock icon / Windows taskbar.
+    dock_badge: bool,
+    /// Shell command to run on each notification (receives AMUX_NOTIFICATION_* env vars).
+    custom_command: Option<String>,
+    /// Notification sound settings.
+    sound: NotificationSoundConfig,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            system_notifications: true,
+            auto_reorder_workspaces: true,
+            dock_badge: true,
+            custom_command: None,
+            sound: NotificationSoundConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(default)]
+struct NotificationSoundConfig {
+    /// "system", "none", or path to a .wav/.ogg/.mp3 file.
+    sound: String,
+    /// Play sound even when app is focused (suppressed notification feedback).
+    play_when_focused: bool,
+}
+
+impl Default for NotificationSoundConfig {
+    fn default() -> Self {
+        Self {
+            sound: "system".to_string(),
+            play_when_focused: true,
         }
     }
 }
@@ -280,6 +327,8 @@ fn main() -> anyhow::Result<()> {
                 selection_changed: false,
                 tab_drag: None,
                 rename_modal: None,
+                app_focused: true,
+                app_config,
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
             }))
@@ -958,6 +1007,10 @@ struct AmuxApp {
     tab_drag: Option<TabDragState>,
     /// Rename modal state for workspaces and tabs.
     rename_modal: Option<RenameModal>,
+    /// Whether the app window currently has OS-level focus.
+    app_focused: bool,
+    /// Persisted application configuration.
+    app_config: AppConfig,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
 }
@@ -1238,6 +1291,7 @@ impl eframe::App for AmuxApp {
         }
 
         self.selection_changed = false;
+        self.app_focused = ctx.input(|i| i.focused);
 
         // Drain PTY output from all surfaces in all panes
         let mut got_data = false;
@@ -2684,8 +2738,38 @@ impl AmuxApp {
             } else {
                 self.notifications
                     .push(ws_id, pane_id, surface_id, title, body, source);
+                // Bubble workspace to top of sidebar on notification
+                if self.app_config.notifications.auto_reorder_workspaces {
+                    self.bubble_workspace(ws_id);
+                }
             }
         }
+    }
+
+    /// Move a workspace to the top of the sidebar (just index 0 for now,
+    /// since amux doesn't have pinned workspaces yet). Adjusts
+    /// `active_workspace_idx` to keep the active workspace correct.
+    fn bubble_workspace(&mut self, workspace_id: u64) {
+        let active_ws_id = self.workspaces[self.active_workspace_idx].id;
+        // Don't bubble the active workspace
+        if workspace_id == active_ws_id {
+            return;
+        }
+        let Some(from) = self.workspaces.iter().position(|ws| ws.id == workspace_id) else {
+            return;
+        };
+        if from == 0 {
+            return;
+        }
+        let ws = self.workspaces.remove(from);
+        self.workspaces.insert(0, ws);
+        // Fix active_workspace_idx: the active workspace shifted right by 1
+        // if it was before the removed position.
+        self.active_workspace_idx = self
+            .workspaces
+            .iter()
+            .position(|ws| ws.id == active_ws_id)
+            .unwrap_or(0);
     }
 
     fn workspace_for_pane(&self, pane_id: PaneId) -> Option<u64> {
@@ -4422,6 +4506,9 @@ impl AmuxApp {
                             params.body,
                             NotificationSource::Cli,
                         );
+                        if self.app_config.notifications.auto_reorder_workspaces {
+                            self.bubble_workspace(ws_id);
+                        }
                         Response::ok(req.id.clone(), serde_json::json!({"notification_id": nid}))
                     }
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
