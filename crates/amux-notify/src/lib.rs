@@ -25,6 +25,16 @@ pub enum NotificationSource {
     Cli,
 }
 
+impl NotificationSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Toast => "toast",
+            Self::Bell => "bell",
+            Self::Cli => "cli",
+        }
+    }
+}
+
 /// Why a pane is flashing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlashReason {
@@ -314,6 +324,11 @@ impl NotificationStore {
     /// Total unread count across the given pane set.
     pub fn workspace_unread_count(&self, pane_ids: &[u64]) -> usize {
         pane_ids.iter().map(|id| self.pane_unread(*id)).sum()
+    }
+
+    /// Total unread count across all panes.
+    pub fn total_unread(&self) -> usize {
+        self.pane_states.values().map(|s| s.unread_count).sum()
     }
 
     /// Get pane visual state (for ring + flash rendering).
@@ -682,6 +697,21 @@ mod tests {
         assert_eq!(latest2.title, "Other");
 
         assert!(store.latest_for_workspace(99).is_none());
+    }
+
+    #[test]
+    fn total_unread_across_panes() {
+        let mut store = NotificationStore::new();
+        store.push(1, 10, 100, "A".into(), "a".into(), NotificationSource::Bell);
+        store.push(1, 10, 101, "B".into(), "b".into(), NotificationSource::Bell);
+        store.push(2, 20, 200, "C".into(), "c".into(), NotificationSource::Cli);
+        assert_eq!(store.total_unread(), 3);
+
+        store.mark_pane_read(10);
+        assert_eq!(store.total_unread(), 1);
+
+        store.remove_pane(20);
+        assert_eq!(store.total_unread(), 0);
     }
 
     #[test]

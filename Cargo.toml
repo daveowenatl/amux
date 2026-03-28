@@ -57,6 +57,12 @@ tokio = { version = "1", features = ["rt", "net", "io-util", "sync", "macros", "
 # CLI
 clap = { version = "4", features = ["derive"] }
 
+# Notifications
+notify-rust = "4"
+rodio = { version = "0.20", default-features = false, features = ["wav", "vorbis", "mp3"] }
+objc2-foundation = "0.3"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSDockTile"] }
+
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"

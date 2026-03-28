@@ -1,4 +1,5 @@
 mod sidebar;
+mod system_notify;
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -79,12 +80,59 @@ const TERMINAL_BG: egui::Color32 = egui::Color32::from_gray(0);
 #[serde(default)]
 struct AppConfig {
     font_size: f32,
+    notifications: NotificationConfig,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             font_size: DEFAULT_FONT_SIZE,
+            notifications: NotificationConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(default)]
+struct NotificationConfig {
+    /// Deliver OS-native toast notifications when the app is unfocused.
+    system_notifications: bool,
+    /// Automatically move workspaces to the top of the sidebar on notification.
+    auto_reorder_workspaces: bool,
+    /// Show unread count on macOS dock icon / Windows taskbar.
+    dock_badge: bool,
+    /// Shell command to run on each notification (receives AMUX_NOTIFICATION_* env vars).
+    custom_command: Option<String>,
+    /// Notification sound settings.
+    sound: NotificationSoundConfig,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            system_notifications: true,
+            auto_reorder_workspaces: true,
+            dock_badge: true,
+            custom_command: None,
+            sound: NotificationSoundConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(default)]
+struct NotificationSoundConfig {
+    /// "system", "none", or path to a .wav/.ogg/.mp3 file.
+    sound: String,
+    /// Play sound even when app is focused (suppressed notification feedback).
+    play_when_focused: bool,
+}
+
+impl Default for NotificationSoundConfig {
+    fn default() -> Self {
+        Self {
+            sound: "system".to_string(),
+            play_when_focused: true,
         }
     }
 }
@@ -209,6 +257,12 @@ fn main() -> anyhow::Result<()> {
     let app_config = load_app_config();
     let font_size = app_config.font_size;
 
+    // Initialize sound player with configured sound setting
+    let mut sound_player = system_notify::SoundPlayer::new();
+    if let Some(player) = &mut sound_player {
+        player.configure(&app_config.notifications.sound.sound);
+    }
+
     let (ipc_rx, ipc_addr) = amux_ipc::start_server()?;
     tracing::info!("IPC server: {}", ipc_addr);
 
@@ -280,6 +334,11 @@ fn main() -> anyhow::Result<()> {
                 selection_changed: false,
                 tab_drag: None,
                 rename_modal: None,
+                app_focused: true,
+                app_config,
+                system_notifier: system_notify::SystemNotifier::new(),
+                last_badge_count: 0,
+                sound_player,
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
             }))
@@ -635,16 +694,14 @@ fn ensure_claude_wrapper_dir() -> Option<std::path::PathBuf> {
         .map(|existing| existing != wrapper_content)
         .unwrap_or(true);
 
+    if needs_write && std::fs::write(&wrapper_path, wrapper_content).is_err() {
+        return None;
+    }
+    // Make executable (unix)
+    #[cfg(unix)]
     if needs_write {
-        if std::fs::write(&wrapper_path, wrapper_content).is_err() {
-            return None;
-        }
-        // Make executable (unix)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755));
-        }
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755));
     }
 
     Some(bin_dir)
@@ -958,6 +1015,16 @@ struct AmuxApp {
     tab_drag: Option<TabDragState>,
     /// Rename modal state for workspaces and tabs.
     rename_modal: Option<RenameModal>,
+    /// Whether the app window currently has OS-level focus.
+    app_focused: bool,
+    /// Persisted application configuration.
+    app_config: AppConfig,
+    /// Cross-platform system notification sender.
+    system_notifier: system_notify::SystemNotifier,
+    /// Cached badge count to avoid redundant dock badge updates every frame.
+    last_badge_count: usize,
+    /// Notification sound player (None if no audio device).
+    sound_player: Option<system_notify::SoundPlayer>,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
 }
@@ -1238,6 +1305,7 @@ impl eframe::App for AmuxApp {
         }
 
         self.selection_changed = false;
+        self.app_focused = ctx.input(|i| i.focused);
 
         // Drain PTY output from all surfaces in all panes
         let mut got_data = false;
@@ -1250,8 +1318,34 @@ impl eframe::App for AmuxApp {
             }
         }
 
+        // Handle clicks on system notifications (navigate to workspace/pane).
+        // Process before draining new notifications so focus state is current.
+        for action in self.system_notifier.drain_actions() {
+            if let Some(idx) = self
+                .workspaces
+                .iter()
+                .position(|ws| ws.id == action.workspace_id)
+            {
+                self.active_workspace_idx = idx;
+                let ws = &mut self.workspaces[idx];
+                if ws.tree.iter_panes().contains(&action.pane_id) {
+                    ws.focused_pane = action.pane_id;
+                }
+                self.notifications.mark_pane_read(action.pane_id);
+            }
+        }
+
         // Drain notification events from all surfaces
         self.drain_notifications();
+
+        // Update dock/taskbar badge with total unread count (only when changed)
+        if self.app_config.notifications.dock_badge {
+            let count = self.notifications.total_unread();
+            if count != self.last_badge_count {
+                self.last_badge_count = count;
+                system_notify::set_badge_count(count);
+            }
+        }
 
         // Process IPC commands
         self.process_ipc_commands();
@@ -2634,7 +2728,6 @@ impl AmuxApp {
 
     fn drain_notifications(&mut self) {
         // Collect events first to avoid borrow conflicts
-        let focused = self.focused_pane_id();
         let mut events: Vec<(u64, u64, u64, NotificationEvent)> = Vec::new();
 
         for (&pane_id, managed) in &self.panes {
@@ -2677,15 +2770,96 @@ impl AmuxApp {
                 }
             };
 
-            if pane_id == focused {
-                // Focused pane: still record but mark as read (flash only, no ring)
-                self.notifications
-                    .push_read(ws_id, pane_id, surface_id, title, body, source);
-            } else {
-                self.notifications
-                    .push(ws_id, pane_id, surface_id, title, body, source);
-            }
+            let skip_toast = matches!(source, NotificationSource::Bell);
+            self.deliver_notification(ws_id, pane_id, surface_id, title, body, source, skip_toast);
         }
+    }
+
+    /// Three-tier notification delivery (matching cmux):
+    /// 1. App unfocused → system toast + custom command + unread
+    /// 2. App focused, different pane → in-app sound + custom command + unread
+    /// 3. App focused, same pane → mark read (flash only, no ring)
+    ///
+    /// `skip_toast` suppresses the system toast (used for bell notifications).
+    #[allow(clippy::too_many_arguments)]
+    fn deliver_notification(
+        &mut self,
+        ws_id: u64,
+        pane_id: PaneId,
+        surface_id: u64,
+        title: String,
+        body: String,
+        source: NotificationSource,
+        skip_toast: bool,
+    ) -> u64 {
+        let focused = self.focused_pane_id();
+        let source_str = source.as_str();
+
+        if !self.app_focused {
+            // Tier 1: app is unfocused — always treat as background
+            if self.app_config.notifications.system_notifications && !skip_toast {
+                self.system_notifier.send(&title, &body, ws_id, pane_id);
+            }
+            if let Some(cmd) = &self.app_config.notifications.custom_command {
+                self.system_notifier
+                    .run_custom_command(cmd, &title, &body, source_str);
+            }
+            let nid = self
+                .notifications
+                .push(ws_id, pane_id, surface_id, title, body, source);
+            if self.app_config.notifications.auto_reorder_workspaces {
+                self.bubble_workspace(ws_id);
+            }
+            nid
+        } else if pane_id == focused {
+            // Tier 3: app focused, same pane — mark read (flash only)
+            self.notifications
+                .push_read(ws_id, pane_id, surface_id, title, body, source)
+        } else {
+            // Tier 2: app focused, different pane — in-app sound + command
+            if self.app_config.notifications.sound.play_when_focused {
+                if let Some(player) = &self.sound_player {
+                    player.play();
+                }
+            }
+            if let Some(cmd) = &self.app_config.notifications.custom_command {
+                self.system_notifier
+                    .run_custom_command(cmd, &title, &body, source_str);
+            }
+            let nid = self
+                .notifications
+                .push(ws_id, pane_id, surface_id, title, body, source);
+            if self.app_config.notifications.auto_reorder_workspaces {
+                self.bubble_workspace(ws_id);
+            }
+            nid
+        }
+    }
+
+    /// Move a workspace to the top of the sidebar (just index 0 for now,
+    /// since amux doesn't have pinned workspaces yet). Adjusts
+    /// `active_workspace_idx` to keep the active workspace correct.
+    fn bubble_workspace(&mut self, workspace_id: u64) {
+        let active_ws_id = self.workspaces[self.active_workspace_idx].id;
+        // Don't bubble the active workspace
+        if workspace_id == active_ws_id {
+            return;
+        }
+        let Some(from) = self.workspaces.iter().position(|ws| ws.id == workspace_id) else {
+            return;
+        };
+        if from == 0 {
+            return;
+        }
+        let ws = self.workspaces.remove(from);
+        self.workspaces.insert(0, ws);
+        // Fix active_workspace_idx: the active workspace shifted right by 1
+        // if it was before the removed position.
+        self.active_workspace_idx = self
+            .workspaces
+            .iter()
+            .position(|ws| ws.id == active_ws_id)
+            .unwrap_or(0);
     }
 
     fn workspace_for_pane(&self, pane_id: PaneId) -> Option<u64> {
@@ -4414,13 +4588,14 @@ impl AmuxApp {
                             .parse::<u64>()
                             .unwrap_or(self.focused_pane_id());
                         let title = params.title.unwrap_or_default();
-                        let nid = self.notifications.push(
+                        let nid = self.deliver_notification(
                             ws_id,
                             pane_id,
                             0,
                             title,
                             params.body,
                             NotificationSource::Cli,
+                            false,
                         );
                         Response::ok(req.id.clone(), serde_json::json!({"notification_id": nid}))
                     }
