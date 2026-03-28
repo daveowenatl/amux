@@ -1336,6 +1336,11 @@ impl eframe::App for AmuxApp {
             }
         }
 
+        // Update dock/taskbar badge with total unread count
+        if self.app_config.notifications.dock_badge {
+            system_notify::set_badge_count(self.notifications.total_unread());
+        }
+
         // Process IPC commands
         self.process_ipc_commands();
 

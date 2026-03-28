@@ -326,6 +326,11 @@ impl NotificationStore {
         pane_ids.iter().map(|id| self.pane_unread(*id)).sum()
     }
 
+    /// Total unread count across all panes.
+    pub fn total_unread(&self) -> usize {
+        self.pane_states.values().map(|s| s.unread_count).sum()
+    }
+
     /// Get pane visual state (for ring + flash rendering).
     pub fn pane_state(&self, pane_id: u64) -> Option<&PaneNotifyState> {
         self.pane_states.get(&pane_id)
