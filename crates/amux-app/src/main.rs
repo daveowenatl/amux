@@ -1,4 +1,5 @@
 mod sidebar;
+mod system_notify;
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -329,6 +330,7 @@ fn main() -> anyhow::Result<()> {
                 rename_modal: None,
                 app_focused: true,
                 app_config,
+                system_notifier: system_notify::SystemNotifier::new(),
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
             }))
@@ -1011,6 +1013,8 @@ struct AmuxApp {
     app_focused: bool,
     /// Persisted application configuration.
     app_config: AppConfig,
+    /// Cross-platform system notification sender.
+    system_notifier: system_notify::SystemNotifier,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
 }
@@ -1306,6 +1310,22 @@ impl eframe::App for AmuxApp {
 
         // Drain notification events from all surfaces
         self.drain_notifications();
+
+        // Handle clicks on system notifications (navigate to workspace/pane)
+        for action in self.system_notifier.drain_actions() {
+            if let Some(idx) = self
+                .workspaces
+                .iter()
+                .position(|ws| ws.id == action.workspace_id)
+            {
+                self.active_workspace_idx = idx;
+                let ws = &mut self.workspaces[idx];
+                if ws.tree.iter_panes().contains(&action.pane_id) {
+                    ws.focused_pane = action.pane_id;
+                }
+                self.notifications.mark_pane_read(action.pane_id);
+            }
+        }
 
         // Process IPC commands
         self.process_ipc_commands();
@@ -2736,6 +2756,30 @@ impl AmuxApp {
                 self.notifications
                     .push_read(ws_id, pane_id, surface_id, title, body, source);
             } else {
+                let source_str = source.as_str();
+
+                // Three-tier notification delivery (matching cmux):
+                // 1. App unfocused → system toast + custom command
+                // 2. App focused, different pane → in-app sound + custom command
+                // 3. App focused, same pane → nothing (handled above)
+                if !self.app_focused {
+                    // Tier 1: deliver OS-native notification
+                    if self.app_config.notifications.system_notifications
+                        && !matches!(source, NotificationSource::Bell)
+                    {
+                        self.system_notifier.send(&title, &body, ws_id, pane_id);
+                    }
+                    if let Some(cmd) = &self.app_config.notifications.custom_command {
+                        system_notify::run_custom_command(cmd, &title, &body, source_str);
+                    }
+                } else {
+                    // Tier 2: app focused but different pane — custom command only
+                    // (in-app sound will be added in a later PR)
+                    if let Some(cmd) = &self.app_config.notifications.custom_command {
+                        system_notify::run_custom_command(cmd, &title, &body, source_str);
+                    }
+                }
+
                 self.notifications
                     .push(ws_id, pane_id, surface_id, title, body, source);
                 // Bubble workspace to top of sidebar on notification
@@ -4498,6 +4542,14 @@ impl AmuxApp {
                             .parse::<u64>()
                             .unwrap_or(self.focused_pane_id());
                         let title = params.title.unwrap_or_default();
+                        // System notification for CLI-sourced notifications
+                        if !self.app_focused && self.app_config.notifications.system_notifications {
+                            self.system_notifier
+                                .send(&title, &params.body, ws_id, pane_id);
+                        }
+                        if let Some(cmd) = &self.app_config.notifications.custom_command {
+                            system_notify::run_custom_command(cmd, &title, &params.body, "cli");
+                        }
                         let nid = self.notifications.push(
                             ws_id,
                             pane_id,

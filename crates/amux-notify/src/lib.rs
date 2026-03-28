@@ -25,6 +25,16 @@ pub enum NotificationSource {
     Cli,
 }
 
+impl NotificationSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Toast => "toast",
+            Self::Bell => "bell",
+            Self::Cli => "cli",
+        }
+    }
+}
+
 /// Why a pane is flashing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlashReason {
