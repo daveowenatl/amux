@@ -257,6 +257,12 @@ fn main() -> anyhow::Result<()> {
     let app_config = load_app_config();
     let font_size = app_config.font_size;
 
+    // Initialize sound player with configured sound setting
+    let mut sound_player = system_notify::SoundPlayer::new();
+    if let Some(player) = &mut sound_player {
+        player.configure(&app_config.notifications.sound.sound);
+    }
+
     let (ipc_rx, ipc_addr) = amux_ipc::start_server()?;
     tracing::info!("IPC server: {}", ipc_addr);
 
@@ -331,6 +337,7 @@ fn main() -> anyhow::Result<()> {
                 app_focused: true,
                 app_config,
                 system_notifier: system_notify::SystemNotifier::new(),
+                sound_player,
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
             }))
@@ -1015,6 +1022,8 @@ struct AmuxApp {
     app_config: AppConfig,
     /// Cross-platform system notification sender.
     system_notifier: system_notify::SystemNotifier,
+    /// Notification sound player (None if no audio device).
+    sound_player: Option<system_notify::SoundPlayer>,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
 }
@@ -2773,8 +2782,12 @@ impl AmuxApp {
                         system_notify::run_custom_command(cmd, &title, &body, source_str);
                     }
                 } else {
-                    // Tier 2: app focused but different pane — custom command only
-                    // (in-app sound will be added in a later PR)
+                    // Tier 2: app focused but different pane — in-app sound + custom command
+                    if self.app_config.notifications.sound.play_when_focused {
+                        if let Some(player) = &self.sound_player {
+                            player.play();
+                        }
+                    }
                     if let Some(cmd) = &self.app_config.notifications.custom_command {
                         system_notify::run_custom_command(cmd, &title, &body, source_str);
                     }

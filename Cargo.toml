@@ -59,6 +59,7 @@ clap = { version = "4", features = ["derive"] }
 
 # Notifications
 notify-rust = "4"
+rodio = { version = "0.20", default-features = false, features = ["wav", "vorbis", "mp3"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }

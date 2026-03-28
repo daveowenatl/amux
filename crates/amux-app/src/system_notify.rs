@@ -1,3 +1,5 @@
+use std::io::Cursor;
+use std::path::Path;
 use std::sync::mpsc;
 
 /// Action triggered by clicking a system notification.
@@ -56,6 +58,115 @@ impl SystemNotifier {
     /// Drain any click-to-navigate actions from notification callbacks.
     pub fn drain_actions(&self) -> Vec<NotificationAction> {
         self.action_rx.try_iter().collect()
+    }
+}
+
+/// Cross-platform notification sound player using `rodio`.
+///
+/// Holds the audio output stream alive for the app lifetime and plays
+/// sounds on demand. Supports "system" (short beep), "none" (silent),
+/// or a path to a custom audio file (wav/ogg/mp3).
+pub struct SoundPlayer {
+    _stream: rodio::OutputStream,
+    stream_handle: rodio::OutputStreamHandle,
+    /// Cached bytes of a custom sound file (loaded once).
+    custom_sound: Option<Vec<u8>>,
+    /// Current sound mode.
+    mode: SoundMode,
+}
+
+#[derive(Clone)]
+enum SoundMode {
+    System,
+    None,
+    Custom,
+}
+
+/// A short 440Hz sine wave beep (~150ms) generated at runtime.
+fn system_beep_source() -> rodio::source::SineWave {
+    rodio::source::SineWave::new(440.0)
+}
+
+impl SoundPlayer {
+    /// Create a new sound player. Returns `None` if no audio device is available.
+    pub fn new() -> Option<Self> {
+        match rodio::OutputStream::try_default() {
+            Ok((stream, handle)) => Some(Self {
+                _stream: stream,
+                stream_handle: handle,
+                custom_sound: None,
+                mode: SoundMode::System,
+            }),
+            Err(e) => {
+                tracing::warn!("No audio output device: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Configure the sound player from config.
+    /// `sound` is "system", "none", or a file path.
+    pub fn configure(&mut self, sound: &str) {
+        if sound == "none" {
+            self.mode = SoundMode::None;
+            self.custom_sound = None;
+        } else if sound == "system" {
+            self.mode = SoundMode::System;
+            self.custom_sound = None;
+        } else {
+            // Treat as file path
+            let path = Path::new(sound);
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    self.custom_sound = Some(bytes);
+                    self.mode = SoundMode::Custom;
+                    tracing::info!("Loaded custom notification sound: {}", path.display());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to load custom sound {}: {} — falling back to system",
+                        path.display(),
+                        e
+                    );
+                    self.mode = SoundMode::System;
+                    self.custom_sound = None;
+                }
+            }
+        }
+    }
+
+    /// Play the configured notification sound.
+    pub fn play(&self) {
+        match &self.mode {
+            SoundMode::None => {}
+            SoundMode::System => {
+                use rodio::Source;
+                let beep = system_beep_source()
+                    .take_duration(std::time::Duration::from_millis(150))
+                    .amplify(0.3);
+                if let Err(e) = self.stream_handle.play_raw(beep.convert_samples()) {
+                    tracing::warn!("Failed to play system beep: {}", e);
+                }
+            }
+            SoundMode::Custom => {
+                if let Some(bytes) = &self.custom_sound {
+                    let cursor = Cursor::new(bytes.clone());
+                    match rodio::Decoder::new(cursor) {
+                        Ok(source) => {
+                            if let Err(e) = self
+                                .stream_handle
+                                .play_raw(rodio::Source::convert_samples(source))
+                            {
+                                tracing::warn!("Failed to play custom sound: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to decode custom sound: {}", e);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

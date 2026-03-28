@@ -31,3 +31,4 @@ dirs = { workspace = true }
 open = { workspace = true }
 toml = { workspace = true }
 notify-rust = { workspace = true }
+rodio = { workspace = true }
