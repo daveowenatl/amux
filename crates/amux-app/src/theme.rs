@@ -21,6 +21,8 @@ pub(crate) struct ChromeColors {
     /// Title bar / top padding background. Falls back to `tab_bar_bg` when `None`.
     pub titlebar_bg: Option<Color32>,
     pub tab_active_bg: Color32,
+    /// 1px border around the tab bar (top and bottom edges).
+    pub tab_bar_border: Color32,
     pub tab_border: Color32,
     pub divider: Color32,
     pub accent: Color32,
@@ -67,14 +69,15 @@ impl Default for Theme {
     fn default() -> Self {
         Self {
             terminal: TerminalColors {
-                background: [35, 35, 35],
+                background: [30, 32, 36],
                 foreground: [0xe5, 0xe5, 0xe5],
             },
             chrome: ChromeColors {
-                sidebar_bg: Color32::from_rgba_premultiplied(20, 20, 20, 230),
+                sidebar_bg: Color32::from_gray(35),
                 tab_bar_bg: None,  // falls back to terminal background
                 titlebar_bg: None, // falls back to tab bar background
                 tab_active_bg: Color32::from_gray(50),
+                tab_bar_border: Color32::from_gray(55),
                 tab_border: Color32::from_gray(55),
                 divider: Color32::from_gray(60),
                 accent: Color32::from_rgb(0, 145, 255),

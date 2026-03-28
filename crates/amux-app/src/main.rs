@@ -1647,6 +1647,9 @@ impl AmuxApp {
         {
             let painter = ui.painter();
             painter.rect_filled(tab_rect, 0.0, self.theme.tab_bar_bg());
+            let bar_stroke = egui::Stroke::new(1.0, self.theme.chrome.tab_bar_border);
+            painter.hline(tab_rect.x_range(), tab_rect.min.y, bar_stroke);
+            painter.hline(tab_rect.x_range(), tab_rect.max.y, bar_stroke);
 
             let active_idx = managed.active_surface_idx;
             let tab_font = egui::FontId::proportional(11.0);
