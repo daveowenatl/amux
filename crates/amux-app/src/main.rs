@@ -1,5 +1,6 @@
 mod sidebar;
 mod system_notify;
+mod theme;
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -65,12 +66,11 @@ fn get_cwd_from_pid(pid: u32) -> Option<String> {
 const DEFAULT_FONT_SIZE: f32 = 14.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
 const TAB_BAR_HEIGHT: f32 = 24.0;
+/// Visual padding above the tab bar, equal to one tab bar height.
+const TERMINAL_TOP_PAD: f32 = TAB_BAR_HEIGHT;
 /// Visual padding below the terminal grid (does not reduce PTY rows).
-/// Painted with TERMINAL_BG so it blends with the terminal background.
+/// Painted with terminal background color so it blends with the terminal.
 const TERMINAL_BOTTOM_PAD: f32 = 4.0;
-/// Default terminal background color, used for padding strips and unfilled areas.
-/// Will be replaced by palette-based color when color scheme config is added.
-const TERMINAL_BG: egui::Color32 = egui::Color32::from_gray(0);
 
 // ---------------------------------------------------------------------------
 // App config (loaded from ~/.config/amux/config.toml)
@@ -266,7 +266,11 @@ fn main() -> anyhow::Result<()> {
     let (ipc_rx, ipc_addr) = amux_ipc::start_server()?;
     tracing::info!("IPC server: {}", ipc_addr);
 
-    let config = Arc::new(AmuxTermConfig::default());
+    let theme = theme::Theme::default();
+    let mut term_config = AmuxTermConfig::default();
+    term_config.color_palette.background = theme.terminal_bg_srgba();
+    term_config.color_palette.foreground = theme.terminal_fg_srgba();
+    let config = Arc::new(term_config);
 
     // Try to restore a previous session
     let restored = match amux_session::load() {
@@ -319,6 +323,7 @@ fn main() -> anyhow::Result<()> {
                 ipc_rx,
                 socket_addr: ipc_addr,
                 config,
+                theme,
                 last_panel_rect: None,
                 notifications: state.notifications,
                 show_notification_panel: false,
@@ -997,6 +1002,7 @@ struct AmuxApp {
     ipc_rx: std::sync::mpsc::Receiver<IpcCommand>,
     socket_addr: amux_ipc::IpcAddr,
     config: Arc<AmuxTermConfig>,
+    theme: theme::Theme,
     last_panel_rect: Option<egui::Rect>,
     notifications: NotificationStore,
     show_notification_panel: bool,
@@ -1379,6 +1385,7 @@ impl eframe::App for AmuxApp {
                 self.active_workspace_idx,
                 &self.notifications,
                 &workspace_metadata,
+                &self.theme,
             );
             for action in sidebar_actions {
                 match action {
@@ -1448,7 +1455,21 @@ impl eframe::App for AmuxApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
-                let panel_rect = ui.available_rect_before_wrap();
+                let full_rect = ui.available_rect_before_wrap();
+                // Paint top padding strip with titlebar color.
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_max(
+                        full_rect.min,
+                        egui::pos2(full_rect.max.x, full_rect.min.y + TERMINAL_TOP_PAD),
+                    ),
+                    0.0,
+                    self.theme.titlebar_bg(),
+                );
+                // Shift content area down by the top padding.
+                let panel_rect = egui::Rect::from_min_max(
+                    egui::pos2(full_rect.min.x, full_rect.min.y + TERMINAL_TOP_PAD),
+                    full_rect.max,
+                );
                 self.last_panel_rect = Some(panel_rect);
 
                 // Handle divider dragging
@@ -1509,7 +1530,7 @@ impl eframe::App for AmuxApp {
                     let dividers = self.active_workspace().tree.dividers(panel_rect);
                     let painter = ui.painter();
                     for div in &dividers {
-                        painter.rect_filled(div.rect, 0.0, egui::Color32::from_gray(60));
+                        painter.rect_filled(div.rect, 0.0, self.theme.chrome.divider);
                     }
 
                     // Render each pane (with its own tab bar)
@@ -1620,12 +1641,12 @@ impl AmuxApp {
                 rect.max,
             ),
             0.0,
-            TERMINAL_BG,
+            self.theme.terminal_bg(),
         );
 
         {
             let painter = ui.painter();
-            painter.rect_filled(tab_rect, 0.0, egui::Color32::from_gray(35));
+            painter.rect_filled(tab_rect, 0.0, self.theme.tab_bar_bg());
 
             let active_idx = managed.active_surface_idx;
             let tab_font = egui::FontId::proportional(11.0);
@@ -1654,7 +1675,7 @@ impl AmuxApp {
                     .as_deref()
                     .unwrap_or_else(|| surface.pane.title());
                 let label = if raw_title.is_empty() {
-                    format!("tab {}", surface.id)
+                    format!("tab {}", idx + 1)
                 } else if raw_title.chars().count() > 20 {
                     let prefix: String = raw_title.chars().take(17).collect();
                     format!("{prefix}...")
@@ -1676,9 +1697,9 @@ impl AmuxApp {
                 let tab_hovered = hover_pos.is_some_and(|p| this_tab.contains(p));
 
                 // Tab background + border
-                let border_color = egui::Color32::from_gray(55);
+                let border_color = self.theme.chrome.tab_border;
                 if is_active {
-                    painter.rect_filled(this_tab, 0.0, egui::Color32::from_gray(50));
+                    painter.rect_filled(this_tab, 0.0, self.theme.chrome.tab_active_bg);
                     // Active highlight at the top
                     let topline = egui::Rect::from_min_size(
                         egui::pos2(x, tab_rect.min.y),
@@ -1820,11 +1841,7 @@ impl AmuxApp {
                             egui::pos2(drop_x - 1.0, tab_rect.min.y + 2.0),
                             egui::vec2(2.0, TAB_BAR_HEIGHT - 4.0),
                         );
-                        painter.rect_filled(
-                            indicator_rect,
-                            1.0,
-                            egui::Color32::from_rgb(0, 145, 255),
-                        );
+                        painter.rect_filled(indicator_rect, 1.0, self.theme.chrome.accent);
                     }
                 }
             }
@@ -3571,7 +3588,7 @@ impl AmuxApp {
                                 let dot_color = if notif.read {
                                     egui::Color32::from_gray(60)
                                 } else {
-                                    egui::Color32::from_rgb(0, 145, 255)
+                                    self.theme.chrome.accent
                                 };
                                 ui.label(
                                     egui::RichText::new(source_icon).size(10.0).color(dot_color),

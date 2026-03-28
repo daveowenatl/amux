@@ -9,9 +9,6 @@ use crate::{SidebarDragState, SidebarState, SurfaceMetadata, Workspace};
 // Colors (cmux dark mode equivalents)
 // ---------------------------------------------------------------------------
 
-const ACCENT_BLUE: Color32 = Color32::from_rgb(0, 145, 255);
-const SIDEBAR_BG: Color32 = Color32::from_rgba_premultiplied(20, 20, 20, 230);
-const ROW_ACTIVE_BG: Color32 = Color32::from_rgb(0, 145, 255);
 const ROW_HOVER_BG: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
 const TEXT_ACTIVE: Color32 = Color32::WHITE;
 const TEXT_INACTIVE: Color32 = Color32::from_gray(180);
@@ -114,17 +111,19 @@ pub(crate) fn render_sidebar(
     active_workspace_idx: usize,
     notifications: &NotificationStore,
     workspace_metadata: &HashMap<u64, SurfaceMetadata>,
+    theme: &crate::theme::Theme,
 ) -> Vec<SidebarAction> {
     let mut actions = Vec::new();
 
     egui::SidePanel::left("sidebar")
         .resizable(true)
+        .show_separator_line(false)
         .default_width(state.width)
         .min_width(SIDEBAR_MIN_WIDTH)
         .max_width(SIDEBAR_MAX_WIDTH)
         .frame(
             egui::Frame::new()
-                .fill(SIDEBAR_BG)
+                .fill(theme.chrome.sidebar_bg)
                 .inner_margin(egui::Margin::symmetric(ROW_OUTER_H_PAD as i8, 0)),
         )
         .show(ctx, |ui| {
@@ -158,6 +157,7 @@ pub(crate) fn render_sidebar(
                             notifications,
                             state,
                             meta,
+                            theme,
                         );
                         actions.extend(row_actions);
                         row_rects.push(row_rect);
@@ -193,7 +193,8 @@ pub(crate) fn render_sidebar(
                             egui::pos2(indicator_x, drop_y - DROP_INDICATOR_HEIGHT / 2.0),
                             egui::vec2(avail_w, DROP_INDICATOR_HEIGHT),
                         );
-                        ui.painter().rect_filled(indicator_rect, 1.0, ACCENT_BLUE);
+                        ui.painter()
+                            .rect_filled(indicator_rect, 1.0, theme.chrome.accent);
                     }
 
                     ui.add_space(8.0);
@@ -293,6 +294,7 @@ fn render_workspace_row(
     notifications: &NotificationStore,
     state: &mut SidebarState,
     metadata: Option<&SurfaceMetadata>,
+    theme: &crate::theme::Theme,
 ) -> (Vec<SidebarAction>, egui::Rect) {
     let mut actions = Vec::new();
     let pane_ids: Vec<u64> = ws.tree.iter_panes();
@@ -398,7 +400,7 @@ fn render_workspace_row(
     // --- Background ---
     let opacity = if is_being_dragged { 0.6 } else { 1.0 };
     let bg = if is_active {
-        with_opacity(ROW_ACTIVE_BG, opacity)
+        with_opacity(theme.chrome.accent, opacity)
     } else if hovered {
         with_opacity(ROW_HOVER_BG, opacity)
     } else {
@@ -488,7 +490,7 @@ fn render_workspace_row(
         let badge_color = if is_active {
             BADGE_ACTIVE_BG
         } else {
-            ACCENT_BLUE
+            theme.chrome.accent
         };
         ui.painter()
             .circle_filled(badge_center, BADGE_RADIUS, badge_color);
@@ -519,7 +521,7 @@ fn render_workspace_row(
     let status_color = if is_active {
         Color32::WHITE
     } else {
-        ACCENT_BLUE
+        theme.chrome.accent
     };
 
     if let Some(status) = &status {
@@ -662,7 +664,7 @@ fn render_workspace_row(
                 egui::vec2(fill_w, PROGRESS_BAR_HEIGHT),
             );
             ui.painter()
-                .rect_filled(fill_rect, PROGRESS_BAR_HEIGHT / 2.0, ACCENT_BLUE);
+                .rect_filled(fill_rect, PROGRESS_BAR_HEIGHT / 2.0, theme.chrome.accent);
         }
     }
 
