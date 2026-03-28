@@ -1320,10 +1320,8 @@ impl eframe::App for AmuxApp {
             }
         }
 
-        // Drain notification events from all surfaces
-        self.drain_notifications();
-
-        // Handle clicks on system notifications (navigate to workspace/pane)
+        // Handle clicks on system notifications (navigate to workspace/pane).
+        // Process before draining new notifications so focus state is current.
         for action in self.system_notifier.drain_actions() {
             if let Some(idx) = self
                 .workspaces
@@ -1338,6 +1336,9 @@ impl eframe::App for AmuxApp {
                 self.notifications.mark_pane_read(action.pane_id);
             }
         }
+
+        // Drain notification events from all surfaces
+        self.drain_notifications();
 
         // Update dock/taskbar badge with total unread count (only when changed)
         if self.app_config.notifications.dock_badge {
@@ -2729,7 +2730,6 @@ impl AmuxApp {
 
     fn drain_notifications(&mut self) {
         // Collect events first to avoid borrow conflicts
-        let focused = self.focused_pane_id();
         let mut events: Vec<(u64, u64, u64, NotificationEvent)> = Vec::new();
 
         for (&pane_id, managed) in &self.panes {
@@ -2772,49 +2772,69 @@ impl AmuxApp {
                 }
             };
 
-            let source_str = source.as_str();
+            let skip_toast = matches!(source, NotificationSource::Bell);
+            self.deliver_notification(ws_id, pane_id, surface_id, title, body, source, skip_toast);
+        }
+    }
 
-            // Three-tier notification delivery (matching cmux):
-            // 1. App unfocused → system toast + custom command + unread
-            // 2. App focused, different pane → in-app sound + custom command + unread
-            // 3. App focused, same pane → mark read (flash only, no ring)
-            if !self.app_focused {
-                // Tier 1: app is unfocused — always treat as background
-                if self.app_config.notifications.system_notifications
-                    && !matches!(source, NotificationSource::Bell)
-                {
-                    self.system_notifier.send(&title, &body, ws_id, pane_id);
-                }
-                if let Some(cmd) = &self.app_config.notifications.custom_command {
-                    self.system_notifier
-                        .run_custom_command(cmd, &title, &body, source_str);
-                }
-                self.notifications
-                    .push(ws_id, pane_id, surface_id, title, body, source);
-                if self.app_config.notifications.auto_reorder_workspaces {
-                    self.bubble_workspace(ws_id);
-                }
-            } else if pane_id == focused {
-                // Tier 3: app focused, same pane — mark read (flash only)
-                self.notifications
-                    .push_read(ws_id, pane_id, surface_id, title, body, source);
-            } else {
-                // Tier 2: app focused, different pane — in-app sound + command
-                if self.app_config.notifications.sound.play_when_focused {
-                    if let Some(player) = &self.sound_player {
-                        player.play();
-                    }
-                }
-                if let Some(cmd) = &self.app_config.notifications.custom_command {
-                    self.system_notifier
-                        .run_custom_command(cmd, &title, &body, source_str);
-                }
-                self.notifications
-                    .push(ws_id, pane_id, surface_id, title, body, source);
-                if self.app_config.notifications.auto_reorder_workspaces {
-                    self.bubble_workspace(ws_id);
+    /// Three-tier notification delivery (matching cmux):
+    /// 1. App unfocused → system toast + custom command + unread
+    /// 2. App focused, different pane → in-app sound + custom command + unread
+    /// 3. App focused, same pane → mark read (flash only, no ring)
+    ///
+    /// `skip_toast` suppresses the system toast (used for bell notifications).
+    #[allow(clippy::too_many_arguments)]
+    fn deliver_notification(
+        &mut self,
+        ws_id: u64,
+        pane_id: PaneId,
+        surface_id: u64,
+        title: String,
+        body: String,
+        source: NotificationSource,
+        skip_toast: bool,
+    ) -> u64 {
+        let focused = self.focused_pane_id();
+        let source_str = source.as_str();
+
+        if !self.app_focused {
+            // Tier 1: app is unfocused — always treat as background
+            if self.app_config.notifications.system_notifications && !skip_toast {
+                self.system_notifier.send(&title, &body, ws_id, pane_id);
+            }
+            if let Some(cmd) = &self.app_config.notifications.custom_command {
+                self.system_notifier
+                    .run_custom_command(cmd, &title, &body, source_str);
+            }
+            let nid = self
+                .notifications
+                .push(ws_id, pane_id, surface_id, title, body, source);
+            if self.app_config.notifications.auto_reorder_workspaces {
+                self.bubble_workspace(ws_id);
+            }
+            nid
+        } else if pane_id == focused {
+            // Tier 3: app focused, same pane — mark read (flash only)
+            self.notifications
+                .push_read(ws_id, pane_id, surface_id, title, body, source)
+        } else {
+            // Tier 2: app focused, different pane — in-app sound + command
+            if self.app_config.notifications.sound.play_when_focused {
+                if let Some(player) = &self.sound_player {
+                    player.play();
                 }
             }
+            if let Some(cmd) = &self.app_config.notifications.custom_command {
+                self.system_notifier
+                    .run_custom_command(cmd, &title, &body, source_str);
+            }
+            let nid = self
+                .notifications
+                .push(ws_id, pane_id, surface_id, title, body, source);
+            if self.app_config.notifications.auto_reorder_workspaces {
+                self.bubble_workspace(ws_id);
+            }
+            nid
         }
     }
 
@@ -4570,73 +4590,15 @@ impl AmuxApp {
                             .parse::<u64>()
                             .unwrap_or(self.focused_pane_id());
                         let title = params.title.unwrap_or_default();
-                        let focused = self.focused_pane_id();
-
-                        // Apply three-tier delivery (same as drain_notifications)
-                        let nid = if !self.app_focused {
-                            // Tier 1: app unfocused
-                            if self.app_config.notifications.system_notifications {
-                                self.system_notifier
-                                    .send(&title, &params.body, ws_id, pane_id);
-                            }
-                            if let Some(cmd) = &self.app_config.notifications.custom_command {
-                                self.system_notifier.run_custom_command(
-                                    cmd,
-                                    &title,
-                                    &params.body,
-                                    "cli",
-                                );
-                            }
-                            let nid = self.notifications.push(
-                                ws_id,
-                                pane_id,
-                                0,
-                                title,
-                                params.body,
-                                NotificationSource::Cli,
-                            );
-                            if self.app_config.notifications.auto_reorder_workspaces {
-                                self.bubble_workspace(ws_id);
-                            }
-                            nid
-                        } else if pane_id == focused {
-                            // Tier 3: app focused, same pane — mark read
-                            self.notifications.push_read(
-                                ws_id,
-                                pane_id,
-                                0,
-                                title,
-                                params.body,
-                                NotificationSource::Cli,
-                            )
-                        } else {
-                            // Tier 2: app focused, different pane
-                            if self.app_config.notifications.sound.play_when_focused {
-                                if let Some(player) = &self.sound_player {
-                                    player.play();
-                                }
-                            }
-                            if let Some(cmd) = &self.app_config.notifications.custom_command {
-                                self.system_notifier.run_custom_command(
-                                    cmd,
-                                    &title,
-                                    &params.body,
-                                    "cli",
-                                );
-                            }
-                            let nid = self.notifications.push(
-                                ws_id,
-                                pane_id,
-                                0,
-                                title,
-                                params.body,
-                                NotificationSource::Cli,
-                            );
-                            if self.app_config.notifications.auto_reorder_workspaces {
-                                self.bubble_workspace(ws_id);
-                            }
-                            nid
-                        };
+                        let nid = self.deliver_notification(
+                            ws_id,
+                            pane_id,
+                            0,
+                            title,
+                            params.body,
+                            NotificationSource::Cli,
+                            false,
+                        );
                         Response::ok(req.id.clone(), serde_json::json!({"notification_id": nid}))
                     }
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),

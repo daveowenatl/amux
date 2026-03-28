@@ -700,6 +700,21 @@ mod tests {
     }
 
     #[test]
+    fn total_unread_across_panes() {
+        let mut store = NotificationStore::new();
+        store.push(1, 10, 100, "A".into(), "a".into(), NotificationSource::Bell);
+        store.push(1, 10, 101, "B".into(), "b".into(), NotificationSource::Bell);
+        store.push(2, 20, 200, "C".into(), "c".into(), NotificationSource::Cli);
+        assert_eq!(store.total_unread(), 3);
+
+        store.mark_pane_read(10);
+        assert_eq!(store.total_unread(), 1);
+
+        store.remove_pane(20);
+        assert_eq!(store.total_unread(), 0);
+    }
+
+    #[test]
     fn progress_lifecycle() {
         let mut store = NotificationStore::new();
         // set_status creates entry with no progress

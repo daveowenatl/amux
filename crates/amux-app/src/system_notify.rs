@@ -35,13 +35,13 @@ enum WorkerMsg {
 pub struct SystemNotifier {
     action_rx: mpsc::Receiver<NotificationAction>,
     _action_tx: mpsc::Sender<NotificationAction>,
-    worker_tx: mpsc::Sender<WorkerMsg>,
+    worker_tx: mpsc::SyncSender<WorkerMsg>,
 }
 
 impl SystemNotifier {
     pub fn new() -> Self {
         let (action_tx, action_rx) = mpsc::channel();
-        let (worker_tx, worker_rx) = mpsc::channel::<WorkerMsg>();
+        let (worker_tx, worker_rx) = mpsc::sync_channel::<WorkerMsg>(100);
 
         // Single long-lived worker thread for notifications and commands.
         std::thread::Builder::new()
