@@ -694,16 +694,14 @@ fn ensure_claude_wrapper_dir() -> Option<std::path::PathBuf> {
         .map(|existing| existing != wrapper_content)
         .unwrap_or(true);
 
+    if needs_write && std::fs::write(&wrapper_path, wrapper_content).is_err() {
+        return None;
+    }
+    // Make executable (unix)
+    #[cfg(unix)]
     if needs_write {
-        if std::fs::write(&wrapper_path, wrapper_content).is_err() {
-            return None;
-        }
-        // Make executable (unix)
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755));
-        }
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755));
     }
 
     Some(bin_dir)
