@@ -1,6 +1,5 @@
-use std::io::Cursor;
 use std::path::Path;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 /// Action triggered by clicking a system notification.
 pub struct NotificationAction {
@@ -8,54 +7,127 @@ pub struct NotificationAction {
     pub pane_id: u64,
 }
 
+/// Message sent to the background worker thread.
+enum WorkerMsg {
+    ShowNotification {
+        title: String,
+        body: String,
+    },
+    RunCommand {
+        command: String,
+        title: String,
+        body: String,
+        source: String,
+    },
+}
+
 /// Cross-platform system notification sender using `notify-rust`.
 ///
 /// Sends OS-native toast notifications (UNUserNotificationCenter on macOS,
-/// Windows toast notifications on Windows). Notification clicks are routed
-/// back via an mpsc channel as `NotificationAction`s.
+/// Windows toast notifications on Windows). Uses a single background worker
+/// thread to avoid spawning unbounded threads on notification bursts.
+///
+/// Note: click-to-navigate actions are plumbed but not yet produced —
+/// `notify-rust` doesn't expose a cross-platform callback for notification
+/// clicks. The `drain_actions()` / action channel is scaffolding for when
+/// we add platform-specific click handling (or fall back to spawning
+/// `amux focus` as a subprocess).
 pub struct SystemNotifier {
     action_rx: mpsc::Receiver<NotificationAction>,
     _action_tx: mpsc::Sender<NotificationAction>,
+    worker_tx: mpsc::Sender<WorkerMsg>,
 }
 
 impl SystemNotifier {
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel();
+        let (action_tx, action_rx) = mpsc::channel();
+        let (worker_tx, worker_rx) = mpsc::channel::<WorkerMsg>();
+
+        // Single long-lived worker thread for notifications and commands.
+        std::thread::Builder::new()
+            .name("amux-notify-worker".into())
+            .spawn(move || {
+                for msg in worker_rx {
+                    match msg {
+                        WorkerMsg::ShowNotification { title, body } => {
+                            let mut notification = notify_rust::Notification::new();
+                            notification.appname("amux");
+                            if title.is_empty() {
+                                notification.summary("amux");
+                            } else {
+                                notification.summary(&title);
+                            }
+                            if !body.is_empty() {
+                                notification.body(&body);
+                            }
+                            if let Err(e) = notification.show() {
+                                tracing::warn!("Failed to show system notification: {}", e);
+                            }
+                        }
+                        WorkerMsg::RunCommand {
+                            command,
+                            title,
+                            body,
+                            source,
+                        } => {
+                            let shell = if cfg!(target_os = "windows") {
+                                "cmd"
+                            } else {
+                                "sh"
+                            };
+                            let flag = if cfg!(target_os = "windows") {
+                                "/C"
+                            } else {
+                                "-c"
+                            };
+                            match std::process::Command::new(shell)
+                                .arg(flag)
+                                .arg(&command)
+                                .env("AMUX_NOTIFICATION_TITLE", &title)
+                                .env("AMUX_NOTIFICATION_BODY", &body)
+                                .env("AMUX_NOTIFICATION_SOURCE", &source)
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .spawn()
+                            {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    tracing::warn!("Failed to run notification command: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+            })
+            .expect("failed to spawn notification worker thread");
+
         Self {
-            action_rx: rx,
-            _action_tx: tx,
+            action_rx,
+            _action_tx: action_tx,
+            worker_tx,
         }
     }
 
-    /// Send an OS-native notification.
+    /// Send an OS-native notification via the background worker.
     pub fn send(&self, title: &str, body: &str, _workspace_id: u64, _pane_id: u64) {
-        let title = title.to_string();
-        let body = body.to_string();
+        let _ = self.worker_tx.send(WorkerMsg::ShowNotification {
+            title: title.to_string(),
+            body: body.to_string(),
+        });
+    }
 
-        // Spawn in background to avoid blocking the UI thread.
-        std::thread::spawn(move || {
-            let mut notification = notify_rust::Notification::new();
-            notification.appname("amux");
-
-            if title.is_empty() {
-                notification.summary("amux");
-            } else {
-                notification.summary(&title);
-            }
-
-            if !body.is_empty() {
-                notification.body(&body);
-            }
-
-            // On macOS, notify-rust uses UNUserNotificationCenter which
-            // handles permission prompts automatically on first use.
-            if let Err(e) = notification.show() {
-                tracing::warn!("Failed to show system notification: {}", e);
-            }
+    /// Run a custom command on notification via the background worker.
+    pub fn run_custom_command(&self, command: &str, title: &str, body: &str, source: &str) {
+        let _ = self.worker_tx.send(WorkerMsg::RunCommand {
+            command: command.to_string(),
+            title: title.to_string(),
+            body: body.to_string(),
+            source: source.to_string(),
         });
     }
 
     /// Drain any click-to-navigate actions from notification callbacks.
+    /// Currently always empty — click handling is not yet implemented.
     pub fn drain_actions(&self) -> Vec<NotificationAction> {
         self.action_rx.try_iter().collect()
     }
@@ -69,8 +141,8 @@ impl SystemNotifier {
 pub struct SoundPlayer {
     _stream: rodio::OutputStream,
     stream_handle: rodio::OutputStreamHandle,
-    /// Cached bytes of a custom sound file (loaded once).
-    custom_sound: Option<Vec<u8>>,
+    /// Cached bytes of a custom sound file (loaded once, shared via Arc).
+    custom_sound: Option<Arc<[u8]>>,
     /// Current sound mode.
     mode: SoundMode,
 }
@@ -118,7 +190,7 @@ impl SoundPlayer {
             let path = Path::new(sound);
             match std::fs::read(path) {
                 Ok(bytes) => {
-                    self.custom_sound = Some(bytes);
+                    self.custom_sound = Some(bytes.into());
                     self.mode = SoundMode::Custom;
                     tracing::info!("Loaded custom notification sound: {}", path.display());
                 }
@@ -150,8 +222,9 @@ impl SoundPlayer {
             }
             SoundMode::Custom => {
                 if let Some(bytes) = &self.custom_sound {
-                    let cursor = Cursor::new(bytes.clone());
-                    match rodio::Decoder::new(cursor) {
+                    // Arc clone is cheap — just bumps reference count.
+                    let reader = ArcSliceReader::new(Arc::clone(bytes));
+                    match rodio::Decoder::new(reader) {
                         Ok(source) => {
                             if let Err(e) = self
                                 .stream_handle
@@ -170,8 +243,50 @@ impl SoundPlayer {
     }
 }
 
+/// Wrapper around `Arc<[u8]>` that implements `Read` + `Seek` for rodio.
+struct ArcSliceReader {
+    data: Arc<[u8]>,
+    pos: usize,
+}
+
+impl ArcSliceReader {
+    fn new(data: Arc<[u8]>) -> Self {
+        Self { data, pos: 0 }
+    }
+}
+
+impl std::io::Read for ArcSliceReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let remaining = &self.data[self.pos..];
+        let n = remaining.len().min(buf.len());
+        buf[..n].copy_from_slice(&remaining[..n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+impl std::io::Seek for ArcSliceReader {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        let len = self.data.len() as i64;
+        let new_pos = match pos {
+            std::io::SeekFrom::Start(p) => p as i64,
+            std::io::SeekFrom::End(p) => len + p,
+            std::io::SeekFrom::Current(p) => self.pos as i64 + p,
+        };
+        if new_pos < 0 || new_pos > len {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "seek out of bounds",
+            ));
+        }
+        self.pos = new_pos as usize;
+        Ok(self.pos as u64)
+    }
+}
+
 /// Update the dock/taskbar badge with the unread notification count.
-/// On macOS, sets the dock tile badge label. On Windows, flashes the taskbar.
+/// On macOS, sets the dock tile badge label. On Windows, this is currently
+/// a no-op — taskbar badge support requires HWND access not yet available.
 /// Pass 0 to clear the badge.
 pub fn set_badge_count(count: usize) {
     #[cfg(target_os = "macos")]
@@ -196,55 +311,14 @@ pub fn set_badge_count(count: usize) {
 
     #[cfg(target_os = "windows")]
     {
-        // Windows: flash the taskbar button when there are unread notifications.
-        // A full count overlay via ITaskbarList3::SetOverlayIcon is more complex
-        // and can be added later.
-        if count > 0 {
-            // FlashWindowEx would go here, but requires the HWND.
-            // For now, this is a placeholder — eframe doesn't expose HWND directly.
-            let _ = count;
-        }
+        // Windows taskbar badge is not yet supported — requires HWND access
+        // which eframe doesn't expose directly. FlashWindowEx or
+        // ITaskbarList3::SetOverlayIcon can be added once we have a handle.
+        let _ = count;
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = count;
     }
-}
-
-/// Run a custom command on notification, with env vars set.
-pub fn run_custom_command(command: &str, title: &str, body: &str, source: &str) {
-    let command = command.to_string();
-    let title = title.to_string();
-    let body = body.to_string();
-    let source = source.to_string();
-
-    std::thread::spawn(move || {
-        let shell = if cfg!(target_os = "windows") {
-            "cmd"
-        } else {
-            "sh"
-        };
-        let flag = if cfg!(target_os = "windows") {
-            "/C"
-        } else {
-            "-c"
-        };
-
-        match std::process::Command::new(shell)
-            .arg(flag)
-            .arg(&command)
-            .env("AMUX_NOTIFICATION_TITLE", &title)
-            .env("AMUX_NOTIFICATION_BODY", &body)
-            .env("AMUX_NOTIFICATION_SOURCE", &source)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!("Failed to run notification command: {}", e);
-            }
-        }
-    });
 }

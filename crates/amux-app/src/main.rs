@@ -337,6 +337,7 @@ fn main() -> anyhow::Result<()> {
                 app_focused: true,
                 app_config,
                 system_notifier: system_notify::SystemNotifier::new(),
+                last_badge_count: 0,
                 sound_player,
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
@@ -1022,6 +1023,8 @@ struct AmuxApp {
     app_config: AppConfig,
     /// Cross-platform system notification sender.
     system_notifier: system_notify::SystemNotifier,
+    /// Cached badge count to avoid redundant dock badge updates every frame.
+    last_badge_count: usize,
     /// Notification sound player (None if no audio device).
     sound_player: Option<system_notify::SoundPlayer>,
     #[cfg(feature = "gpu-renderer")]
@@ -1336,9 +1339,13 @@ impl eframe::App for AmuxApp {
             }
         }
 
-        // Update dock/taskbar badge with total unread count
+        // Update dock/taskbar badge with total unread count (only when changed)
         if self.app_config.notifications.dock_badge {
-            system_notify::set_badge_count(self.notifications.total_unread());
+            let count = self.notifications.total_unread();
+            if count != self.last_badge_count {
+                self.last_badge_count = count;
+                system_notify::set_badge_count(count);
+            }
         }
 
         // Process IPC commands
@@ -2784,7 +2791,8 @@ impl AmuxApp {
                         self.system_notifier.send(&title, &body, ws_id, pane_id);
                     }
                     if let Some(cmd) = &self.app_config.notifications.custom_command {
-                        system_notify::run_custom_command(cmd, &title, &body, source_str);
+                        self.system_notifier
+                            .run_custom_command(cmd, &title, &body, source_str);
                     }
                 } else {
                     // Tier 2: app focused but different pane — in-app sound + custom command
@@ -2794,7 +2802,8 @@ impl AmuxApp {
                         }
                     }
                     if let Some(cmd) = &self.app_config.notifications.custom_command {
-                        system_notify::run_custom_command(cmd, &title, &body, source_str);
+                        self.system_notifier
+                            .run_custom_command(cmd, &title, &body, source_str);
                     }
                 }
 
@@ -4566,7 +4575,12 @@ impl AmuxApp {
                                 .send(&title, &params.body, ws_id, pane_id);
                         }
                         if let Some(cmd) = &self.app_config.notifications.custom_command {
-                            system_notify::run_custom_command(cmd, &title, &params.body, "cli");
+                            self.system_notifier.run_custom_command(
+                                cmd,
+                                &title,
+                                &params.body,
+                                "cli",
+                            );
                         }
                         let nid = self.notifications.push(
                             ws_id,
