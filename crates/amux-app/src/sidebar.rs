@@ -400,7 +400,7 @@ fn render_workspace_row(
     // --- Background ---
     let opacity = if is_being_dragged { 0.6 } else { 1.0 };
     let bg = if is_active {
-        with_opacity(theme.chrome.accent, opacity)
+        with_opacity(theme.chrome.sidebar_active_bg, opacity)
     } else if hovered {
         with_opacity(ROW_HOVER_BG, opacity)
     } else {

@@ -1631,7 +1631,7 @@ impl AmuxApp {
         let tab_rect =
             egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), TAB_BAR_HEIGHT));
         let content_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.min.x, rect.min.y + TAB_BAR_HEIGHT),
+            egui::pos2(rect.min.x, rect.min.y + TAB_BAR_HEIGHT + 1.0),
             egui::pos2(rect.max.x, rect.max.y - TERMINAL_BOTTOM_PAD),
         );
         // Paint bottom padding strip with terminal background color.
@@ -1708,7 +1708,7 @@ impl AmuxApp {
                         egui::pos2(x, tab_rect.min.y),
                         egui::vec2(tab_w, 2.0),
                     );
-                    painter.rect_filled(topline, 0.0, egui::Color32::from_rgb(80, 140, 220));
+                    painter.rect_filled(topline, 0.0, self.theme.chrome.accent);
                 }
                 // 1px border around each tab
                 painter.rect_stroke(

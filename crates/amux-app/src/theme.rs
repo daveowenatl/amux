@@ -16,6 +16,8 @@ pub(crate) struct TerminalColors {
 #[derive(Debug, Clone)]
 pub(crate) struct ChromeColors {
     pub sidebar_bg: Color32,
+    /// Active/selected row background in the sidebar.
+    pub sidebar_active_bg: Color32,
     /// Tab bar background. Falls back to terminal background when `None`.
     pub tab_bar_bg: Option<Color32>,
     /// Title bar / top padding background. Falls back to `tab_bar_bg` when `None`.
@@ -74,6 +76,7 @@ impl Default for Theme {
             },
             chrome: ChromeColors {
                 sidebar_bg: Color32::from_gray(35),
+                sidebar_active_bg: Color32::from_rgb(24, 64, 120),
                 tab_bar_bg: None,  // falls back to terminal background
                 titlebar_bg: None, // falls back to tab bar background
                 tab_active_bg: Color32::from_gray(50),
