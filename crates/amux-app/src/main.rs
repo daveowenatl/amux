@@ -188,9 +188,13 @@ fn validate_font_size(size: f32) -> f32 {
     }
 }
 
-/// Custom font family for semibold/bold UI text (sidebar titles, active tabs).
+/// Cached font family for semibold/bold UI text (sidebar titles, active tabs).
+/// Uses a static Arc<str> to avoid allocating on every call.
 pub(crate) fn bold_font(size: f32) -> egui::FontId {
-    egui::FontId::new(size, egui::FontFamily::Name("Bold".into()))
+    use std::sync::LazyLock;
+    static BOLD_FAMILY: LazyLock<egui::FontFamily> =
+        LazyLock::new(|| egui::FontFamily::Name("Bold".into()));
+    egui::FontId::new(size, BOLD_FAMILY.clone())
 }
 
 /// Load system fonts as fallbacks to egui's font families.
@@ -272,8 +276,9 @@ fn install_system_font_fallback(ctx: &egui::Context) {
     // Bold system font candidates: (path, name)
     // Loaded separately so they can be added to the "Bold" family.
     let bold_candidates: &[(&str, &str)] = if cfg!(target_os = "macos") {
-        // macOS SFNS.ttf is a variable font — egui uses default (regular) weight,
-        // so we don't have a separate bold file. Bundled Plex Sans SemiBold covers this.
+        // macOS provides bold weights / variable font axes for SF Pro, but we
+        // intentionally avoid hard-coding those paths or relying on axis selection.
+        // Bundled Plex Sans SemiBold is used instead for bold UI text.
         &[]
     } else if cfg!(target_os = "windows") {
         &[("C:\\Windows\\Fonts\\segoeuib.ttf", "segoe_ui_bold")]
