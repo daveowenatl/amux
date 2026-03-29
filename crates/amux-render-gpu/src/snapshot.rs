@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use wezterm_term::color::{ColorAttribute, ColorPalette, SrgbaTuple};
+use amux_term::color::{resolve_color, srgba_to_f32};
+use wezterm_term::color::{ColorPalette, SrgbaTuple};
 use wezterm_term::image::{ImageData, ImageDataType};
 use wezterm_term::CursorPosition;
 
@@ -308,30 +309,6 @@ fn decode_images(seen: HashMap<[u8; 32], Arc<ImageData>>) -> Vec<DecodedImage> {
         }
     }
     result
-}
-
-fn resolve_color(
-    color: &ColorAttribute,
-    palette: &ColorPalette,
-    is_fg: bool,
-    reverse: bool,
-) -> SrgbaTuple {
-    let effective_is_fg = if reverse { !is_fg } else { is_fg };
-    if effective_is_fg {
-        palette.resolve_fg(*color)
-    } else {
-        palette.resolve_bg(*color)
-    }
-}
-
-/// Convert wezterm-term color tuple to [f32; 4].
-///
-/// Colors are kept in sRGB space here. The GPU callback converts to linear
-/// only when the render target uses an sRGB format (which applies hardware
-/// linear→sRGB on store). For non-sRGB targets (e.g., Bgra8Unorm on macOS),
-/// sRGB values are passed through directly.
-fn srgba_to_f32(c: SrgbaTuple) -> [f32; 4] {
-    [c.0, c.1, c.2, c.3]
 }
 
 /// Dim a color by multiplying RGB channels toward black.

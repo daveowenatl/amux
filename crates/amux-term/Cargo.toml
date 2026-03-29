@@ -10,6 +10,7 @@ wezterm-term = { workspace = true }
 portable-pty = { workspace = true }
 winit = { workspace = true }
 url = { workspace = true }
+cosmic-text = { workspace = true }
 tracing = { workspace = true }
 anyhow = "1"
 

@@ -5,8 +5,7 @@ mod pipeline;
 pub mod snapshot;
 
 use amux_term::font::{self, FontConfig};
-use cosmic_text::fontdb::Family;
-use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};
+use cosmic_text::{Metrics, SwashCache};
 
 use atlas::GlyphAtlas;
 use callback::{PhysRect, TerminalGpuResources, TerminalPaintCallback};
@@ -52,55 +51,7 @@ impl GpuRenderer {
             ..Default::default()
         });
 
-        let t0 = std::time::Instant::now();
-        let mut font_system = FontSystem::new();
-        tracing::info!(
-            "FontSystem::new() loaded {} fonts in {:.0?}",
-            font_system.db().len(),
-            t0.elapsed()
-        );
-
-        // Load bundled IBM Plex Mono (all weights/styles) so they're always
-        // available as our default. Italic faces are needed because cosmic-text
-        // 0.12 does not synthesize faux italic.
-        font_system
-            .db_mut()
-            .load_font_data(font::MONO_REGULAR.to_vec());
-        font_system
-            .db_mut()
-            .load_font_data(font::MONO_BOLD.to_vec());
-        font_system
-            .db_mut()
-            .load_font_data(font::MONO_ITALIC.to_vec());
-        font_system
-            .db_mut()
-            .load_font_data(font::MONO_BOLD_ITALIC.to_vec());
-
-        // Default to the bundled IBM Plex Mono for Family::Monospace resolution.
-        font_system
-            .db_mut()
-            .set_monospace_family(font::DEFAULT_FONT_FAMILY);
-
-        // Override with the user-configured family if it's available and differs
-        // from the default.
-        let family = &font_config.family;
-        if family != font::DEFAULT_FONT_FAMILY {
-            let has_family = font_system.db().faces().any(|f| {
-                f.families
-                    .iter()
-                    .any(|(name, _)| name.eq_ignore_ascii_case(family))
-            });
-            if has_family {
-                font_system.db_mut().set_monospace_family(family);
-            } else {
-                tracing::warn!(
-                    "Font family '{}' not found, falling back to {}",
-                    family,
-                    font::DEFAULT_FONT_FAMILY,
-                );
-            }
-        }
-
+        let mut font_system = font::create_font_system(font_config);
         let swash_cache = SwashCache::new();
 
         let font_size = font_config.size;
@@ -108,7 +59,7 @@ impl GpuRenderer {
         let metrics = Metrics::new(font_size, line_height);
         // Ceil cell width to an integer pixel to prevent hairline gaps between
         // adjacent cells caused by fractional coordinates accumulating rounding errors.
-        let cell_width = measure_cell_width(&mut font_system, metrics).ceil();
+        let cell_width = font::measure_cell_width(&mut font_system, metrics).ceil();
         let cell_height = line_height;
 
         // Register resources in egui's callback_resources.
@@ -191,7 +142,7 @@ impl GpuRenderer {
             .callback_resources
             .get_mut::<TerminalGpuResources>()
         {
-            let cell_width = measure_cell_width(&mut r.font_system, metrics).ceil();
+            let cell_width = font::measure_cell_width(&mut r.font_system, metrics).ceil();
             r.metrics = metrics;
             // Clear all pane render states to force full rebuild with new metrics.
             r.pane_states.clear();
@@ -218,30 +169,4 @@ impl GpuRenderer {
             r.evict_unused_images();
         }
     }
-}
-
-/// Measure monospace cell width by laying out "M" and reading the advance.
-/// Uses `Family::Monospace` which resolves to whatever was set via
-/// `set_monospace_family()` (the user's configured font or system default).
-fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics) -> f32 {
-    let mut buffer = Buffer::new_empty(metrics);
-    {
-        let mut borrowed = buffer.borrow_with(font_system);
-        borrowed.set_size(Some(200.0), Some(metrics.line_height));
-        borrowed.set_text(
-            "M",
-            Attrs::new().family(Family::Monospace),
-            Shaping::Advanced,
-        );
-        borrowed.shape_until_scroll(true);
-    }
-
-    for run in buffer.layout_runs() {
-        if let Some(glyph) = run.glyphs.iter().next() {
-            return glyph.w;
-        }
-    }
-
-    // Fallback: estimate from font size
-    metrics.font_size * 0.6
 }
