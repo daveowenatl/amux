@@ -1231,7 +1231,18 @@ impl AmuxApp {
                                     .map(|p| p.to_string_lossy().to_string())
                                     .or_else(|| sf.pane.child_pid().and_then(get_cwd_from_pid))
                             });
-                            let scrollback = sf.pane.read_scrollback_text(4096);
+                            let raw_scrollback = sf
+                                .pane
+                                .read_scrollback_text(amux_session::MAX_SCROLLBACK_LINES);
+                            let truncated = amux_session::truncate_scrollback(
+                                &raw_scrollback,
+                                amux_session::MAX_SCROLLBACK_BYTES,
+                            );
+                            let scrollback = if truncated.len() == raw_scrollback.len() {
+                                raw_scrollback
+                            } else {
+                                truncated.to_string()
+                            };
                             let (cols, rows) = sf.pane.dimensions();
                             amux_session::SavedSurface {
                                 id: sf.id,
