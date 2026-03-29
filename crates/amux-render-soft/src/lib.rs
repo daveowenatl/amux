@@ -22,7 +22,6 @@ pub struct SoftRenderer {
     #[allow(dead_code)]
     font_size: f32,
     metrics: Metrics,
-    font_family: String,
 }
 
 #[derive(Clone)]
@@ -46,9 +45,19 @@ impl SoftRenderer {
             t0.elapsed()
         );
 
-        // Set our bundled font as the monospace default so Family::Monospace
-        // resolves to IBM Plex Mono first, with system fonts as fallback.
-        font_system.db_mut().set_monospace_family("IBM Plex Mono");
+        // Check if the configured font family exists in the system font database.
+        let has_family = font_system
+            .db()
+            .faces()
+            .any(|f| f.families.iter().any(|(name, _)| name == font_family));
+        if has_family {
+            font_system.db_mut().set_monospace_family(font_family);
+        } else {
+            tracing::warn!(
+                "Font family '{}' not found, using system default monospace",
+                font_family
+            );
+        }
 
         let swash_cache = SwashCache::new();
 
@@ -56,7 +65,7 @@ impl SoftRenderer {
         let line_height = (font_size * 1.3).ceil();
         let metrics = Metrics::new(font_size, line_height);
 
-        let cell_width = measure_cell_width(&mut font_system, metrics, font_family).ceil();
+        let cell_width = measure_cell_width(&mut font_system, metrics).ceil();
         let cell_height = line_height;
 
         Self {
@@ -67,7 +76,6 @@ impl SoftRenderer {
             cell_height,
             font_size,
             metrics,
-            font_family: font_family.to_owned(),
         }
     }
 
@@ -196,7 +204,7 @@ impl SoftRenderer {
             cosmic_text::Style::Normal
         };
         let attrs = Attrs::new()
-            .family(Family::Name(&self.font_family))
+            .family(Family::Monospace)
             .weight(weight)
             .style(style);
 
@@ -335,14 +343,14 @@ impl SoftRenderer {
 }
 
 /// Measure monospace cell width by laying out "M" and reading the advance.
-fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics, family: &str) -> f32 {
+fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics) -> f32 {
     let mut buffer = Buffer::new_empty(metrics);
     {
         let mut borrowed = buffer.borrow_with(font_system);
         borrowed.set_size(Some(200.0), Some(metrics.line_height));
         borrowed.set_text(
             "M",
-            Attrs::new().family(Family::Name(family)),
+            Attrs::new().family(Family::Monospace),
             Shaping::Advanced,
         );
         borrowed.shape_until_scroll(true);

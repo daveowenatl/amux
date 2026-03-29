@@ -59,19 +59,32 @@ impl GpuRenderer {
             t0.elapsed()
         );
 
-        // Set our bundled font as the monospace default so Family::Monospace
-        // resolves to IBM Plex Mono first, with system fonts as fallback.
-        font_system.db_mut().set_monospace_family("IBM Plex Mono");
+        // Check if the configured font family exists in the system font database.
+        // If found, set it as the monospace default. Otherwise fall back to the
+        // system's default monospace font.
+        let has_family = font_system
+            .db()
+            .faces()
+            .any(|f| f.families.iter().any(|(name, _)| name == font_family));
+        if has_family {
+            font_system.db_mut().set_monospace_family(font_family);
+        } else {
+            tracing::warn!(
+                "Font family '{}' not found, using system default monospace",
+                font_family
+            );
+        }
 
         let swash_cache = SwashCache::new();
 
         // Measure cell dimensions via cosmic-text (same approach as amux-render-soft).
-        let font_family = font_family.to_owned();
+        // Use Family::Monospace so cosmic-text resolves to the best available font
+        // (either the user's configured family or the system default).
         let line_height = (font_size * 1.3).ceil();
         let metrics = Metrics::new(font_size, line_height);
         // Ceil cell width to an integer pixel to prevent hairline gaps between
         // adjacent cells caused by fractional coordinates accumulating rounding errors.
-        let cell_width = measure_cell_width(&mut font_system, metrics, &font_family).ceil();
+        let cell_width = measure_cell_width(&mut font_system, metrics).ceil();
         let cell_height = line_height;
 
         // Register resources in egui's callback_resources.
@@ -93,7 +106,6 @@ impl GpuRenderer {
                 image_cache: std::collections::HashMap::new(),
                 shape_cache: std::collections::HashMap::new(),
                 image_sampler,
-                font_family: font_family.clone(),
             });
 
         Self {
@@ -155,7 +167,7 @@ impl GpuRenderer {
             .callback_resources
             .get_mut::<TerminalGpuResources>()
         {
-            let cell_width = measure_cell_width(&mut r.font_system, metrics, &r.font_family).ceil();
+            let cell_width = measure_cell_width(&mut r.font_system, metrics).ceil();
             r.metrics = metrics;
             // Clear all pane render states to force full rebuild with new metrics.
             r.pane_states.clear();
@@ -185,14 +197,16 @@ impl GpuRenderer {
 }
 
 /// Measure monospace cell width by laying out "M" and reading the advance.
-fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics, family: &str) -> f32 {
+/// Uses `Family::Monospace` which resolves to whatever was set via
+/// `set_monospace_family()` (the user's configured font or system default).
+fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics) -> f32 {
     let mut buffer = Buffer::new_empty(metrics);
     {
         let mut borrowed = buffer.borrow_with(font_system);
         borrowed.set_size(Some(200.0), Some(metrics.line_height));
         borrowed.set_text(
             "M",
-            Attrs::new().family(Family::Name(family)),
+            Attrs::new().family(Family::Monospace),
             Shaping::Advanced,
         );
         borrowed.shape_until_scroll(true);
