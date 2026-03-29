@@ -309,9 +309,32 @@ fn render_workspace_row(
     let has_git_or_cwd = metadata.is_some_and(|m| m.git_branch.is_some() || m.cwd.is_some());
     let has_pr = metadata.is_some_and(|m| m.pr_number.is_some());
 
+    // Compute title text early so we can measure if it needs two lines.
+    let title_font = egui::FontId::proportional(TITLE_FONT_SIZE);
+    let display_title = if let Some(task) = status.as_ref().and_then(|s| s.task.as_ref()) {
+        format!("\u{2731} {task}")
+    } else if let Some(st) = metadata.and_then(|m| m.surface_title.as_ref()) {
+        st.clone()
+    } else {
+        ws.title.clone()
+    };
+    let content_left_est = if has_color {
+        ROW_H_PAD + COLOR_CAPSULE_WIDTH + 4.0
+    } else {
+        ROW_H_PAD
+    };
+    let right_reserve_est = BADGE_RADIUS * 2.0 + 4.0;
+    let max_title_w_est = ui.available_width() - content_left_est - ROW_H_PAD - right_reserve_est;
+    let title_text_w = ui
+        .fonts(|f| f.layout_no_wrap(display_title.clone(), title_font.clone(), Color32::WHITE))
+        .size()
+        .x;
+    let title_needs_wrap = title_text_w > max_title_w_est;
+
     // Dynamic row height
     let title_line_h = TITLE_FONT_SIZE + 2.0;
-    let mut row_h = ROW_V_PAD * 2.0 + title_line_h;
+    let title_lines = if title_needs_wrap { 2.0 } else { 1.0 };
+    let mut row_h = ROW_V_PAD * 2.0 + title_line_h * title_lines;
     if has_agent_message {
         row_h += METADATA_LINE_HEIGHT + 2.0;
     }
@@ -442,24 +465,33 @@ fn render_workspace_row(
 
     {
         let title_pos = rect.min + egui::vec2(content_left, ROW_V_PAD);
-        let title_font = egui::FontId::proportional(TITLE_FONT_SIZE);
-        // Show agent task as title if available, with star prefix like cmux.
-        // Fall back to surface title (OSC 0/2), then workspace title.
-        let display_title = if let Some(task) = status.as_ref().and_then(|s| s.task.as_ref()) {
-            format!("\u{2731} {task}")
-        } else if let Some(st) = metadata.and_then(|m| m.surface_title.as_ref()) {
-            st.clone()
+        if title_needs_wrap {
+            // Wrap to two lines with ellipsis on overflow.
+            let mut job = egui::text::LayoutJob::single_section(
+                display_title.clone(),
+                egui::TextFormat {
+                    font_id: title_font.clone(),
+                    color: title_color,
+                    ..Default::default()
+                },
+            );
+            job.wrap = egui::text::TextWrapping {
+                max_width: max_title_w,
+                max_rows: 2,
+                break_anywhere: false,
+                overflow_character: Some('\u{2026}'),
+            };
+            let galley = ui.fonts(|f| f.layout_job(job));
+            ui.painter().galley(title_pos, galley, title_color);
         } else {
-            ws.title.clone()
-        };
-        let truncated_title = truncate_text(ui, &display_title, &title_font, max_title_w);
-        ui.painter().text(
-            title_pos,
-            egui::Align2::LEFT_TOP,
-            &truncated_title,
-            title_font,
-            title_color,
-        );
+            ui.painter().text(
+                title_pos,
+                egui::Align2::LEFT_TOP,
+                &display_title,
+                title_font.clone(),
+                title_color,
+            );
+        }
     }
 
     // --- Close button on hover (replaces badge) or badge/count ---
@@ -513,7 +545,7 @@ fn render_workspace_row(
     }
 
     // --- Status indicator (icon + text, matching cmux) ---
-    let mut content_bottom = rect.min.y + ROW_V_PAD + title_line_h;
+    let mut content_bottom = rect.min.y + ROW_V_PAD + title_line_h * title_lines;
 
     // Metadata text color: light grey
     let meta_color = Color32::from_gray(190);

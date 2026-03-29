@@ -66,8 +66,9 @@ fn get_cwd_from_pid(pid: u32) -> Option<String> {
 const DEFAULT_FONT_SIZE: f32 = 14.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
 const TAB_BAR_HEIGHT: f32 = 24.0;
-/// Visual padding above the tab bar, equal to one tab bar height.
-const TERMINAL_TOP_PAD: f32 = TAB_BAR_HEIGHT;
+/// Visual padding above the tab bar. On macOS with fullSizeContentView,
+/// this covers the native title bar area where traffic light buttons sit.
+const TERMINAL_TOP_PAD: f32 = 28.0;
 /// Visual padding below the terminal grid (does not reduce PTY rows).
 /// Painted with terminal background color so it blends with the terminal.
 const TERMINAL_BOTTOM_PAD: f32 = 4.0;
@@ -184,27 +185,43 @@ fn install_system_font_fallback(ctx: &egui::Context) {
 
     // Platform-specific font candidates: (path, name, is_symbol_font)
     // We try to load a monospace font + a symbols font for maximum coverage.
-    let candidates: &[(&str, &str, bool)] = if cfg!(target_os = "macos") {
+    // (path, name, is_symbol_font, is_proportional)
+    let candidates: &[(&str, &str, bool, bool)] = if cfg!(target_os = "macos") {
         &[
+            // SF Pro (system font) for UI chrome text
+            ("/System/Library/Fonts/SFNS.ttf", "sf_pro", false, true),
             // SF Mono: single .ttf with good Unicode coverage
-            ("/System/Library/Fonts/SFNSMono.ttf", "sf_mono", false),
+            (
+                "/System/Library/Fonts/SFNSMono.ttf",
+                "sf_mono",
+                false,
+                false,
+            ),
             // Apple Symbols: broad Unicode symbol coverage
             (
                 "/System/Library/Fonts/Apple Symbols.ttf",
                 "apple_symbols",
                 true,
+                false,
             ),
             // Supplemental Andale Mono as another option
             (
                 "/System/Library/Fonts/Supplemental/Andale Mono.ttf",
                 "andale_mono",
                 false,
+                false,
             ),
         ]
     } else if cfg!(target_os = "windows") {
         &[
-            ("C:\\Windows\\Fonts\\consola.ttf", "consolas", false),
-            ("C:\\Windows\\Fonts\\segmdl2.ttf", "segoe_symbols", true),
+            ("C:\\Windows\\Fonts\\segoeui.ttf", "segoe_ui", false, true),
+            ("C:\\Windows\\Fonts\\consola.ttf", "consolas", false, false),
+            (
+                "C:\\Windows\\Fonts\\segmdl2.ttf",
+                "segoe_symbols",
+                true,
+                false,
+            ),
         ]
     } else {
         &[
@@ -212,16 +229,21 @@ fn install_system_font_fallback(ctx: &egui::Context) {
                 "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
                 "dejavu_mono",
                 false,
+                false,
             ),
             (
                 "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
                 "dejavu_mono",
                 false,
+                false,
             ),
         ]
     };
 
-    for &(path, name, _is_symbol) in candidates {
+    let mut proportional_fonts = Vec::new();
+    let mut mono_fonts = Vec::new();
+
+    for &(path, name, _is_symbol, is_proportional) in candidates {
         if fonts.font_data.contains_key(name) {
             continue;
         }
@@ -230,6 +252,11 @@ fn install_system_font_fallback(ctx: &egui::Context) {
                 .font_data
                 .insert(name.to_owned(), egui::FontData::from_owned(data).into());
             loaded.push(name);
+            if is_proportional {
+                proportional_fonts.push(name);
+            } else {
+                mono_fonts.push(name);
+            }
         }
     }
 
@@ -238,12 +265,19 @@ fn install_system_font_fallback(ctx: &egui::Context) {
         return;
     }
 
-    // Add all loaded fonts as fallbacks to both families
-    for family_key in [egui::FontFamily::Monospace, egui::FontFamily::Proportional] {
-        if let Some(family) = fonts.families.get_mut(&family_key) {
-            for name in &loaded {
-                family.push((*name).to_owned());
-            }
+    // Proportional fonts: put system UI font first, then mono as fallback
+    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        for name in &proportional_fonts {
+            family.insert(0, (*name).to_owned());
+        }
+        for name in &mono_fonts {
+            family.push((*name).to_owned());
+        }
+    }
+    // Monospace fonts: add all as fallbacks
+    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+        for name in &loaded {
+            family.push((*name).to_owned());
         }
     }
 
@@ -268,8 +302,7 @@ fn main() -> anyhow::Result<()> {
 
     let theme = theme::Theme::default();
     let mut term_config = AmuxTermConfig::default();
-    term_config.color_palette.background = theme.terminal_bg_srgba();
-    term_config.color_palette.foreground = theme.terminal_fg_srgba();
+    theme.apply_to_palette(&mut term_config.color_palette);
     let config = Arc::new(term_config);
 
     // Try to restore a previous session
@@ -291,10 +324,27 @@ fn main() -> anyhow::Result<()> {
         fresh_startup(&ipc_addr, &config)?
     };
 
+    // Force dark appearance on macOS so the title bar matches the app's dark chrome.
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSAppearance, NSApplication};
+        use objc2_foundation::{MainThreadMarker, NSString};
+
+        if let Some(mtm) = MainThreadMarker::new() {
+            let app = NSApplication::sharedApplication(mtm);
+            let dark =
+                NSAppearance::appearanceNamed(&NSString::from_str("NSAppearanceNameDarkAqua"));
+            app.setAppearance(dark.as_deref());
+        }
+    }
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1000.0, 600.0])
-            .with_title("amux"),
+            .with_title("amux")
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false),
         ..Default::default()
     };
 
@@ -305,6 +355,14 @@ fn main() -> anyhow::Result<()> {
         Box::new(move |_cc| {
             // Add system monospace font as fallback for braille/symbol coverage
             install_system_font_fallback(&_cc.egui_ctx);
+
+            // Hide the panel resize handle entirely (cursor still changes on hover).
+            _cc.egui_ctx.style_mut(|style| {
+                style.visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::TRANSPARENT;
+                style.visuals.widgets.inactive.fg_stroke.color = egui::Color32::TRANSPARENT;
+                style.visuals.widgets.hovered.fg_stroke.color = egui::Color32::TRANSPARENT;
+                style.visuals.widgets.active.fg_stroke.color = egui::Color32::TRANSPARENT;
+            });
 
             #[cfg(feature = "gpu-renderer")]
             let gpu_renderer = _cc.wgpu_render_state.as_ref().map(|rs| {
@@ -1678,7 +1736,7 @@ impl AmuxApp {
                     .as_deref()
                     .unwrap_or_else(|| surface.pane.title());
                 let label = if raw_title.is_empty() {
-                    format!("tab {}", idx + 1)
+                    format!("tab {}", surface.id + 1)
                 } else if raw_title.chars().count() > 20 {
                     let prefix: String = raw_title.chars().take(17).collect();
                     format!("{prefix}...")
