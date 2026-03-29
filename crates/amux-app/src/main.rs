@@ -421,6 +421,7 @@ fn main() -> anyhow::Result<()> {
                 last_badge_count: 0,
                 sound_player,
                 menu,
+                #[cfg(target_os = "windows")]
                 menu_attached: false,
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
@@ -1113,7 +1114,7 @@ struct AmuxApp {
     #[allow(dead_code)]
     menu: muda::Menu,
     /// Whether the menu has been attached to the window (Windows only).
-    #[allow(dead_code)]
+    #[cfg(target_os = "windows")]
     menu_attached: bool,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
@@ -1397,8 +1398,11 @@ impl eframe::App for AmuxApp {
         // Attach native menu bar to the window (Windows: per-HWND).
         #[cfg(target_os = "windows")]
         if !self.menu_attached {
-            menu_bar::attach_to_window(&self.menu, _frame);
-            self.menu_attached = true;
+            if menu_bar::attach_to_window(&self.menu, _frame) {
+                self.menu_attached = true;
+            } else {
+                tracing::debug!("Native menu bar not yet attached; will retry next frame");
+            }
         }
 
         self.selection_changed = false;

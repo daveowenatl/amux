@@ -1,13 +1,17 @@
-use muda::accelerator::Accelerator;
 /// Cross-platform native menu bar using `muda`.
 ///
 /// macOS: top-of-screen system menu bar.
 /// Windows: per-window native Win32 menu bar.
-/// Linux: GTK menu bar (if available).
+/// Linux: GTK menu bar (requires GTK window access — not yet wired up).
 ///
 /// Menu item clicks are delivered via `muda::MenuEvent::receiver()`, drained
 /// each frame in the egui update loop.
-use muda::accelerator::{Code, Modifiers};
+///
+/// Accelerators registered here use `CMD_OR_CTRL` (Cmd on macOS, Ctrl on
+/// Windows/Linux). On both platforms the system menu bar consumes the key
+/// event before it reaches the egui event loop, so the duplicate shortcut
+/// handlers in `handle_shortcuts()` will not double-fire.
+use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{AboutMetadata, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 
 /// Actions that can be triggered from the native menu bar.
@@ -40,7 +44,10 @@ struct MenuItems {
 static MENU_ITEMS: std::sync::OnceLock<MenuItems> = std::sync::OnceLock::new();
 
 /// Platform modifier: Cmd on macOS, Ctrl on Windows/Linux.
+#[cfg(target_os = "macos")]
 const CMD: Modifiers = Modifiers::SUPER;
+#[cfg(not(target_os = "macos"))]
+const CMD: Modifiers = Modifiers::CONTROL;
 
 fn accel(mods: Modifiers, code: Code) -> Option<Accelerator> {
     Some(Accelerator::new(Some(mods), code))
@@ -64,7 +71,7 @@ pub(crate) fn build() -> Menu {
     let zoom_reset = MenuItem::new("Actual Size", true, accel(CMD, Code::Digit0));
 
     // Store IDs for event matching
-    MENU_ITEMS
+    if MENU_ITEMS
         .set(MenuItems {
             new_workspace: new_workspace.id().clone(),
             new_tab: new_tab.id().clone(),
@@ -76,7 +83,10 @@ pub(crate) fn build() -> Menu {
             zoom_out: zoom_out.id().clone(),
             zoom_reset: zoom_reset.id().clone(),
         })
-        .ok();
+        .is_err()
+    {
+        tracing::warn!("menu_bar::build() called more than once; ignoring duplicate");
+    }
 
     let menu = Menu::new();
 
@@ -156,12 +166,11 @@ pub(crate) fn build() -> Menu {
         window_menu.set_as_windows_menu_for_nsapp();
     }
 
-    // --- Help menu ---
+    // --- Help menu (macOS only — includes system search field; empty on other platforms) ---
+    #[cfg(target_os = "macos")]
     {
         let help_menu = Submenu::new("Help", true);
         let _ = menu.append(&help_menu);
-
-        #[cfg(target_os = "macos")]
         help_menu.set_as_help_menu_for_nsapp();
     }
 
@@ -169,21 +178,29 @@ pub(crate) fn build() -> Menu {
     #[cfg(target_os = "macos")]
     menu.init_for_nsapp();
 
+    // Linux: muda supports GTK menus via `init_for_gtk_window()`, but eframe
+    // does not expose the underlying GtkWindow. When Linux support is needed,
+    // the GTK window can be obtained from the raw Xlib/Wayland handle or by
+    // patching eframe to surface it.
+
     menu
 }
 
 /// On Windows, attach the menu bar to the window once the HWND is available.
-/// Call from the first `App::update()` frame.
+/// Call from the first `App::update()` frame. Returns `true` if the menu was
+/// successfully attached; `false` if the window handle wasn't ready yet.
 #[cfg(target_os = "windows")]
-pub(crate) fn attach_to_window(menu: &Menu, window: &impl raw_window_handle::HasWindowHandle) {
-    use raw_window_handle::RawWindowHandle;
-    if let Ok(handle) = window.window_handle() {
+pub(crate) fn attach_to_window(menu: &Menu, frame: &eframe::Frame) -> bool {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    if let Ok(handle) = frame.window_handle() {
         if let RawWindowHandle::Win32(win32) = handle.as_raw() {
             unsafe {
                 let _ = menu.init_for_hwnd(win32.hwnd.get() as _);
             }
+            return true;
         }
     }
+    false
 }
 
 /// Drain pending menu events and return the next action, if any.
