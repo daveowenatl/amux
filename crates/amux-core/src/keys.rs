@@ -76,7 +76,7 @@ pub fn encode_named(
             if mods.ctrl {
                 Some(vec![0x00]) // Ctrl+Space = NUL
             } else {
-                Some(vec![0x20])
+                None // Let the framework handle plain Space as text input
             }
         }
 
@@ -110,19 +110,20 @@ pub fn encode_named(
     }
 }
 
-/// Encode Ctrl+letter (A=0x01 .. Z=0x1a).
-pub fn encode_ctrl_letter(letter_index: u8) -> Vec<u8> {
-    vec![letter_index + 1]
+/// Encode a Ctrl key combination that produces a single control byte.
+/// `ctrl_byte` is the raw byte (e.g. 0x01 for Ctrl+A, 0x1b for Ctrl+[).
+pub fn encode_ctrl(ctrl_byte: u8) -> Vec<u8> {
+    vec![ctrl_byte]
 }
 
-/// Encode Alt+letter (ESC + lowercase letter).
-pub fn encode_alt_letter(letter_index: u8) -> Vec<u8> {
-    vec![0x1b, letter_index + b'a']
+/// Encode Alt + a character (ESC prefix).
+pub fn encode_alt_char(ch: u8) -> Vec<u8> {
+    vec![0x1b, ch]
 }
 
-/// Encode Ctrl+Alt+letter (ESC + control byte).
-pub fn encode_ctrl_alt_letter(letter_index: u8) -> Vec<u8> {
-    vec![0x1b, letter_index + 1]
+/// Encode Ctrl+Alt combination (ESC + control byte).
+pub fn encode_ctrl_alt(ctrl_byte: u8) -> Vec<u8> {
+    vec![0x1b, ctrl_byte]
 }
 
 // --- Internal helpers ---
@@ -262,11 +263,9 @@ mod tests {
     }
 
     #[test]
-    fn space() {
-        assert_eq!(
-            encode_named(NamedKey::Space, no_mods(), false),
-            Some(vec![0x20])
-        );
+    fn plain_space_returns_none() {
+        // Plain Space should return None so the framework handles it as text input
+        assert_eq!(encode_named(NamedKey::Space, no_mods(), false), None);
     }
 
     #[test]
@@ -387,36 +386,54 @@ mod tests {
         );
     }
 
-    // --- Ctrl/Alt letter ---
+    // --- Ctrl/Alt ---
 
     #[test]
     fn ctrl_a() {
-        assert_eq!(encode_ctrl_letter(0), vec![0x01]);
+        assert_eq!(encode_ctrl(0x01), vec![0x01]);
     }
 
     #[test]
     fn ctrl_c() {
-        assert_eq!(encode_ctrl_letter(2), vec![0x03]);
+        assert_eq!(encode_ctrl(0x03), vec![0x03]);
     }
 
     #[test]
     fn ctrl_z() {
-        assert_eq!(encode_ctrl_letter(25), vec![0x1a]);
+        assert_eq!(encode_ctrl(0x1a), vec![0x1a]);
+    }
+
+    #[test]
+    fn ctrl_bracket_left() {
+        // Ctrl+[ = ESC
+        assert_eq!(encode_ctrl(0x1b), vec![0x1b]);
+    }
+
+    #[test]
+    fn ctrl_backslash() {
+        // Ctrl+\ = FS
+        assert_eq!(encode_ctrl(0x1c), vec![0x1c]);
+    }
+
+    #[test]
+    fn ctrl_bracket_right() {
+        // Ctrl+] = GS (telnet escape)
+        assert_eq!(encode_ctrl(0x1d), vec![0x1d]);
     }
 
     #[test]
     fn alt_a() {
-        assert_eq!(encode_alt_letter(0), vec![0x1b, b'a']);
+        assert_eq!(encode_alt_char(b'a'), vec![0x1b, b'a']);
     }
 
     #[test]
     fn alt_z() {
-        assert_eq!(encode_alt_letter(25), vec![0x1b, b'z']);
+        assert_eq!(encode_alt_char(b'z'), vec![0x1b, b'z']);
     }
 
     #[test]
     fn ctrl_alt_a() {
-        assert_eq!(encode_ctrl_alt_letter(0), vec![0x1b, 0x01]);
+        assert_eq!(encode_ctrl_alt(0x01), vec![0x1b, 0x01]);
     }
 
     // --- Modifier param ---

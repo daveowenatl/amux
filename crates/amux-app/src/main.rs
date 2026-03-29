@@ -5441,16 +5441,16 @@ fn format_duration(d: Duration) -> String {
 fn encode_egui_key(key: &egui::Key, modifiers: &egui::Modifiers) -> Option<Vec<u8>> {
     use amux_core::keys;
 
-    // Ctrl+letter / Alt+letter / Ctrl+Alt+letter
-    if let Some(idx) = egui_letter_index(key) {
+    // Ctrl+key / Alt+key / Ctrl+Alt+key
+    if let Some(byte) = egui_ctrl_byte(key) {
         if modifiers.ctrl && !modifiers.alt {
-            return Some(keys::encode_ctrl_letter(idx));
+            return Some(keys::encode_ctrl(byte));
         }
         if modifiers.alt && !modifiers.ctrl {
-            return Some(keys::encode_alt_letter(idx));
+            return Some(keys::encode_alt_char(byte - 1 + b'a'));
         }
         if modifiers.ctrl && modifiers.alt {
-            return Some(keys::encode_ctrl_alt_letter(idx));
+            return Some(keys::encode_ctrl_alt(byte));
         }
     }
 
@@ -5464,35 +5464,35 @@ fn encode_egui_key(key: &egui::Key, modifiers: &egui::Modifiers) -> Option<Vec<u
     keys::encode_named(core_key, mods, false)
 }
 
-/// Map egui letter keys to a 0-based index (A=0 .. Z=25).
-fn egui_letter_index(key: &egui::Key) -> Option<u8> {
+/// Map egui letter keys to their Ctrl control byte (A=0x01 .. Z=0x1a).
+fn egui_ctrl_byte(key: &egui::Key) -> Option<u8> {
     match key {
-        egui::Key::A => Some(0),
-        egui::Key::B => Some(1),
-        egui::Key::C => Some(2),
-        egui::Key::D => Some(3),
-        egui::Key::E => Some(4),
-        egui::Key::F => Some(5),
-        egui::Key::G => Some(6),
-        egui::Key::H => Some(7),
-        egui::Key::I => Some(8),
-        egui::Key::J => Some(9),
-        egui::Key::K => Some(10),
-        egui::Key::L => Some(11),
-        egui::Key::M => Some(12),
-        egui::Key::N => Some(13),
-        egui::Key::O => Some(14),
-        egui::Key::P => Some(15),
-        egui::Key::Q => Some(16),
-        egui::Key::R => Some(17),
-        egui::Key::S => Some(18),
-        egui::Key::T => Some(19),
-        egui::Key::U => Some(20),
-        egui::Key::V => Some(21),
-        egui::Key::W => Some(22),
-        egui::Key::X => Some(23),
-        egui::Key::Y => Some(24),
-        egui::Key::Z => Some(25),
+        egui::Key::A => Some(0x01),
+        egui::Key::B => Some(0x02),
+        egui::Key::C => Some(0x03),
+        egui::Key::D => Some(0x04),
+        egui::Key::E => Some(0x05),
+        egui::Key::F => Some(0x06),
+        egui::Key::G => Some(0x07),
+        egui::Key::H => Some(0x08),
+        egui::Key::I => Some(0x09),
+        egui::Key::J => Some(0x0a),
+        egui::Key::K => Some(0x0b),
+        egui::Key::L => Some(0x0c),
+        egui::Key::M => Some(0x0d),
+        egui::Key::N => Some(0x0e),
+        egui::Key::O => Some(0x0f),
+        egui::Key::P => Some(0x10),
+        egui::Key::Q => Some(0x11),
+        egui::Key::R => Some(0x12),
+        egui::Key::S => Some(0x13),
+        egui::Key::T => Some(0x14),
+        egui::Key::U => Some(0x15),
+        egui::Key::V => Some(0x16),
+        egui::Key::W => Some(0x17),
+        egui::Key::X => Some(0x18),
+        egui::Key::Y => Some(0x19),
+        egui::Key::Z => Some(0x1a),
         _ => None,
     }
 }

@@ -50,27 +50,27 @@ impl KeyEncoder {
         modifiers: ModifiersState,
         physical_key: PhysicalKey,
     ) -> Option<Vec<u8>> {
-        // Ctrl+letter
+        // Ctrl+key → control byte
         if modifiers.control_key() && !modifiers.alt_key() {
             if let PhysicalKey::Code(code) = physical_key {
-                if let Some(idx) = letter_index_for_keycode(code) {
-                    return Some(keys::encode_ctrl_letter(idx));
+                if let Some(byte) = ctrl_byte_for_keycode(code) {
+                    return Some(keys::encode_ctrl(byte));
                 }
             }
         }
 
-        // Alt+key
+        // Alt+key → ESC prefix
         if modifiers.alt_key() && !modifiers.control_key() {
             let mut bytes = vec![0x1b];
             bytes.extend_from_slice(text.as_bytes());
             return Some(bytes);
         }
 
-        // Ctrl+Alt
+        // Ctrl+Alt → ESC + control byte
         if modifiers.control_key() && modifiers.alt_key() {
             if let PhysicalKey::Code(code) = physical_key {
-                if let Some(idx) = letter_index_for_keycode(code) {
-                    return Some(keys::encode_ctrl_alt_letter(idx));
+                if let Some(byte) = ctrl_byte_for_keycode(code) {
+                    return Some(keys::encode_ctrl_alt(byte));
                 }
             }
         }
@@ -123,35 +123,39 @@ fn winit_mods_to_core(mods: ModifiersState) -> keys::Modifiers {
     }
 }
 
-/// Map a physical key code to a letter index (A=0, B=1, ..., Z=25).
-fn letter_index_for_keycode(code: KeyCode) -> Option<u8> {
+/// Map a physical key code to its Ctrl control byte.
+/// A=0x01 .. Z=0x1a, plus Ctrl+[ = ESC (0x1b), Ctrl+\ = FS (0x1c), Ctrl+] = GS (0x1d).
+fn ctrl_byte_for_keycode(code: KeyCode) -> Option<u8> {
     match code {
-        KeyCode::KeyA => Some(0),
-        KeyCode::KeyB => Some(1),
-        KeyCode::KeyC => Some(2),
-        KeyCode::KeyD => Some(3),
-        KeyCode::KeyE => Some(4),
-        KeyCode::KeyF => Some(5),
-        KeyCode::KeyG => Some(6),
-        KeyCode::KeyH => Some(7),
-        KeyCode::KeyI => Some(8),
-        KeyCode::KeyJ => Some(9),
-        KeyCode::KeyK => Some(10),
-        KeyCode::KeyL => Some(11),
-        KeyCode::KeyM => Some(12),
-        KeyCode::KeyN => Some(13),
-        KeyCode::KeyO => Some(14),
-        KeyCode::KeyP => Some(15),
-        KeyCode::KeyQ => Some(16),
-        KeyCode::KeyR => Some(17),
-        KeyCode::KeyS => Some(18),
-        KeyCode::KeyT => Some(19),
-        KeyCode::KeyU => Some(20),
-        KeyCode::KeyV => Some(21),
-        KeyCode::KeyW => Some(22),
-        KeyCode::KeyX => Some(23),
-        KeyCode::KeyY => Some(24),
-        KeyCode::KeyZ => Some(25),
+        KeyCode::KeyA => Some(0x01),
+        KeyCode::KeyB => Some(0x02),
+        KeyCode::KeyC => Some(0x03),
+        KeyCode::KeyD => Some(0x04),
+        KeyCode::KeyE => Some(0x05),
+        KeyCode::KeyF => Some(0x06),
+        KeyCode::KeyG => Some(0x07),
+        KeyCode::KeyH => Some(0x08),
+        KeyCode::KeyI => Some(0x09),
+        KeyCode::KeyJ => Some(0x0a),
+        KeyCode::KeyK => Some(0x0b),
+        KeyCode::KeyL => Some(0x0c),
+        KeyCode::KeyM => Some(0x0d),
+        KeyCode::KeyN => Some(0x0e),
+        KeyCode::KeyO => Some(0x0f),
+        KeyCode::KeyP => Some(0x10),
+        KeyCode::KeyQ => Some(0x11),
+        KeyCode::KeyR => Some(0x12),
+        KeyCode::KeyS => Some(0x13),
+        KeyCode::KeyT => Some(0x14),
+        KeyCode::KeyU => Some(0x15),
+        KeyCode::KeyV => Some(0x16),
+        KeyCode::KeyW => Some(0x17),
+        KeyCode::KeyX => Some(0x18),
+        KeyCode::KeyY => Some(0x19),
+        KeyCode::KeyZ => Some(0x1a),
+        KeyCode::BracketLeft => Some(0x1b),  // Ctrl+[ = ESC
+        KeyCode::Backslash => Some(0x1c),    // Ctrl+\ = FS
+        KeyCode::BracketRight => Some(0x1d), // Ctrl+] = GS (telnet escape)
         _ => None,
     }
 }
