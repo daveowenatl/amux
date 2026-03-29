@@ -20,6 +20,11 @@ pub fn resolve_color(
     }
 }
 
+/// Convert an `SrgbaTuple` to `[f32; 4]` (identity — for GPU uniform buffers).
+pub fn srgba_to_f32(color: SrgbaTuple) -> [f32; 4] {
+    [color.0, color.1, color.2, color.3]
+}
+
 /// Convert an `SrgbaTuple` (f32 components 0.0–1.0) to 8-bit RGBA.
 pub fn srgba_to_rgba8(color: SrgbaTuple) -> [u8; 4] {
     [

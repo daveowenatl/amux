@@ -226,6 +226,7 @@ name = "amux-term"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cosmic-text",
  "portable-pty",
  "tracing",
  "tracing-subscriber",

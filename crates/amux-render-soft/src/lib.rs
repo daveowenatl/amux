@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 
+use amux_term::color::{resolve_color, srgba_to_rgba8};
 use amux_term::font::{self, FontConfig};
 use cosmic_text::fontdb::Family;
 use cosmic_text::{
     Attrs, Buffer, CacheKey, FontSystem, Metrics, Shaping, SwashCache, SwashContent, SwashImage,
 };
-use wezterm_term::color::{ColorAttribute, ColorPalette, SrgbaTuple};
+use wezterm_term::color::ColorPalette;
 
 /// RGBA pixel (4 bytes).
 pub type Pixel = [u8; 4];
@@ -36,62 +37,14 @@ struct CachedGlyph {
 impl SoftRenderer {
     /// Create a new renderer with the given font configuration.
     pub fn new(font_config: &FontConfig) -> Self {
-        let t0 = std::time::Instant::now();
-        let mut font_system = FontSystem::new();
-        tracing::info!(
-            "SoftRenderer FontSystem::new() loaded {} fonts in {:.0?}",
-            font_system.db().len(),
-            t0.elapsed()
-        );
-
-        // Load bundled IBM Plex Mono (all weights/styles) so they're always
-        // available as our default. Italic faces are needed because cosmic-text
-        // 0.12 does not synthesize faux italic.
-        font_system
-            .db_mut()
-            .load_font_data(font::MONO_REGULAR.to_vec());
-        font_system
-            .db_mut()
-            .load_font_data(font::MONO_BOLD.to_vec());
-        font_system
-            .db_mut()
-            .load_font_data(font::MONO_ITALIC.to_vec());
-        font_system
-            .db_mut()
-            .load_font_data(font::MONO_BOLD_ITALIC.to_vec());
-
-        // Default to the bundled IBM Plex Mono for Family::Monospace resolution.
-        font_system
-            .db_mut()
-            .set_monospace_family(font::DEFAULT_FONT_FAMILY);
-
-        // Override with the user-configured family if it's available and differs
-        // from the default.
-        let family = &font_config.family;
-        if family != font::DEFAULT_FONT_FAMILY {
-            let has_family = font_system.db().faces().any(|f| {
-                f.families
-                    .iter()
-                    .any(|(name, _)| name.eq_ignore_ascii_case(family))
-            });
-            if has_family {
-                font_system.db_mut().set_monospace_family(family);
-            } else {
-                tracing::warn!(
-                    "Font family '{}' not found, falling back to {}",
-                    family,
-                    font::DEFAULT_FONT_FAMILY,
-                );
-            }
-        }
-
+        let mut font_system = font::create_font_system(font_config);
         let swash_cache = SwashCache::new();
 
         let font_size = font_config.size;
         let line_height = (font_size * 1.3).ceil();
         let metrics = Metrics::new(font_size, line_height);
 
-        let cell_width = measure_cell_width(&mut font_system, metrics).ceil();
+        let cell_width = font::measure_cell_width(&mut font_system, metrics).ceil();
         let cell_height = line_height;
 
         Self {
@@ -384,29 +337,6 @@ impl SoftRenderer {
 }
 
 /// Measure monospace cell width by laying out "M" and reading the advance.
-fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics) -> f32 {
-    let mut buffer = Buffer::new_empty(metrics);
-    {
-        let mut borrowed = buffer.borrow_with(font_system);
-        borrowed.set_size(Some(200.0), Some(metrics.line_height));
-        borrowed.set_text(
-            "M",
-            Attrs::new().family(Family::Monospace),
-            Shaping::Advanced,
-        );
-        borrowed.shape_until_scroll(true);
-    }
-
-    for run in buffer.layout_runs() {
-        if let Some(glyph) = run.glyphs.iter().next() {
-            return glyph.w;
-        }
-    }
-
-    // Fallback: estimate from font size
-    metrics.font_size * 0.6
-}
-
 /// Alpha-blend src over dst (premultiplied).
 fn blend_pixel(dst: &mut [u8], src: &[u8]) {
     let sa = src[3] as u32;
@@ -415,27 +345,4 @@ fn blend_pixel(dst: &mut [u8], src: &[u8]) {
     dst[1] = ((src[1] as u32 * sa + dst[1] as u32 * da) / 255) as u8;
     dst[2] = ((src[2] as u32 * sa + dst[2] as u32 * da) / 255) as u8;
     dst[3] = (sa + dst[3] as u32 * da / 255).min(255) as u8;
-}
-
-fn resolve_color(
-    color: &ColorAttribute,
-    palette: &ColorPalette,
-    is_fg: bool,
-    reverse: bool,
-) -> SrgbaTuple {
-    let effective_is_fg = if reverse { !is_fg } else { is_fg };
-    if effective_is_fg {
-        palette.resolve_fg(*color)
-    } else {
-        palette.resolve_bg(*color)
-    }
-}
-
-fn srgba_to_rgba8(color: SrgbaTuple) -> Pixel {
-    [
-        (color.0 * 255.0).round() as u8,
-        (color.1 * 255.0).round() as u8,
-        (color.2 * 255.0).round() as u8,
-        (color.3 * 255.0).round() as u8,
-    ]
 }
