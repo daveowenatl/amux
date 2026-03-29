@@ -734,10 +734,14 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             // Stream events until the connection closes or Ctrl+C
+            let stdout = std::io::stdout();
             loop {
                 match client.read_line().await {
                     Ok(Some(line)) => {
-                        println!("{}", line);
+                        use std::io::Write;
+                        let mut lock = stdout.lock();
+                        let _ = writeln!(lock, "{}", line);
+                        let _ = lock.flush();
                     }
                     Ok(None) => break,
                     Err(e) => {

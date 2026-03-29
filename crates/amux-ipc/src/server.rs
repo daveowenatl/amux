@@ -315,17 +315,21 @@ fn handle_subscribe(request: &Request, subscriptions: &mut HashSet<String>) -> R
     };
 
     let mut subscribed = Vec::new();
+    let mut unknown = Vec::new();
     for event in &events {
         if EVENT_TYPES.contains(&event.as_str()) {
             subscriptions.insert(event.clone());
             subscribed.push(event.clone());
+        } else {
+            unknown.push(event.clone());
         }
     }
 
-    Response::ok(
-        request.id.clone(),
-        serde_json::json!({ "subscribed": subscribed }),
-    )
+    let mut result = serde_json::json!({ "subscribed": subscribed });
+    if !unknown.is_empty() {
+        result["unknown"] = serde_json::json!(unknown);
+    }
+    Response::ok(request.id.clone(), result)
 }
 
 fn handle_unsubscribe(request: &Request, subscriptions: &mut HashSet<String>) -> Response {
@@ -346,13 +350,16 @@ fn handle_unsubscribe(request: &Request, subscriptions: &mut HashSet<String>) ->
         }
     };
 
+    let mut unsubscribed = Vec::new();
     for event in &events {
-        subscriptions.remove(event);
+        if subscriptions.remove(event) {
+            unsubscribed.push(event.clone());
+        }
     }
 
     Response::ok(
         request.id.clone(),
-        serde_json::json!({ "unsubscribed": events }),
+        serde_json::json!({ "unsubscribed": unsubscribed }),
     )
 }
 
@@ -407,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn subscribe_ignores_unknown_events() {
+    fn subscribe_reports_unknown_events() {
         let mut subs = HashSet::new();
         let req = make_request(
             "2",
@@ -419,6 +426,24 @@ mod tests {
         assert!(subs.contains("notification"));
         assert!(!subs.contains("bogus"));
         assert_eq!(subs.len(), 1);
+        let result = resp.result.unwrap();
+        let unknown = result.get("unknown").unwrap().as_array().unwrap();
+        assert_eq!(unknown.len(), 1);
+        assert_eq!(unknown[0].as_str().unwrap(), "bogus");
+    }
+
+    #[test]
+    fn subscribe_no_unknown_field_when_all_valid() {
+        let mut subs = HashSet::new();
+        let req = make_request(
+            "2b",
+            "subscribe",
+            serde_json::json!({"events": ["notification"]}),
+        );
+        let resp = handle_subscribe(&req, &mut subs);
+        assert!(resp.ok);
+        let result = resp.result.unwrap();
+        assert!(result.get("unknown").is_none());
     }
 
     #[test]
@@ -448,14 +473,21 @@ mod tests {
         assert!(resp.ok);
         assert!(!subs.contains("notification"));
         assert!(subs.contains("focus_change"));
+        let result = resp.result.unwrap();
+        let unsubscribed = result.get("unsubscribed").unwrap().as_array().unwrap();
+        assert_eq!(unsubscribed.len(), 1);
+        assert_eq!(unsubscribed[0].as_str().unwrap(), "notification");
     }
 
     #[test]
-    fn unsubscribe_nonexistent_is_ok() {
+    fn unsubscribe_nonexistent_returns_empty() {
         let mut subs = HashSet::new();
         let req = make_request("5", "unsubscribe", serde_json::json!({"events": ["bogus"]}));
         let resp = handle_unsubscribe(&req, &mut subs);
         assert!(resp.ok);
+        let result = resp.result.unwrap();
+        let unsubscribed = result.get("unsubscribed").unwrap().as_array().unwrap();
+        assert!(unsubscribed.is_empty());
     }
 
     #[test]
