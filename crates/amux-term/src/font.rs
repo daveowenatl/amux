@@ -1,9 +1,11 @@
-/// Bundled font bytes (IBM Plex Mono, SIL OFL license). Single source of truth —
+/// Bundled font bytes (IBM Plex, SIL OFL license). Single source of truth —
 /// all crates reference these statics instead of their own `include_bytes!`.
 pub static MONO_REGULAR: &[u8] = include_bytes!("../fonts/IBMPlexMono-Regular.ttf");
 pub static MONO_BOLD: &[u8] = include_bytes!("../fonts/IBMPlexMono-Bold.ttf");
 pub static MONO_ITALIC: &[u8] = include_bytes!("../fonts/IBMPlexMono-Italic.ttf");
 pub static MONO_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/IBMPlexMono-BoldItalic.ttf");
+pub static SANS_REGULAR: &[u8] = include_bytes!("../fonts/IBMPlexSans-Regular.ttf");
+pub static SANS_SEMIBOLD: &[u8] = include_bytes!("../fonts/IBMPlexSans-SemiBold.ttf");
 
 pub const DEFAULT_FONT_FAMILY: &str = "IBM Plex Mono";
 pub const DEFAULT_FONT_SIZE: f32 = 14.0;
