@@ -66,6 +66,8 @@ fn get_cwd_from_pid(pid: u32) -> Option<String> {
 const DEFAULT_FONT_SIZE: f32 = 14.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
 const TAB_BAR_HEIGHT: f32 = 24.0;
+/// Content top inset: tab bar height + 1px border between tab bar and content.
+const TAB_CONTENT_TOP_INSET: f32 = TAB_BAR_HEIGHT + 1.0;
 /// Visual padding above the tab bar. On macOS with fullSizeContentView,
 /// this covers the native title bar area where traffic light buttons sit.
 const TERMINAL_TOP_PAD: f32 = 28.0;
@@ -338,13 +340,18 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1000.0, 600.0])
-            .with_title("amux")
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1000.0, 600.0])
+        .with_title("amux");
+    #[cfg(target_os = "macos")]
+    {
+        viewport = viewport
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
-            .with_title_shown(false),
+            .with_title_shown(false);
+    }
+    let options = eframe::NativeOptions {
+        viewport,
         ..Default::default()
     };
 
@@ -1689,7 +1696,7 @@ impl AmuxApp {
         let tab_rect =
             egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), TAB_BAR_HEIGHT));
         let content_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.min.x, rect.min.y + TAB_BAR_HEIGHT + 1.0),
+            egui::pos2(rect.min.x, rect.min.y + TAB_CONTENT_TOP_INSET),
             egui::pos2(rect.max.x, rect.max.y - TERMINAL_BOTTOM_PAD),
         );
         // Paint bottom padding strip with terminal background color.
