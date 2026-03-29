@@ -32,6 +32,8 @@ open = { workspace = true }
 toml = { workspace = true }
 notify-rust = { workspace = true }
 rodio = { workspace = true }
+muda = { workspace = true }
+winit = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation = { workspace = true }

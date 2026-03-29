@@ -1,3 +1,4 @@
+mod menu_bar;
 mod sidebar;
 mod system_notify;
 mod theme;
@@ -340,6 +341,9 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Build the native menu bar (cross-platform via muda).
+    let menu = menu_bar::build();
+
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1000.0, 600.0])
         .with_title("amux");
@@ -350,8 +354,15 @@ fn main() -> anyhow::Result<()> {
             .with_titlebar_shown(false)
             .with_title_shown(false);
     }
+
     let options = eframe::NativeOptions {
         viewport,
+        // Suppress winit's default macOS menu (we provide our own via muda).
+        #[cfg(target_os = "macos")]
+        event_loop_builder: Some(Box::new(|builder| {
+            use winit::platform::macos::EventLoopBuilderExtMacOS;
+            builder.with_default_menu(false);
+        })),
         ..Default::default()
     };
 
@@ -409,6 +420,8 @@ fn main() -> anyhow::Result<()> {
                 system_notifier: system_notify::SystemNotifier::new(),
                 last_badge_count: 0,
                 sound_player,
+                menu,
+                menu_attached: false,
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
             }))
@@ -1096,6 +1109,12 @@ struct AmuxApp {
     last_badge_count: usize,
     /// Notification sound player (None if no audio device).
     sound_player: Option<system_notify::SoundPlayer>,
+    /// Native menu bar (kept alive for the process lifetime).
+    #[allow(dead_code)]
+    menu: muda::Menu,
+    /// Whether the menu has been attached to the window (Windows only).
+    #[allow(dead_code)]
+    menu_attached: bool,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
 }
@@ -1375,6 +1394,13 @@ impl eframe::App for AmuxApp {
             return;
         }
 
+        // Attach native menu bar to the window (Windows: per-HWND).
+        #[cfg(target_os = "windows")]
+        if !self.menu_attached {
+            menu_bar::attach_to_window(&self.menu, _frame);
+            self.menu_attached = true;
+        }
+
         self.selection_changed = false;
         self.app_focused = ctx.input(|i| i.focused);
 
@@ -1423,6 +1449,9 @@ impl eframe::App for AmuxApp {
 
         // Handle keyboard shortcuts BEFORE terminal input
         let shortcut_consumed = self.handle_shortcuts(ctx);
+
+        // Drain native menu bar actions
+        self.handle_menu_actions();
 
         // Handle keyboard/paste input -> focused pane's active surface only
         // (blocked during copy mode — all keys go through handle_copy_mode_key)
@@ -2316,6 +2345,45 @@ impl AmuxApp {
         self.workspaces.remove(ws_idx);
         if self.active_workspace_idx >= self.workspaces.len() {
             self.active_workspace_idx = self.workspaces.len() - 1;
+        }
+    }
+
+    // --- Menu bar actions ---
+
+    fn handle_menu_actions(&mut self) {
+        while let Some(action) = menu_bar::take_pending_action() {
+            match action {
+                menu_bar::MenuAction::NewWorkspace => {
+                    self.create_workspace(None);
+                }
+                menu_bar::MenuAction::NewTab => {
+                    self.add_surface_to_focused_pane();
+                }
+                menu_bar::MenuAction::CloseTab => {
+                    self.do_close_cascade();
+                }
+                menu_bar::MenuAction::SaveSession => {
+                    let data = self.build_session_data();
+                    if let Err(e) = amux_session::save(&data) {
+                        tracing::error!("Failed to save session: {}", e);
+                    }
+                }
+                menu_bar::MenuAction::ToggleSidebar => {
+                    self.sidebar.visible = !self.sidebar.visible;
+                }
+                menu_bar::MenuAction::ToggleNotificationPanel => {
+                    self.show_notification_panel = !self.show_notification_panel;
+                }
+                menu_bar::MenuAction::ZoomIn => {
+                    self.font_size = (self.font_size + 1.0).min(96.0);
+                }
+                menu_bar::MenuAction::ZoomOut => {
+                    self.font_size = (self.font_size - 1.0).max(4.0);
+                }
+                menu_bar::MenuAction::ZoomReset => {
+                    self.font_size = DEFAULT_FONT_SIZE;
+                }
+            }
         }
     }
 
