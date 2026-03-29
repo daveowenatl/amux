@@ -1518,15 +1518,32 @@ impl eframe::App for AmuxApp {
         self.selection_changed = false;
         self.app_focused = ctx.input(|i| i.focused);
 
-        // Drain PTY output from all surfaces in all panes
+        // Drain PTY output from all surfaces, with a per-surface byte budget
+        // to prevent high-throughput output (e.g. `cat large_file`) from
+        // blocking input handling and causing frame drops.
+        const MAX_BYTES_PER_SURFACE_PER_FRAME: usize = 64 * 1024;
         let mut got_data = false;
+        let mut pending_data = false;
         for managed in self.panes.values_mut() {
             for surface in &mut managed.surfaces {
-                while let Ok(bytes) = surface.byte_rx.try_recv() {
-                    got_data = true;
-                    surface.pane.feed_bytes(&bytes);
+                let mut bytes_this_frame = 0;
+                while bytes_this_frame < MAX_BYTES_PER_SURFACE_PER_FRAME {
+                    match surface.byte_rx.try_recv() {
+                        Ok(bytes) => {
+                            bytes_this_frame += bytes.len();
+                            got_data = true;
+                            surface.pane.feed_bytes(&bytes);
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if bytes_this_frame >= MAX_BYTES_PER_SURFACE_PER_FRAME {
+                    pending_data = true;
                 }
             }
+        }
+        if pending_data {
+            ctx.request_repaint();
         }
 
         // Handle clicks on system notifications (navigate to workspace/pane).
