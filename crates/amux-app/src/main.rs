@@ -5439,180 +5439,95 @@ fn format_duration(d: Duration) -> String {
 // --- Key encoding (egui events -> terminal bytes) ---
 
 fn encode_egui_key(key: &egui::Key, modifiers: &egui::Modifiers) -> Option<Vec<u8>> {
-    if modifiers.ctrl && !modifiers.alt {
-        if let Some(byte) = ctrl_byte_for_key(key) {
-            return Some(vec![byte]);
+    use amux_core::keys;
+
+    // Ctrl+letter / Alt+letter / Ctrl+Alt+letter
+    if let Some(idx) = egui_letter_index(key) {
+        if modifiers.ctrl && !modifiers.alt {
+            return Some(keys::encode_ctrl_letter(idx));
+        }
+        if modifiers.alt && !modifiers.ctrl {
+            return Some(keys::encode_alt_letter(idx));
+        }
+        if modifiers.ctrl && modifiers.alt {
+            return Some(keys::encode_ctrl_alt_letter(idx));
         }
     }
 
-    if modifiers.alt && !modifiers.ctrl {
-        if let Some(ch) = key_to_char(key) {
-            return Some(vec![0x1b, ch as u8]);
-        }
-    }
+    // Named keys — delegate to core encoder
+    let core_key = egui_key_to_core(key)?;
+    let mods = keys::Modifiers {
+        shift: modifiers.shift,
+        ctrl: modifiers.ctrl,
+        alt: modifiers.alt,
+    };
+    keys::encode_named(core_key, mods, false)
+}
 
-    if modifiers.ctrl && modifiers.alt {
-        if let Some(byte) = ctrl_byte_for_key(key) {
-            return Some(vec![0x1b, byte]);
-        }
-    }
-
-    let modifier_param = egui_modifier_param(modifiers);
-
+/// Map egui letter keys to a 0-based index (A=0 .. Z=25).
+fn egui_letter_index(key: &egui::Key) -> Option<u8> {
     match key {
-        egui::Key::Enter => Some(vec![0x0d]),
-        egui::Key::Tab => {
-            if modifiers.shift {
-                Some(b"\x1b[Z".to_vec())
-            } else {
-                Some(vec![0x09])
-            }
-        }
-        egui::Key::Escape => Some(vec![0x1b]),
-        egui::Key::Backspace => {
-            if modifiers.alt {
-                Some(vec![0x1b, 0x7f])
-            } else {
-                Some(vec![0x7f])
-            }
-        }
-        egui::Key::Space if modifiers.ctrl => Some(vec![0x00]),
-
-        egui::Key::ArrowUp => Some(encode_arrow(b'A', modifier_param)),
-        egui::Key::ArrowDown => Some(encode_arrow(b'B', modifier_param)),
-        egui::Key::ArrowRight => Some(encode_arrow(b'C', modifier_param)),
-        egui::Key::ArrowLeft => Some(encode_arrow(b'D', modifier_param)),
-
-        egui::Key::Home => Some(encode_csi_letter(b'H', modifier_param)),
-        egui::Key::End => Some(encode_csi_letter(b'F', modifier_param)),
-        egui::Key::Insert => Some(encode_csi_tilde(2, modifier_param)),
-        egui::Key::Delete => Some(encode_csi_tilde(3, modifier_param)),
-        egui::Key::PageUp => Some(encode_csi_tilde(5, modifier_param)),
-        egui::Key::PageDown => Some(encode_csi_tilde(6, modifier_param)),
-
-        egui::Key::F1 => Some(encode_fn_key(b'P', 11, modifier_param)),
-        egui::Key::F2 => Some(encode_fn_key(b'Q', 12, modifier_param)),
-        egui::Key::F3 => Some(encode_fn_key(b'R', 13, modifier_param)),
-        egui::Key::F4 => Some(encode_fn_key(b'S', 14, modifier_param)),
-        egui::Key::F5 => Some(encode_csi_tilde(15, modifier_param)),
-        egui::Key::F6 => Some(encode_csi_tilde(17, modifier_param)),
-        egui::Key::F7 => Some(encode_csi_tilde(18, modifier_param)),
-        egui::Key::F8 => Some(encode_csi_tilde(19, modifier_param)),
-        egui::Key::F9 => Some(encode_csi_tilde(20, modifier_param)),
-        egui::Key::F10 => Some(encode_csi_tilde(21, modifier_param)),
-        egui::Key::F11 => Some(encode_csi_tilde(23, modifier_param)),
-        egui::Key::F12 => Some(encode_csi_tilde(24, modifier_param)),
-
+        egui::Key::A => Some(0),
+        egui::Key::B => Some(1),
+        egui::Key::C => Some(2),
+        egui::Key::D => Some(3),
+        egui::Key::E => Some(4),
+        egui::Key::F => Some(5),
+        egui::Key::G => Some(6),
+        egui::Key::H => Some(7),
+        egui::Key::I => Some(8),
+        egui::Key::J => Some(9),
+        egui::Key::K => Some(10),
+        egui::Key::L => Some(11),
+        egui::Key::M => Some(12),
+        egui::Key::N => Some(13),
+        egui::Key::O => Some(14),
+        egui::Key::P => Some(15),
+        egui::Key::Q => Some(16),
+        egui::Key::R => Some(17),
+        egui::Key::S => Some(18),
+        egui::Key::T => Some(19),
+        egui::Key::U => Some(20),
+        egui::Key::V => Some(21),
+        egui::Key::W => Some(22),
+        egui::Key::X => Some(23),
+        egui::Key::Y => Some(24),
+        egui::Key::Z => Some(25),
         _ => None,
     }
 }
 
-fn encode_arrow(letter: u8, modifier_param: Option<u8>) -> Vec<u8> {
-    match modifier_param {
-        Some(m) => format!("\x1b[1;{}{}", m, letter as char).into_bytes(),
-        None => vec![0x1b, b'[', letter],
-    }
-}
-
-fn encode_csi_letter(letter: u8, modifier_param: Option<u8>) -> Vec<u8> {
-    match modifier_param {
-        Some(m) => format!("\x1b[1;{}{}", m, letter as char).into_bytes(),
-        None => vec![0x1b, b'[', letter],
-    }
-}
-
-fn encode_csi_tilde(number: u8, modifier_param: Option<u8>) -> Vec<u8> {
-    match modifier_param {
-        Some(m) => format!("\x1b[{};{}~", number, m).into_bytes(),
-        None => format!("\x1b[{}~", number).into_bytes(),
-    }
-}
-
-fn encode_fn_key(ss3_letter: u8, csi_number: u8, modifier_param: Option<u8>) -> Vec<u8> {
-    match modifier_param {
-        Some(m) => format!("\x1b[{};{}~", csi_number, m).into_bytes(),
-        None => vec![0x1b, b'O', ss3_letter],
-    }
-}
-
-fn egui_modifier_param(modifiers: &egui::Modifiers) -> Option<u8> {
-    let mut param: u8 = 1;
-    if modifiers.shift {
-        param += 1;
-    }
-    if modifiers.alt {
-        param += 2;
-    }
-    if modifiers.ctrl {
-        param += 4;
-    }
-    if param == 1 {
-        None
-    } else {
-        Some(param)
-    }
-}
-
-fn ctrl_byte_for_key(key: &egui::Key) -> Option<u8> {
-    match key {
-        egui::Key::A => Some(0x01),
-        egui::Key::B => Some(0x02),
-        egui::Key::C => Some(0x03),
-        egui::Key::D => Some(0x04),
-        egui::Key::E => Some(0x05),
-        egui::Key::F => Some(0x06),
-        egui::Key::G => Some(0x07),
-        egui::Key::H => Some(0x08),
-        egui::Key::I => Some(0x09),
-        egui::Key::J => Some(0x0a),
-        egui::Key::K => Some(0x0b),
-        egui::Key::L => Some(0x0c),
-        egui::Key::M => Some(0x0d),
-        egui::Key::N => Some(0x0e),
-        egui::Key::O => Some(0x0f),
-        egui::Key::P => Some(0x10),
-        egui::Key::Q => Some(0x11),
-        egui::Key::R => Some(0x12),
-        egui::Key::S => Some(0x13),
-        egui::Key::T => Some(0x14),
-        egui::Key::U => Some(0x15),
-        egui::Key::V => Some(0x16),
-        egui::Key::W => Some(0x17),
-        egui::Key::X => Some(0x18),
-        egui::Key::Y => Some(0x19),
-        egui::Key::Z => Some(0x1a),
-        _ => None,
-    }
-}
-
-fn key_to_char(key: &egui::Key) -> Option<char> {
-    match key {
-        egui::Key::A => Some('a'),
-        egui::Key::B => Some('b'),
-        egui::Key::C => Some('c'),
-        egui::Key::D => Some('d'),
-        egui::Key::E => Some('e'),
-        egui::Key::F => Some('f'),
-        egui::Key::G => Some('g'),
-        egui::Key::H => Some('h'),
-        egui::Key::I => Some('i'),
-        egui::Key::J => Some('j'),
-        egui::Key::K => Some('k'),
-        egui::Key::L => Some('l'),
-        egui::Key::M => Some('m'),
-        egui::Key::N => Some('n'),
-        egui::Key::O => Some('o'),
-        egui::Key::P => Some('p'),
-        egui::Key::Q => Some('q'),
-        egui::Key::R => Some('r'),
-        egui::Key::S => Some('s'),
-        egui::Key::T => Some('t'),
-        egui::Key::U => Some('u'),
-        egui::Key::V => Some('v'),
-        egui::Key::W => Some('w'),
-        egui::Key::X => Some('x'),
-        egui::Key::Y => Some('y'),
-        egui::Key::Z => Some('z'),
-        _ => None,
-    }
+/// Map egui Key to core NamedKey.
+fn egui_key_to_core(key: &egui::Key) -> Option<amux_core::keys::NamedKey> {
+    use amux_core::keys::NamedKey;
+    Some(match key {
+        egui::Key::Enter => NamedKey::Enter,
+        egui::Key::Tab => NamedKey::Tab,
+        egui::Key::Escape => NamedKey::Escape,
+        egui::Key::Backspace => NamedKey::Backspace,
+        egui::Key::Space => NamedKey::Space,
+        egui::Key::ArrowUp => NamedKey::ArrowUp,
+        egui::Key::ArrowDown => NamedKey::ArrowDown,
+        egui::Key::ArrowLeft => NamedKey::ArrowLeft,
+        egui::Key::ArrowRight => NamedKey::ArrowRight,
+        egui::Key::Home => NamedKey::Home,
+        egui::Key::End => NamedKey::End,
+        egui::Key::Insert => NamedKey::Insert,
+        egui::Key::Delete => NamedKey::Delete,
+        egui::Key::PageUp => NamedKey::PageUp,
+        egui::Key::PageDown => NamedKey::PageDown,
+        egui::Key::F1 => NamedKey::F1,
+        egui::Key::F2 => NamedKey::F2,
+        egui::Key::F3 => NamedKey::F3,
+        egui::Key::F4 => NamedKey::F4,
+        egui::Key::F5 => NamedKey::F5,
+        egui::Key::F6 => NamedKey::F6,
+        egui::Key::F7 => NamedKey::F7,
+        egui::Key::F8 => NamedKey::F8,
+        egui::Key::F9 => NamedKey::F9,
+        egui::Key::F10 => NamedKey::F10,
+        egui::Key::F11 => NamedKey::F11,
+        egui::Key::F12 => NamedKey::F12,
+        _ => return None,
+    })
 }

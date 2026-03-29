@@ -113,6 +113,7 @@ dependencies = [
 name = "amux-app"
 version = "0.1.0"
 dependencies = [
+ "amux-core",
  "amux-ipc",
  "amux-layout",
  "amux-notify",
@@ -154,6 +155,10 @@ dependencies = [
  "serde_json",
  "tokio",
 ]
+
+[[package]]
+name = "amux-core"
+version = "0.1.0"
 
 [[package]]
 name = "amux-ipc"
@@ -225,6 +230,7 @@ dependencies = [
 name = "amux-term"
 version = "0.1.0"
 dependencies = [
+ "amux-core",
  "anyhow",
  "cosmic-text",
  "portable-pty",

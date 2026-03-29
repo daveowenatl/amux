@@ -1,18 +1,11 @@
+use amux_core::keys;
 use winit::event::ElementState;
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 
 /// Encodes winit key events into byte sequences suitable for writing to a PTY.
 ///
-/// Handles:
-/// - ASCII control characters (Ctrl+A through Ctrl+Z)
-/// - Function keys (F1–F12)
-/// - Arrow keys with application cursor mode (DECCKM)
-/// - Home/End/PgUp/PgDn/Insert/Delete
-/// - Modifier encoding (CSI 1;N suffixes)
-///
-/// The encoder is deliberately bypass-able: amux decides whether a key is a
-/// shortcut or should be forwarded to the PTY. The encoder only runs on
-/// forwarded keys.
+/// This is a thin adapter over `amux_core::keys` that translates winit types
+/// into the framework-agnostic core types.
 #[derive(Default)]
 pub struct KeyEncoder {
     /// Application cursor key mode (DECCKM). When true, arrow keys emit
@@ -36,14 +29,17 @@ impl KeyEncoder {
         modifiers: ModifiersState,
         state: ElementState,
     ) -> Option<Vec<u8>> {
-        // Only encode key press events
         if state != ElementState::Pressed {
             return None;
         }
 
         match key {
             Key::Character(text) => self.encode_character(text, modifiers, physical_key),
-            Key::Named(named) => self.encode_named(*named, modifiers),
+            Key::Named(named) => {
+                let core_key = winit_named_to_core(*named)?;
+                let mods = winit_mods_to_core(modifiers);
+                keys::encode_named(core_key, mods, self.application_cursor_keys)
+            }
             _ => None,
         }
     }
@@ -54,185 +50,108 @@ impl KeyEncoder {
         modifiers: ModifiersState,
         physical_key: PhysicalKey,
     ) -> Option<Vec<u8>> {
-        // Ctrl+letter → control character
+        // Ctrl+letter
         if modifiers.control_key() && !modifiers.alt_key() {
             if let PhysicalKey::Code(code) = physical_key {
-                if let Some(ctrl_byte) = ctrl_code_for_key(code) {
-                    return Some(vec![ctrl_byte]);
+                if let Some(idx) = letter_index_for_keycode(code) {
+                    return Some(keys::encode_ctrl_letter(idx));
                 }
             }
         }
 
-        // Alt+key → ESC prefix
+        // Alt+key
         if modifiers.alt_key() && !modifiers.control_key() {
             let mut bytes = vec![0x1b];
             bytes.extend_from_slice(text.as_bytes());
             return Some(bytes);
         }
 
-        // Ctrl+Alt combinations
+        // Ctrl+Alt
         if modifiers.control_key() && modifiers.alt_key() {
             if let PhysicalKey::Code(code) = physical_key {
-                if let Some(ctrl_byte) = ctrl_code_for_key(code) {
-                    return Some(vec![0x1b, ctrl_byte]);
+                if let Some(idx) = letter_index_for_keycode(code) {
+                    return Some(keys::encode_ctrl_alt_letter(idx));
                 }
             }
         }
 
-        // Plain text (including Shift variants handled by the OS)
+        // Plain text
         Some(text.as_bytes().to_vec())
     }
+}
 
-    fn encode_named(&self, named: NamedKey, modifiers: ModifiersState) -> Option<Vec<u8>> {
-        let modifier_param = modifier_param(modifiers);
+/// Map winit NamedKey to core NamedKey.
+fn winit_named_to_core(key: NamedKey) -> Option<keys::NamedKey> {
+    Some(match key {
+        NamedKey::Enter => keys::NamedKey::Enter,
+        NamedKey::Tab => keys::NamedKey::Tab,
+        NamedKey::Escape => keys::NamedKey::Escape,
+        NamedKey::Backspace => keys::NamedKey::Backspace,
+        NamedKey::Space => keys::NamedKey::Space,
+        NamedKey::ArrowUp => keys::NamedKey::ArrowUp,
+        NamedKey::ArrowDown => keys::NamedKey::ArrowDown,
+        NamedKey::ArrowLeft => keys::NamedKey::ArrowLeft,
+        NamedKey::ArrowRight => keys::NamedKey::ArrowRight,
+        NamedKey::Home => keys::NamedKey::Home,
+        NamedKey::End => keys::NamedKey::End,
+        NamedKey::Insert => keys::NamedKey::Insert,
+        NamedKey::Delete => keys::NamedKey::Delete,
+        NamedKey::PageUp => keys::NamedKey::PageUp,
+        NamedKey::PageDown => keys::NamedKey::PageDown,
+        NamedKey::F1 => keys::NamedKey::F1,
+        NamedKey::F2 => keys::NamedKey::F2,
+        NamedKey::F3 => keys::NamedKey::F3,
+        NamedKey::F4 => keys::NamedKey::F4,
+        NamedKey::F5 => keys::NamedKey::F5,
+        NamedKey::F6 => keys::NamedKey::F6,
+        NamedKey::F7 => keys::NamedKey::F7,
+        NamedKey::F8 => keys::NamedKey::F8,
+        NamedKey::F9 => keys::NamedKey::F9,
+        NamedKey::F10 => keys::NamedKey::F10,
+        NamedKey::F11 => keys::NamedKey::F11,
+        NamedKey::F12 => keys::NamedKey::F12,
+        _ => return None,
+    })
+}
 
-        match named {
-            NamedKey::Enter => Some(vec![0x0d]),
-            NamedKey::Tab => {
-                if modifiers.shift_key() {
-                    Some(b"\x1b[Z".to_vec()) // Backtab
-                } else {
-                    Some(vec![0x09])
-                }
-            }
-            NamedKey::Backspace => {
-                if modifiers.alt_key() {
-                    Some(vec![0x1b, 0x7f])
-                } else {
-                    Some(vec![0x7f])
-                }
-            }
-            NamedKey::Escape => Some(vec![0x1b]),
-            NamedKey::Space => {
-                if modifiers.control_key() {
-                    Some(vec![0x00]) // Ctrl+Space = NUL
-                } else {
-                    Some(vec![0x20])
-                }
-            }
-
-            // Arrow keys
-            NamedKey::ArrowUp => Some(self.encode_arrow(b'A', modifier_param)),
-            NamedKey::ArrowDown => Some(self.encode_arrow(b'B', modifier_param)),
-            NamedKey::ArrowRight => Some(self.encode_arrow(b'C', modifier_param)),
-            NamedKey::ArrowLeft => Some(self.encode_arrow(b'D', modifier_param)),
-
-            // Navigation keys
-            NamedKey::Home => Some(encode_csi_tilde_or_letter(1, b'H', modifier_param)),
-            NamedKey::End => Some(encode_csi_tilde_or_letter(4, b'F', modifier_param)),
-            NamedKey::Insert => Some(encode_csi_tilde(2, modifier_param)),
-            NamedKey::Delete => Some(encode_csi_tilde(3, modifier_param)),
-            NamedKey::PageUp => Some(encode_csi_tilde(5, modifier_param)),
-            NamedKey::PageDown => Some(encode_csi_tilde(6, modifier_param)),
-
-            // Function keys
-            NamedKey::F1 => Some(encode_ss3_or_csi(b'P', 11, modifier_param)),
-            NamedKey::F2 => Some(encode_ss3_or_csi(b'Q', 12, modifier_param)),
-            NamedKey::F3 => Some(encode_ss3_or_csi(b'R', 13, modifier_param)),
-            NamedKey::F4 => Some(encode_ss3_or_csi(b'S', 14, modifier_param)),
-            NamedKey::F5 => Some(encode_csi_tilde(15, modifier_param)),
-            NamedKey::F6 => Some(encode_csi_tilde(17, modifier_param)),
-            NamedKey::F7 => Some(encode_csi_tilde(18, modifier_param)),
-            NamedKey::F8 => Some(encode_csi_tilde(19, modifier_param)),
-            NamedKey::F9 => Some(encode_csi_tilde(20, modifier_param)),
-            NamedKey::F10 => Some(encode_csi_tilde(21, modifier_param)),
-            NamedKey::F11 => Some(encode_csi_tilde(23, modifier_param)),
-            NamedKey::F12 => Some(encode_csi_tilde(24, modifier_param)),
-
-            _ => None,
-        }
-    }
-
-    fn encode_arrow(&self, letter: u8, modifier_param: Option<u8>) -> Vec<u8> {
-        if let Some(m) = modifier_param {
-            // With modifiers: \e[1;Nletter
-            format!("\x1b[1;{}{}", m, letter as char).into_bytes()
-        } else if self.application_cursor_keys {
-            // Application mode: SS3 letter
-            vec![0x1b, b'O', letter]
-        } else {
-            // Normal mode: CSI letter
-            vec![0x1b, b'[', letter]
-        }
+/// Convert winit ModifiersState to core Modifiers.
+fn winit_mods_to_core(mods: ModifiersState) -> keys::Modifiers {
+    keys::Modifiers {
+        shift: mods.shift_key(),
+        ctrl: mods.control_key(),
+        alt: mods.alt_key(),
     }
 }
 
-/// Compute the xterm modifier parameter (1-based).
-/// Returns None if no modifiers are active.
-fn modifier_param(modifiers: ModifiersState) -> Option<u8> {
-    let mut param: u8 = 1; // base value
-    if modifiers.shift_key() {
-        param += 1;
-    }
-    if modifiers.alt_key() {
-        param += 2;
-    }
-    if modifiers.control_key() {
-        param += 4;
-    }
-    if param == 1 {
-        None
-    } else {
-        Some(param)
-    }
-}
-
-/// Encode CSI number ~ sequences (e.g. Delete = \e[3~, with modifiers \e[3;N~)
-fn encode_csi_tilde(number: u8, modifier_param: Option<u8>) -> Vec<u8> {
-    match modifier_param {
-        Some(m) => format!("\x1b[{};{}~", number, m).into_bytes(),
-        None => format!("\x1b[{}~", number).into_bytes(),
-    }
-}
-
-/// Encode Home/End: without modifiers use \e[H/\e[F, with modifiers use \e[1;NH/\e[1;NF
-fn encode_csi_tilde_or_letter(_number: u8, letter: u8, modifier_param: Option<u8>) -> Vec<u8> {
-    match modifier_param {
-        Some(m) => format!("\x1b[1;{}{}", m, letter as char).into_bytes(),
-        None => vec![0x1b, b'[', letter],
-    }
-}
-
-/// Encode F1–F4: without modifiers use SS3 (e.g. \eOP), with modifiers use CSI number ~
-fn encode_ss3_or_csi(ss3_letter: u8, csi_number: u8, modifier_param: Option<u8>) -> Vec<u8> {
-    match modifier_param {
-        Some(m) => format!("\x1b[{};{}~", csi_number, m).into_bytes(),
-        None => vec![0x1b, b'O', ss3_letter],
-    }
-}
-
-/// Map a physical key code to its Ctrl+key control character (0x01–0x1a).
-fn ctrl_code_for_key(code: KeyCode) -> Option<u8> {
+/// Map a physical key code to a letter index (A=0, B=1, ..., Z=25).
+fn letter_index_for_keycode(code: KeyCode) -> Option<u8> {
     match code {
-        KeyCode::KeyA => Some(0x01),
-        KeyCode::KeyB => Some(0x02),
-        KeyCode::KeyC => Some(0x03),
-        KeyCode::KeyD => Some(0x04),
-        KeyCode::KeyE => Some(0x05),
-        KeyCode::KeyF => Some(0x06),
-        KeyCode::KeyG => Some(0x07),
-        KeyCode::KeyH => Some(0x08),
-        KeyCode::KeyI => Some(0x09),
-        KeyCode::KeyJ => Some(0x0a),
-        KeyCode::KeyK => Some(0x0b),
-        KeyCode::KeyL => Some(0x0c),
-        KeyCode::KeyM => Some(0x0d),
-        KeyCode::KeyN => Some(0x0e),
-        KeyCode::KeyO => Some(0x0f),
-        KeyCode::KeyP => Some(0x10),
-        KeyCode::KeyQ => Some(0x11),
-        KeyCode::KeyR => Some(0x12),
-        KeyCode::KeyS => Some(0x13),
-        KeyCode::KeyT => Some(0x14),
-        KeyCode::KeyU => Some(0x15),
-        KeyCode::KeyV => Some(0x16),
-        KeyCode::KeyW => Some(0x17),
-        KeyCode::KeyX => Some(0x18),
-        KeyCode::KeyY => Some(0x19),
-        KeyCode::KeyZ => Some(0x1a),
-        KeyCode::BracketLeft => Some(0x1b),  // Ctrl+[ = ESC
-        KeyCode::Backslash => Some(0x1c),    // Ctrl+\ = FS
-        KeyCode::BracketRight => Some(0x1d), // Ctrl+] = GS
+        KeyCode::KeyA => Some(0),
+        KeyCode::KeyB => Some(1),
+        KeyCode::KeyC => Some(2),
+        KeyCode::KeyD => Some(3),
+        KeyCode::KeyE => Some(4),
+        KeyCode::KeyF => Some(5),
+        KeyCode::KeyG => Some(6),
+        KeyCode::KeyH => Some(7),
+        KeyCode::KeyI => Some(8),
+        KeyCode::KeyJ => Some(9),
+        KeyCode::KeyK => Some(10),
+        KeyCode::KeyL => Some(11),
+        KeyCode::KeyM => Some(12),
+        KeyCode::KeyN => Some(13),
+        KeyCode::KeyO => Some(14),
+        KeyCode::KeyP => Some(15),
+        KeyCode::KeyQ => Some(16),
+        KeyCode::KeyR => Some(17),
+        KeyCode::KeyS => Some(18),
+        KeyCode::KeyT => Some(19),
+        KeyCode::KeyU => Some(20),
+        KeyCode::KeyV => Some(21),
+        KeyCode::KeyW => Some(22),
+        KeyCode::KeyX => Some(23),
+        KeyCode::KeyY => Some(24),
+        KeyCode::KeyZ => Some(25),
         _ => None,
     }
 }
