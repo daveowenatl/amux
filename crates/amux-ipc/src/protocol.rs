@@ -27,6 +27,13 @@ pub struct RpcError {
     pub message: String,
 }
 
+/// A server-pushed event (no `id` field — distinguished from responses by `event` field).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerEvent {
+    pub event: String,
+    pub data: serde_json::Value,
+}
+
 impl Response {
     pub fn ok(id: String, result: serde_json::Value) -> Self {
         Self {

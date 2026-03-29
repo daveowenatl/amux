@@ -404,7 +404,7 @@ fn main() -> anyhow::Result<()> {
         player.configure(&app_config.notifications.sound.sound);
     }
 
-    let (ipc_rx, ipc_addr) = amux_ipc::start_server()?;
+    let (ipc_rx, ipc_addr, event_broadcaster) = amux_ipc::start_server()?;
     tracing::info!("IPC server: {}", ipc_addr);
 
     let theme = theme::Theme::default();
@@ -499,6 +499,7 @@ fn main() -> anyhow::Result<()> {
                 next_surface_id: state.next_surface_id,
                 sidebar: state.sidebar,
                 ipc_rx,
+                event_broadcaster,
                 socket_addr: ipc_addr,
                 config,
                 theme,
@@ -1078,6 +1079,7 @@ struct AmuxApp {
     next_surface_id: u64,
     sidebar: SidebarState,
     ipc_rx: std::sync::mpsc::Receiver<IpcCommand>,
+    event_broadcaster: amux_ipc::EventBroadcaster,
     socket_addr: amux_ipc::IpcAddr,
     config: Arc<AmuxTermConfig>,
     theme: theme::Theme,
@@ -3059,8 +3061,11 @@ impl AmuxApp {
     ) -> u64 {
         let focused = self.focused_pane_id();
         let source_str = source.as_str();
+        // Clone for the IPC broadcast after the notification is stored.
+        let bc_title = title.clone();
+        let bc_body = body.clone();
 
-        if !self.app_focused {
+        let nid = if !self.app_focused {
             // Tier 1: app is unfocused — always treat as background
             if self.app_config.notifications.system_notifications && !skip_toast {
                 self.system_notifier.send(&title, &body, ws_id, pane_id);
@@ -3098,7 +3103,22 @@ impl AmuxApp {
                 self.bubble_workspace(ws_id);
             }
             nid
-        }
+        };
+
+        // Broadcast to subscribed IPC clients
+        self.event_broadcaster.send(amux_ipc::ServerEvent {
+            event: "notification".to_string(),
+            data: serde_json::json!({
+                "notification_id": nid,
+                "workspace_id": ws_id.to_string(),
+                "pane_id": pane_id.to_string(),
+                "title": bc_title,
+                "body": bc_body,
+                "source": source_str,
+            }),
+        });
+
+        nid
     }
 
     /// Move a workspace to the top of the sidebar (just index 0 for now,
