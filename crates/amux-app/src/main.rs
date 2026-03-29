@@ -17,6 +17,7 @@ use amux_notify::{
 use amux_session::SessionData;
 use amux_term::color::resolve_color;
 use amux_term::config::AmuxTermConfig;
+use amux_term::font;
 use amux_term::osc::NotificationEvent;
 use amux_term::pane::TerminalPane;
 use portable_pty::CommandBuilder;
@@ -92,8 +93,8 @@ struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            font_size: amux_term::font::DEFAULT_FONT_SIZE,
-            font_family: amux_term::font::DEFAULT_FONT_FAMILY.to_owned(),
+            font_size: font::DEFAULT_FONT_SIZE,
+            font_family: font::DEFAULT_FONT_FAMILY.to_owned(),
             notifications: NotificationConfig::default(),
         }
     }
@@ -176,7 +177,7 @@ fn validate_font_size(size: f32) -> f32 {
     const MIN_FONT_SIZE: f32 = 4.0;
     const MAX_FONT_SIZE: f32 = 96.0;
     if !size.is_finite() || size <= 0.0 {
-        amux_term::font::DEFAULT_FONT_SIZE
+        font::DEFAULT_FONT_SIZE
     } else {
         size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
     }
@@ -301,7 +302,7 @@ fn main() -> anyhow::Result<()> {
 
     let app_config = load_app_config();
     let font_size = app_config.font_size;
-    let font_config = amux_term::font::FontConfig {
+    let font_config = font::FontConfig {
         family: app_config.font_family.clone(),
         size: app_config.font_size,
     };
@@ -2393,7 +2394,7 @@ impl AmuxApp {
                     self.font_size = (self.font_size - 1.0).max(4.0);
                 }
                 menu_bar::MenuAction::ZoomReset => {
-                    self.font_size = amux_term::font::DEFAULT_FONT_SIZE;
+                    self.font_size = font::DEFAULT_FONT_SIZE;
                 }
             }
         }

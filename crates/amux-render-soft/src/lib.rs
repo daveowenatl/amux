@@ -20,9 +20,7 @@ pub struct SoftRenderer {
     glyph_cache: HashMap<CacheKey, Option<CachedGlyph>>,
     pub cell_width: f32,
     pub cell_height: f32,
-    #[allow(dead_code)]
-    font_size: f32,
-    metrics: Metrics,
+    pub metrics: Metrics,
 }
 
 #[derive(Clone)]
@@ -85,7 +83,6 @@ impl SoftRenderer {
             glyph_cache: HashMap::new(),
             cell_width,
             cell_height,
-            font_size,
             metrics,
         }
     }
