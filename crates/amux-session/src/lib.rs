@@ -10,17 +10,22 @@ use serde::{Deserialize, Serialize};
 /// Maximum scrollback lines saved per surface.
 pub const MAX_SCROLLBACK_LINES: usize = 4_000;
 
-/// Maximum total characters of scrollback saved per surface.
+/// Maximum total bytes of scrollback saved per surface.
 /// Prevents unbounded session file growth from long lines (e.g., minified JSON).
-pub const MAX_SCROLLBACK_CHARS: usize = 400_000;
+pub const MAX_SCROLLBACK_BYTES: usize = 400_000;
 
-/// Truncate scrollback text to fit within `max_chars`, keeping the most recent
-/// output (truncating from the top). Avoids cutting mid-line.
-pub fn truncate_scrollback(text: &str, max_chars: usize) -> &str {
-    if text.len() <= max_chars {
+/// Truncate scrollback text to fit within `max_bytes`, keeping the most recent
+/// output (truncating from the top). Avoids cutting mid-line when possible.
+/// Safe for multi-byte UTF-8: advances to the next char boundary if needed.
+pub fn truncate_scrollback(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
         return text;
     }
-    let excess = text.len() - max_chars;
+    let mut excess = text.len() - max_bytes;
+    // Advance to a valid UTF-8 char boundary.
+    while excess < text.len() && !text.is_char_boundary(excess) {
+        excess += 1;
+    }
     // Find the next newline after the truncation point to avoid mid-line cut.
     match text[excess..].find('\n') {
         Some(i) => &text[excess + i + 1..],
@@ -347,12 +352,40 @@ mod tests {
 
     #[test]
     fn truncate_scrollback_avoids_mid_line_cut() {
-        // "abc\ndef\nghi\n" = 12 chars, limit 8 → excess 4
+        // "abc\ndef\nghi\n" = 12 bytes, limit 8 → excess 4
         // text[4..] = "def\nghi\n", first \n at index 3 → skip to "ghi\n"
-        // Wait: excess=4, text[4..]="def\nghi\n", find('\n')=Some(3), so start=4+3+1=8
-        // text[8..] = "ghi\n"
         let text = "abc\ndef\nghi\n";
         let result = truncate_scrollback(text, 8);
         assert_eq!(result, "ghi\n");
+    }
+
+    #[test]
+    fn truncate_scrollback_multibyte_utf8() {
+        // "你好\n世界\n" = 6+1+6+1 = 14 bytes
+        let text = "你好\n世界\n";
+        assert_eq!(text.len(), 14);
+        // limit=8 → excess=6, byte 6 is '\n', find('\n')=Some(0), start=6+0+1=7
+        let result = truncate_scrollback(text, 8);
+        assert_eq!(result, "世界\n");
+    }
+
+    #[test]
+    fn truncate_scrollback_mid_codepoint_boundary() {
+        // "café\ndata\n" — 'é' is 2 bytes (0xC3 0xA9), total = 5+1+5 = 11 bytes
+        let text = "café\ndata\n";
+        assert_eq!(text.len(), 11);
+        // limit=7 → excess=4, byte 4 is inside 'é' (0xA9), advance to 5 ('\n')
+        // find('\n')=Some(0), start=5+0+1=6
+        let result = truncate_scrollback(text, 7);
+        assert_eq!(result, "data\n");
+    }
+
+    #[test]
+    fn truncate_scrollback_no_newline() {
+        // Single long line with no newlines — falls through to &text[excess..]
+        let text = "abcdefghijklmnop";
+        let result = truncate_scrollback(text, 10);
+        // excess=6, no newline found, returns text[6..] = "ghijklmnop"
+        assert_eq!(result, "ghijklmnop");
     }
 }
