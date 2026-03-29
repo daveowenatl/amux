@@ -1,3 +1,4 @@
+mod managed_pane;
 mod menu_bar;
 mod sidebar;
 mod system_notify;
@@ -20,6 +21,7 @@ use amux_term::config::AmuxTermConfig;
 use amux_term::font;
 use amux_term::osc::NotificationEvent;
 use amux_term::pane::TerminalPane;
+use managed_pane::*;
 use portable_pty::CommandBuilder;
 use wezterm_surface::{CursorShape, CursorVisibility};
 use wezterm_term::color::SrgbaTuple;
@@ -903,48 +905,8 @@ fn cleanup_addr(addr: &amux_ipc::IpcAddr) {
 
 // --- Data Model ---
 // Hierarchy: Workspace > PaneTree (splits) > Pane (each has tab bar) > Surface (terminal tab)
-
-/// Per-surface metadata reported by shell integration, agent hooks, or OSC sequences.
-#[derive(Default, Clone)]
-pub(crate) struct SurfaceMetadata {
-    pub(crate) cwd: Option<String>,
-    pub(crate) git_branch: Option<String>,
-    pub(crate) git_dirty: bool,
-    pub(crate) pr_number: Option<u32>,
-    pub(crate) pr_title: Option<String>,
-    pub(crate) pr_state: Option<String>, // "open", "merged", "closed"
-    /// Surface title from OSC 0/2 (window title set by shell/agent).
-    pub(crate) surface_title: Option<String>,
-}
-
-/// A terminal tab within a pane. Each pane can have multiple surfaces.
-struct PaneSurface {
-    id: u64,
-    pane: TerminalPane,
-    byte_rx: mpsc::Receiver<Vec<u8>>,
-    scroll_offset: usize,
-    scroll_accum: f32,
-    metadata: SurfaceMetadata,
-    /// User-set title override. When set, takes precedence over OSC 0/2 title.
-    user_title: Option<String>,
-}
-
-/// A leaf in the split tree. Each pane has its own tab bar with surfaces.
-struct ManagedPane {
-    surfaces: Vec<PaneSurface>,
-    active_surface_idx: usize,
-    selection: Option<SelectionState>,
-}
-
-impl ManagedPane {
-    fn active_surface(&self) -> &PaneSurface {
-        &self.surfaces[self.active_surface_idx]
-    }
-
-    fn active_surface_mut(&mut self) -> &mut PaneSurface {
-        &mut self.surfaces[self.active_surface_idx]
-    }
-}
+// Core pane types (ManagedPane, PaneSurface, SurfaceMetadata, SelectionState, etc.)
+// live in managed_pane.rs.
 
 /// A workspace shown in the sidebar. Owns the split tree.
 pub(crate) struct Workspace {
@@ -981,80 +943,6 @@ struct DragState {
     node_path: Vec<usize>,
     direction: SplitDirection,
 }
-
-// --- Selection ---
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SelectionMode {
-    Cell,
-    Word,
-    Line,
-}
-
-#[derive(Debug, Clone)]
-struct SelectionState {
-    anchor: (usize, usize), // (col, stable_row)
-    end: (usize, usize),    // (col, stable_row)
-    mode: SelectionMode,
-    active: bool, // true while mouse is held
-}
-
-impl SelectionState {
-    /// Return (start, end) normalized so start <= end in reading order.
-    fn normalized(&self) -> ((usize, usize), (usize, usize)) {
-        let a = self.anchor;
-        let b = self.end;
-        if a.1 < b.1 || (a.1 == b.1 && a.0 <= b.0) {
-            (a, b)
-        } else {
-            (b, a)
-        }
-    }
-
-    /// Check if a cell at (col, stable_row) is within the selection.
-    fn contains(&self, col: usize, stable_row: usize) -> bool {
-        let (start, end) = self.normalized();
-        if stable_row < start.1 || stable_row > end.1 {
-            return false;
-        }
-        if start.1 == end.1 {
-            // Single line
-            col >= start.0 && col <= end.0
-        } else if stable_row == start.1 {
-            col >= start.0
-        } else if stable_row == end.1 {
-            col <= end.0
-        } else {
-            true // middle line
-        }
-    }
-}
-
-/// State for the in-pane find/search bar.
-struct FindState {
-    query: String,
-    /// Matches as (phys_row, start_col, end_col_exclusive).
-    matches: Vec<(usize, usize, usize)>,
-    current_match: usize,
-    /// The pane this search applies to.
-    pane_id: PaneId,
-    /// True on the first frame after opening, for initial focus.
-    just_opened: bool,
-}
-
-/// State for vi-style copy mode (scrollback navigation + visual selection).
-struct CopyModeState {
-    pane_id: PaneId,
-    /// Cursor position in (col, phys_row).
-    cursor: (usize, usize),
-    /// Visual selection anchor (col, phys_row), set when 'v' is pressed.
-    visual_anchor: Option<(usize, usize)>,
-    /// Line-visual mode (V).
-    line_visual: bool,
-}
-
-/// Word boundary delimiters for double-click selection.
-const WORD_DELIMITERS: &str = " \t\n()[]{}'\"|<>&;:,.`~!@#$%^*-+=?/\\";
 
 #[allow(clippy::too_many_arguments)]
 fn spawn_surface(
@@ -1354,6 +1242,7 @@ impl AmuxApp {
                     saved_panes.insert(
                         pane_id,
                         amux_session::SavedManagedPane {
+                            panel_type: managed.panel_type().to_string(),
                             surfaces,
                             active_surface_idx: managed.active_surface_idx,
                         },

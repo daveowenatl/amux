@@ -38,8 +38,16 @@ pub struct SavedWorkspace {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SavedManagedPane {
+    /// Panel type identifier (default "terminal"). Future-proofing for
+    /// non-terminal panels (e.g., markdown, browser).
+    #[serde(default = "default_panel_type")]
+    pub panel_type: String,
     pub surfaces: Vec<SavedSurface>,
     pub active_surface_idx: usize,
+}
+
+fn default_panel_type() -> String {
+    "terminal".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -179,6 +187,7 @@ mod tests {
         panes.insert(
             0,
             SavedManagedPane {
+                panel_type: "terminal".to_string(),
                 surfaces: vec![SavedSurface {
                     id: 0,
                     title: "zsh".to_string(),
