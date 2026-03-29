@@ -17,6 +17,7 @@ use amux_notify::{
 use amux_session::SessionData;
 use amux_term::color::resolve_color;
 use amux_term::config::AmuxTermConfig;
+use amux_term::font;
 use amux_term::osc::NotificationEvent;
 use amux_term::pane::TerminalPane;
 use portable_pty::CommandBuilder;
@@ -64,7 +65,6 @@ fn get_cwd_from_pid(pid: u32) -> Option<String> {
     None
 }
 
-const DEFAULT_FONT_SIZE: f32 = 14.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
 const TAB_BAR_HEIGHT: f32 = 24.0;
 /// Content top inset: tab bar height + 1px border between tab bar and content.
@@ -84,13 +84,17 @@ const TERMINAL_BOTTOM_PAD: f32 = 4.0;
 #[serde(default)]
 struct AppConfig {
     font_size: f32,
+    /// Font family for terminal text (e.g. "JetBrains Mono", "Menlo").
+    /// Resolved against system-installed fonts by cosmic-text.
+    font_family: String,
     notifications: NotificationConfig,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            font_size: DEFAULT_FONT_SIZE,
+            font_size: font::DEFAULT_FONT_SIZE,
+            font_family: font::DEFAULT_FONT_FAMILY.to_owned(),
             notifications: NotificationConfig::default(),
         }
     }
@@ -154,6 +158,11 @@ fn load_app_config() -> AppConfig {
                 Ok(mut config) => {
                     tracing::info!("Loaded config from {}", path.display());
                     config.font_size = validate_font_size(config.font_size);
+                    // Trim whitespace; treat empty as default.
+                    config.font_family = config.font_family.trim().to_owned();
+                    if config.font_family.is_empty() {
+                        config.font_family = font::DEFAULT_FONT_FAMILY.to_owned();
+                    }
                     return config;
                 }
                 Err(e) => {
@@ -173,7 +182,7 @@ fn validate_font_size(size: f32) -> f32 {
     const MIN_FONT_SIZE: f32 = 4.0;
     const MAX_FONT_SIZE: f32 = 96.0;
     if !size.is_finite() || size <= 0.0 {
-        DEFAULT_FONT_SIZE
+        font::DEFAULT_FONT_SIZE
     } else {
         size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
     }
@@ -250,21 +259,26 @@ fn install_system_font_fallback(ctx: &egui::Context) {
         if fonts.font_data.contains_key(name) {
             continue;
         }
-        if let Ok(data) = std::fs::read(path) {
-            fonts
-                .font_data
-                .insert(name.to_owned(), egui::FontData::from_owned(data).into());
-            loaded.push(name);
-            if is_proportional {
-                proportional_fonts.push(name);
-            } else {
-                mono_fonts.push(name);
+        match std::fs::read(path) {
+            Ok(data) => {
+                fonts
+                    .font_data
+                    .insert(name.to_owned(), egui::FontData::from_owned(data).into());
+                loaded.push(name);
+                if is_proportional {
+                    proportional_fonts.push(name);
+                } else {
+                    mono_fonts.push(name);
+                }
+            }
+            Err(e) => {
+                tracing::debug!("Font fallback not found: {} ({})", path, e);
             }
         }
     }
 
     if loaded.is_empty() {
-        tracing::debug!("No system font fallbacks found");
+        tracing::warn!("No system font fallbacks found; egui may miss symbol/emoji coverage");
         return;
     }
 
@@ -293,6 +307,14 @@ fn main() -> anyhow::Result<()> {
 
     let app_config = load_app_config();
     let font_size = app_config.font_size;
+    // FontConfig is only consumed by the GPU renderer; gate to avoid unused
+    // warnings in non-GPU builds. font_family is GPU-only — the egui fallback
+    // renderer uses its built-in monospace font.
+    #[cfg(feature = "gpu-renderer")]
+    let font_config = font::FontConfig {
+        family: app_config.font_family.clone(),
+        size: app_config.font_size,
+    };
 
     // Initialize sound player with configured sound setting
     let mut sound_player = system_notify::SoundPlayer::new();
@@ -383,7 +405,7 @@ fn main() -> anyhow::Result<()> {
             #[cfg(feature = "gpu-renderer")]
             let gpu_renderer = _cc.wgpu_render_state.as_ref().map(|rs| {
                 tracing::info!("GPU renderer initialized (wgpu backend)");
-                GpuRenderer::new(rs.clone(), font_size)
+                GpuRenderer::new(rs.clone(), &font_config)
             });
 
             Ok(Box::new(AmuxApp {
@@ -2376,12 +2398,24 @@ impl AmuxApp {
                 }
                 menu_bar::MenuAction::ZoomIn => {
                     self.font_size = (self.font_size + 1.0).min(96.0);
+                    #[cfg(feature = "gpu-renderer")]
+                    if let Some(gpu) = &mut self.gpu_renderer {
+                        gpu.set_font_size(self.font_size);
+                    }
                 }
                 menu_bar::MenuAction::ZoomOut => {
                     self.font_size = (self.font_size - 1.0).max(4.0);
+                    #[cfg(feature = "gpu-renderer")]
+                    if let Some(gpu) = &mut self.gpu_renderer {
+                        gpu.set_font_size(self.font_size);
+                    }
                 }
                 menu_bar::MenuAction::ZoomReset => {
-                    self.font_size = DEFAULT_FONT_SIZE;
+                    self.font_size = font::DEFAULT_FONT_SIZE;
+                    #[cfg(feature = "gpu-renderer")]
+                    if let Some(gpu) = &mut self.gpu_renderer {
+                        gpu.set_font_size(self.font_size);
+                    }
                 }
             }
         }

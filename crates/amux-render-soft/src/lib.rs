@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use amux_term::font::{self, FontConfig};
 use cosmic_text::fontdb::Family;
 use cosmic_text::{
     Attrs, Buffer, CacheKey, FontSystem, Metrics, Shaping, SwashCache, SwashContent, SwashImage,
@@ -19,8 +20,6 @@ pub struct SoftRenderer {
     glyph_cache: HashMap<CacheKey, Option<CachedGlyph>>,
     pub cell_width: f32,
     pub cell_height: f32,
-    #[allow(dead_code)]
-    font_size: f32,
     metrics: Metrics,
 }
 
@@ -35,12 +34,60 @@ struct CachedGlyph {
 }
 
 impl SoftRenderer {
-    /// Create a new renderer with the given font size.
-    pub fn new(font_size: f32) -> Self {
+    /// Create a new renderer with the given font configuration.
+    pub fn new(font_config: &FontConfig) -> Self {
+        let t0 = std::time::Instant::now();
         let mut font_system = FontSystem::new();
+        tracing::info!(
+            "SoftRenderer FontSystem::new() loaded {} fonts in {:.0?}",
+            font_system.db().len(),
+            t0.elapsed()
+        );
+
+        // Load bundled IBM Plex Mono (all weights/styles) so they're always
+        // available as our default. Italic faces are needed because cosmic-text
+        // 0.12 does not synthesize faux italic.
+        font_system
+            .db_mut()
+            .load_font_data(font::MONO_REGULAR.to_vec());
+        font_system
+            .db_mut()
+            .load_font_data(font::MONO_BOLD.to_vec());
+        font_system
+            .db_mut()
+            .load_font_data(font::MONO_ITALIC.to_vec());
+        font_system
+            .db_mut()
+            .load_font_data(font::MONO_BOLD_ITALIC.to_vec());
+
+        // Default to the bundled IBM Plex Mono for Family::Monospace resolution.
+        font_system
+            .db_mut()
+            .set_monospace_family(font::DEFAULT_FONT_FAMILY);
+
+        // Override with the user-configured family if it's available and differs
+        // from the default.
+        let family = &font_config.family;
+        if family != font::DEFAULT_FONT_FAMILY {
+            let has_family = font_system.db().faces().any(|f| {
+                f.families
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case(family))
+            });
+            if has_family {
+                font_system.db_mut().set_monospace_family(family);
+            } else {
+                tracing::warn!(
+                    "Font family '{}' not found, falling back to {}",
+                    family,
+                    font::DEFAULT_FONT_FAMILY,
+                );
+            }
+        }
+
         let swash_cache = SwashCache::new();
 
-        // Measure monospace cell dimensions by laying out a single character
+        let font_size = font_config.size;
         let line_height = (font_size * 1.3).ceil();
         let metrics = Metrics::new(font_size, line_height);
 
@@ -53,7 +100,6 @@ impl SoftRenderer {
             glyph_cache: HashMap::new(),
             cell_width,
             cell_height,
-            font_size,
             metrics,
         }
     }
@@ -86,8 +132,12 @@ impl SoftRenderer {
         let start = total.saturating_sub(rows);
         let lines = screen.lines_in_phys_range(start..total);
 
+        // Two-pass rendering per row: draw all cell backgrounds first, then
+        // all glyphs. This prevents a cell's background from erasing the
+        // overhang of an italic glyph drawn in the preceding cell.
         for (row_idx, line) in lines.iter().enumerate() {
             let y_offset = (row_idx as f32 * self.cell_height) as i32;
+            let mut pending_glyphs: Vec<(String, i32, i32, Pixel, bool, bool)> = Vec::new();
 
             for cell_ref in line.visible_cells() {
                 let col_idx = cell_ref.cell_index();
@@ -120,20 +170,33 @@ impl SoftRenderer {
                     );
                 }
 
-                // Draw glyph
+                // Collect glyph for second pass
                 let text = cell_ref.str();
                 if !text.is_empty() && text != " " {
-                    self.draw_glyph(
-                        &mut pixels,
-                        pixel_width,
-                        pixel_height,
-                        text,
+                    pending_glyphs.push((
+                        text.to_owned(),
                         x_offset,
                         y_offset,
                         fg_rgba,
                         attrs.intensity() == wezterm_term::Intensity::Bold,
-                    );
+                        attrs.italic(),
+                    ));
                 }
+            }
+
+            // Second pass: draw glyphs on top of all backgrounds
+            for (text, x, y, fg, bold, italic) in pending_glyphs {
+                self.draw_glyph(
+                    &mut pixels,
+                    pixel_width,
+                    pixel_height,
+                    &text,
+                    x,
+                    y,
+                    fg,
+                    bold,
+                    italic,
+                );
             }
         }
 
@@ -168,6 +231,7 @@ impl SoftRenderer {
         y_origin: i32,
         fg_color: Pixel,
         bold: bool,
+        italic: bool,
     ) {
         // Layout the glyph using cosmic-text buffer
         let weight = if bold {
@@ -175,7 +239,15 @@ impl SoftRenderer {
         } else {
             cosmic_text::Weight::NORMAL
         };
-        let attrs = Attrs::new().family(Family::Monospace).weight(weight);
+        let style = if italic {
+            cosmic_text::Style::Italic
+        } else {
+            cosmic_text::Style::Normal
+        };
+        let attrs = Attrs::new()
+            .family(Family::Monospace)
+            .weight(weight)
+            .style(style);
 
         let mut buffer = Buffer::new_empty(self.metrics);
         {
