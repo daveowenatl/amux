@@ -63,6 +63,10 @@ rodio = { version = "0.20", default-features = false, features = ["wav", "vorbis
 objc2-foundation = "0.3"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSDockTile"] }
 
+# Menu bar (disable libxdo on Linux — only needed for simulating key events, not menus)
+muda = { version = "0.17", default-features = false, features = ["gtk"] }
+raw-window-handle = "0.6"
+
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
