@@ -1,3 +1,4 @@
+mod menu_bar;
 mod sidebar;
 mod system_notify;
 mod theme;
@@ -362,6 +363,9 @@ fn main() -> anyhow::Result<()> {
         Box::new(move |_cc| {
             // Add system monospace font as fallback for braille/symbol coverage
             install_system_font_fallback(&_cc.egui_ctx);
+
+            // Install native menu bar (macOS: top-of-screen menu; other: no-op)
+            menu_bar::install();
 
             // Hide the panel resize handle entirely (cursor still changes on hover).
             _cc.egui_ctx.style_mut(|style| {
@@ -1424,6 +1428,9 @@ impl eframe::App for AmuxApp {
         // Handle keyboard shortcuts BEFORE terminal input
         let shortcut_consumed = self.handle_shortcuts(ctx);
 
+        // Drain native menu bar actions
+        self.handle_menu_actions();
+
         // Handle keyboard/paste input -> focused pane's active surface only
         // (blocked during copy mode — all keys go through handle_copy_mode_key)
         let mut sent_input = false;
@@ -2316,6 +2323,46 @@ impl AmuxApp {
         self.workspaces.remove(ws_idx);
         if self.active_workspace_idx >= self.workspaces.len() {
             self.active_workspace_idx = self.workspaces.len() - 1;
+        }
+    }
+
+    // --- Menu bar actions ---
+
+    fn handle_menu_actions(&mut self) {
+        if let Some(action) = menu_bar::take_pending_action() {
+            match action {
+                menu_bar::MenuAction::None => {}
+                menu_bar::MenuAction::NewWorkspace => {
+                    self.create_workspace(None);
+                }
+                menu_bar::MenuAction::NewTab => {
+                    self.add_surface_to_focused_pane();
+                }
+                menu_bar::MenuAction::CloseTab => {
+                    self.do_close_cascade();
+                }
+                menu_bar::MenuAction::SaveSession => {
+                    let data = self.build_session_data();
+                    if let Err(e) = amux_session::save(&data) {
+                        tracing::error!("Failed to save session: {}", e);
+                    }
+                }
+                menu_bar::MenuAction::ToggleSidebar => {
+                    self.sidebar.visible = !self.sidebar.visible;
+                }
+                menu_bar::MenuAction::ToggleNotificationPanel => {
+                    self.show_notification_panel = !self.show_notification_panel;
+                }
+                menu_bar::MenuAction::ZoomIn => {
+                    self.font_size = (self.font_size + 1.0).min(96.0);
+                }
+                menu_bar::MenuAction::ZoomOut => {
+                    self.font_size = (self.font_size - 1.0).max(4.0);
+                }
+                menu_bar::MenuAction::ZoomReset => {
+                    self.font_size = DEFAULT_FONT_SIZE;
+                }
+            }
         }
     }
 
