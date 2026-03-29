@@ -217,6 +217,12 @@ enum Command {
         #[arg(long)]
         uninstall: bool,
     },
+    /// Subscribe to server events and print them as newline-delimited JSON
+    Subscribe {
+        /// Event types to subscribe to (e.g. notification, focus_change)
+        #[arg(required = true)]
+        events: Vec<String>,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -709,6 +715,37 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::ClaudeHook { event } => {
             handle_claude_hook(&mut client, &event).await?;
+        }
+        Command::Subscribe { events } => {
+            let resp = client
+                .call("subscribe", serde_json::json!({ "events": events }))
+                .await?;
+            if !resp.ok {
+                print_response(&resp, cli.json);
+                std::process::exit(1);
+            }
+            if cli.json {
+                // Print the subscribe confirmation
+                print_response(&resp, true);
+            } else if let Some(result) = &resp.result {
+                if let Some(subscribed) = result.get("subscribed").and_then(|s| s.as_array()) {
+                    let names: Vec<&str> = subscribed.iter().filter_map(|v| v.as_str()).collect();
+                    eprintln!("Subscribed to: {}", names.join(", "));
+                }
+            }
+            // Stream events until the connection closes or Ctrl+C
+            loop {
+                match client.read_line().await {
+                    Ok(Some(line)) => {
+                        println!("{}", line);
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        eprintln!("Error reading event: {}", e);
+                        break;
+                    }
+                }
+            }
         }
         Command::SessionClear | Command::InstallShellIntegration | Command::InstallHooks { .. } => {
             unreachable!("handled before IPC connection");

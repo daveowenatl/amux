@@ -27,6 +27,8 @@ pub const METHODS: &[&str] = &[
     "notify.list",
     "notify.clear",
     "session.save",
+    "subscribe",
+    "unsubscribe",
 ];
 
 // --- Params ---

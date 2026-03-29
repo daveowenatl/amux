@@ -66,4 +66,10 @@ impl IpcClient {
         let resp: Response = serde_json::from_str(&line)?;
         Ok(resp)
     }
+
+    /// Read the next line from the server (event or response).
+    /// Returns `None` if the connection is closed.
+    pub async fn read_line(&mut self) -> anyhow::Result<Option<String>> {
+        Ok(self.reader.next_line().await?)
+    }
 }
