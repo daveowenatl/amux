@@ -158,6 +158,11 @@ fn load_app_config() -> AppConfig {
                 Ok(mut config) => {
                     tracing::info!("Loaded config from {}", path.display());
                     config.font_size = validate_font_size(config.font_size);
+                    // Trim whitespace; treat empty as default.
+                    config.font_family = config.font_family.trim().to_owned();
+                    if config.font_family.is_empty() {
+                        config.font_family = font::DEFAULT_FONT_FAMILY.to_owned();
+                    }
                     return config;
                 }
                 Err(e) => {
@@ -302,6 +307,10 @@ fn main() -> anyhow::Result<()> {
 
     let app_config = load_app_config();
     let font_size = app_config.font_size;
+    // FontConfig is only consumed by the GPU renderer; gate to avoid unused
+    // warnings in non-GPU builds. font_family is GPU-only — the egui fallback
+    // renderer uses its built-in monospace font.
+    #[cfg(feature = "gpu-renderer")]
     let font_config = font::FontConfig {
         family: app_config.font_family.clone(),
         size: app_config.font_size,
@@ -2389,12 +2398,24 @@ impl AmuxApp {
                 }
                 menu_bar::MenuAction::ZoomIn => {
                     self.font_size = (self.font_size + 1.0).min(96.0);
+                    #[cfg(feature = "gpu-renderer")]
+                    if let Some(gpu) = &mut self.gpu_renderer {
+                        gpu.set_font_size(self.font_size);
+                    }
                 }
                 menu_bar::MenuAction::ZoomOut => {
                     self.font_size = (self.font_size - 1.0).max(4.0);
+                    #[cfg(feature = "gpu-renderer")]
+                    if let Some(gpu) = &mut self.gpu_renderer {
+                        gpu.set_font_size(self.font_size);
+                    }
                 }
                 menu_bar::MenuAction::ZoomReset => {
                     self.font_size = font::DEFAULT_FONT_SIZE;
+                    #[cfg(feature = "gpu-renderer")]
+                    if let Some(gpu) = &mut self.gpu_renderer {
+                        gpu.set_font_size(self.font_size);
+                    }
                 }
             }
         }

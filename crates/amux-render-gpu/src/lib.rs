@@ -60,7 +60,7 @@ impl GpuRenderer {
             t0.elapsed()
         );
 
-        // Load bundled fonts so they're always available for terminal rendering.
+        // Load bundled IBM Plex Mono so it's always available as our default.
         font_system
             .db_mut()
             .load_font_data(font::MONO_REGULAR.to_vec());
@@ -68,20 +68,29 @@ impl GpuRenderer {
             .db_mut()
             .load_font_data(font::MONO_BOLD.to_vec());
 
-        // Set the configured font family as the monospace default.
-        // Falls back to system monospace if the family isn't found.
+        // Default to the bundled IBM Plex Mono for Family::Monospace resolution.
+        font_system
+            .db_mut()
+            .set_monospace_family(font::DEFAULT_FONT_FAMILY);
+
+        // Override with the user-configured family if it's available and differs
+        // from the default.
         let family = &font_config.family;
-        let has_family = font_system
-            .db()
-            .faces()
-            .any(|f| f.families.iter().any(|(name, _)| name == family));
-        if has_family {
-            font_system.db_mut().set_monospace_family(family);
-        } else {
-            tracing::warn!(
-                "Font family '{}' not found, using system default monospace",
-                family
-            );
+        if family != font::DEFAULT_FONT_FAMILY {
+            let has_family = font_system.db().faces().any(|f| {
+                f.families
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case(family))
+            });
+            if has_family {
+                font_system.db_mut().set_monospace_family(family);
+            } else {
+                tracing::warn!(
+                    "Font family '{}' not found, falling back to {}",
+                    family,
+                    font::DEFAULT_FONT_FAMILY,
+                );
+            }
         }
 
         let swash_cache = SwashCache::new();
