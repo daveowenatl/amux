@@ -20,7 +20,7 @@ pub struct SoftRenderer {
     glyph_cache: HashMap<CacheKey, Option<CachedGlyph>>,
     pub cell_width: f32,
     pub cell_height: f32,
-    pub metrics: Metrics,
+    metrics: Metrics,
 }
 
 #[derive(Clone)]
@@ -132,8 +132,12 @@ impl SoftRenderer {
         let start = total.saturating_sub(rows);
         let lines = screen.lines_in_phys_range(start..total);
 
+        // Two-pass rendering per row: draw all cell backgrounds first, then
+        // all glyphs. This prevents a cell's background from erasing the
+        // overhang of an italic glyph drawn in the preceding cell.
         for (row_idx, line) in lines.iter().enumerate() {
             let y_offset = (row_idx as f32 * self.cell_height) as i32;
+            let mut pending_glyphs: Vec<(String, i32, i32, Pixel, bool, bool)> = Vec::new();
 
             for cell_ref in line.visible_cells() {
                 let col_idx = cell_ref.cell_index();
@@ -166,21 +170,33 @@ impl SoftRenderer {
                     );
                 }
 
-                // Draw glyph
+                // Collect glyph for second pass
                 let text = cell_ref.str();
                 if !text.is_empty() && text != " " {
-                    self.draw_glyph(
-                        &mut pixels,
-                        pixel_width,
-                        pixel_height,
-                        text,
+                    pending_glyphs.push((
+                        text.to_owned(),
                         x_offset,
                         y_offset,
                         fg_rgba,
                         attrs.intensity() == wezterm_term::Intensity::Bold,
                         attrs.italic(),
-                    );
+                    ));
                 }
+            }
+
+            // Second pass: draw glyphs on top of all backgrounds
+            for (text, x, y, fg, bold, italic) in pending_glyphs {
+                self.draw_glyph(
+                    &mut pixels,
+                    pixel_width,
+                    pixel_height,
+                    &text,
+                    x,
+                    y,
+                    fg,
+                    bold,
+                    italic,
+                );
             }
         }
 

@@ -278,7 +278,7 @@ fn install_system_font_fallback(ctx: &egui::Context) {
     }
 
     if loaded.is_empty() {
-        tracing::debug!("No system font fallbacks found");
+        tracing::warn!("No system font fallbacks found; egui may miss symbol/emoji coverage");
         return;
     }
 
