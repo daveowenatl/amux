@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/amux-app",
     "crates/amux-cli",
+    "crates/amux-core",
     "crates/amux-term",
     "crates/amux-render-soft",
     "crates/amux-render-gpu",
@@ -83,6 +84,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 
 # Internal crates
+amux-core = { path = "crates/amux-core" }
 amux-term = { path = "crates/amux-term" }
 amux-ipc = { path = "crates/amux-ipc" }
 amux-layout = { path = "crates/amux-layout" }

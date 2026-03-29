@@ -1,0 +1,10 @@
+[package]
+name = "amux-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "amux shared logic: key encoding, session management, IPC dispatch"
+
+[dependencies]
+
+[dev-dependencies]
