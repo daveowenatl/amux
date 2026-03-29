@@ -63,8 +63,8 @@ rodio = { version = "0.20", default-features = false, features = ["wav", "vorbis
 objc2-foundation = "0.3"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSDockTile"] }
 
-# Menu bar (default features pull in gtk/libxdo on Linux; disabled until Linux menu init is wired up)
-muda = { version = "0.17", default-features = false }
+# Menu bar (Linux requires gtk feature + system GTK dev libs for muda to compile)
+muda = "0.17"
 raw-window-handle = "0.6"
 
 # Utilities
