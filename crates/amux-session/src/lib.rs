@@ -46,8 +46,11 @@ pub struct SavedManagedPane {
     pub active_surface_idx: usize,
 }
 
+/// The panel type identifier for terminal panes.
+pub const PANEL_TYPE_TERMINAL: &str = "terminal";
+
 fn default_panel_type() -> String {
-    "terminal".to_string()
+    PANEL_TYPE_TERMINAL.to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -301,6 +304,18 @@ mod tests {
         }"#;
         let surface: SavedSurface = serde_json::from_str(json).unwrap();
         assert!(surface.user_title.is_none());
+    }
+
+    #[test]
+    fn deserialize_without_panel_type_defaults_to_terminal() {
+        let json = r#"{
+            "surfaces": [
+                { "id": 0, "title": "zsh", "cols": 80, "rows": 24 }
+            ],
+            "active_surface_idx": 0
+        }"#;
+        let pane: SavedManagedPane = serde_json::from_str(json).unwrap();
+        assert_eq!(pane.panel_type, "terminal");
     }
 
     #[test]

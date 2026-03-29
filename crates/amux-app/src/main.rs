@@ -603,6 +603,14 @@ fn restore_session(
 
     for saved_ws in &session.workspaces {
         for (&pane_id, saved_pane) in &saved_ws.panes {
+            if saved_pane.panel_type != amux_session::PANEL_TYPE_TERMINAL {
+                tracing::warn!(
+                    "Skipping pane {} with unsupported panel type {:?}",
+                    pane_id,
+                    saved_pane.panel_type,
+                );
+                continue;
+            }
             let mut surfaces = Vec::new();
             for saved_sf in &saved_pane.surfaces {
                 let cwd = saved_sf.working_dir.as_deref();

@@ -95,17 +95,20 @@ impl ManagedPane {
 
     /// Panel type identifier for future multi-panel support.
     pub(crate) fn panel_type(&self) -> &'static str {
-        "terminal"
+        amux_session::PANEL_TYPE_TERMINAL
     }
 
-    /// Drain pending PTY output from the byte channel into the terminal state machine.
+    /// Drain pending PTY output from the byte channel into the terminal state machine
+    /// for all surfaces (not just the active one). Background tabs must keep their
+    /// terminal state current so that titles, metadata, and scrollback stay in sync.
     /// Returns `true` if any bytes were processed (screen may need repaint).
     pub(crate) fn drain_pty_output(&mut self) -> bool {
-        let surface = &mut self.surfaces[self.active_surface_idx];
         let mut any = false;
-        while let Ok(bytes) = surface.byte_rx.try_recv() {
-            surface.pane.feed_bytes(&bytes);
-            any = true;
+        for surface in &mut self.surfaces {
+            while let Ok(bytes) = surface.byte_rx.try_recv() {
+                surface.pane.feed_bytes(&bytes);
+                any = true;
+            }
         }
         any
     }
