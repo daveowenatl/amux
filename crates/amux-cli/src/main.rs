@@ -724,13 +724,12 @@ async fn main() -> anyhow::Result<()> {
                 print_response(&resp, cli.json);
                 std::process::exit(1);
             }
-            if cli.json {
-                // Print the subscribe confirmation
-                print_response(&resp, true);
-            } else if let Some(result) = &resp.result {
+            if let Some(result) = &resp.result {
                 if let Some(subscribed) = result.get("subscribed").and_then(|s| s.as_array()) {
                     let names: Vec<&str> = subscribed.iter().filter_map(|v| v.as_str()).collect();
-                    eprintln!("Subscribed to: {}", names.join(", "));
+                    if !cli.json {
+                        eprintln!("Subscribed to: {}", names.join(", "));
+                    }
                 }
             }
             // Stream events until the connection closes or Ctrl+C
