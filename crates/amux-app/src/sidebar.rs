@@ -12,7 +12,6 @@ use crate::{SidebarDragState, SidebarState, SurfaceMetadata, Workspace};
 const ROW_HOVER_BG: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
 const TEXT_ACTIVE: Color32 = Color32::WHITE;
 const TEXT_INACTIVE: Color32 = Color32::from_gray(180);
-const TEXT_SECONDARY: Color32 = Color32::from_gray(140);
 const BADGE_ACTIVE_BG: Color32 = Color32::from_rgba_premultiplied(64, 64, 64, 64);
 const NEW_BTN_TEXT: Color32 = Color32::from_gray(140);
 const NEW_BTN_HOVER: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
@@ -33,7 +32,6 @@ const ROW_CORNER_RADIUS: f32 = 6.0;
 const TITLE_FONT_SIZE: f32 = 12.5;
 const BADGE_RADIUS: f32 = 8.0;
 const BADGE_FONT_SIZE: f32 = 9.0;
-const COUNT_FONT_SIZE: f32 = 10.0;
 const NOTIF_FONT_SIZE: f32 = 10.0;
 const NOTIF_PREVIEW_HEIGHT: f32 = 24.0;
 const CLOSE_BTN_SIZE: f32 = 16.0;
@@ -532,15 +530,6 @@ fn render_workspace_row(
             format!("{unread}"),
             egui::FontId::proportional(BADGE_FONT_SIZE),
             Color32::WHITE,
-        );
-    } else {
-        let count = pane_ids.len();
-        ui.painter().text(
-            egui::pos2(rect.right() - ROW_H_PAD, rect.min.y + ROW_V_PAD),
-            egui::Align2::RIGHT_TOP,
-            format!("{count}"),
-            egui::FontId::proportional(COUNT_FONT_SIZE),
-            TEXT_SECONDARY,
         );
     }
 
