@@ -9,3 +9,4 @@ description = "amux CPU terminal renderer using cosmic-text"
 wezterm-term = { workspace = true }
 cosmic-text = { workspace = true }
 tracing = { workspace = true }
+amux-term = { workspace = true }

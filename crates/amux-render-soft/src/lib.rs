@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use amux_term::font::{self, FontConfig};
 use cosmic_text::fontdb::Family;
 use cosmic_text::{
     Attrs, Buffer, CacheKey, FontSystem, Metrics, Shaping, SwashCache, SwashContent, SwashImage,
@@ -35,8 +36,8 @@ struct CachedGlyph {
 }
 
 impl SoftRenderer {
-    /// Create a new renderer with the given font size and family.
-    pub fn new(font_size: f32, font_family: &str) -> Self {
+    /// Create a new renderer with the given font configuration.
+    pub fn new(font_config: &FontConfig) -> Self {
         let t0 = std::time::Instant::now();
         let mut font_system = FontSystem::new();
         tracing::info!(
@@ -45,23 +46,33 @@ impl SoftRenderer {
             t0.elapsed()
         );
 
-        // Check if the configured font family exists in the system font database.
+        // Load bundled fonts so they're always available for terminal rendering.
+        font_system
+            .db_mut()
+            .load_font_data(font::MONO_REGULAR.to_vec());
+        font_system
+            .db_mut()
+            .load_font_data(font::MONO_BOLD.to_vec());
+
+        // Set the configured font family as the monospace default.
+        // Falls back to system monospace if the family isn't found.
+        let family = &font_config.family;
         let has_family = font_system
             .db()
             .faces()
-            .any(|f| f.families.iter().any(|(name, _)| name == font_family));
+            .any(|f| f.families.iter().any(|(name, _)| name == family));
         if has_family {
-            font_system.db_mut().set_monospace_family(font_family);
+            font_system.db_mut().set_monospace_family(family);
         } else {
             tracing::warn!(
                 "Font family '{}' not found, using system default monospace",
-                font_family
+                family
             );
         }
 
         let swash_cache = SwashCache::new();
 
-        // Measure monospace cell dimensions by laying out a single character
+        let font_size = font_config.size;
         let line_height = (font_size * 1.3).ceil();
         let metrics = Metrics::new(font_size, line_height);
 

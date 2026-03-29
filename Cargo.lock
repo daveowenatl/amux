@@ -187,6 +187,7 @@ dependencies = [
 name = "amux-render-gpu"
 version = "0.1.0"
 dependencies = [
+ "amux-term",
  "bytemuck",
  "cosmic-text",
  "egui",
@@ -202,6 +203,7 @@ dependencies = [
 name = "amux-render-soft"
 version = "0.1.0"
 dependencies = [
+ "amux-term",
  "cosmic-text",
  "tracing",
  "wezterm-term",

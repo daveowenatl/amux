@@ -64,8 +64,6 @@ fn get_cwd_from_pid(pid: u32) -> Option<String> {
     None
 }
 
-const DEFAULT_FONT_SIZE: f32 = 14.0;
-const DEFAULT_FONT_FAMILY: &str = "IBM Plex Mono";
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
 const TAB_BAR_HEIGHT: f32 = 24.0;
 /// Content top inset: tab bar height + 1px border between tab bar and content.
@@ -94,8 +92,8 @@ struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            font_size: DEFAULT_FONT_SIZE,
-            font_family: DEFAULT_FONT_FAMILY.to_owned(),
+            font_size: amux_term::font::DEFAULT_FONT_SIZE,
+            font_family: amux_term::font::DEFAULT_FONT_FAMILY.to_owned(),
             notifications: NotificationConfig::default(),
         }
     }
@@ -178,7 +176,7 @@ fn validate_font_size(size: f32) -> f32 {
     const MIN_FONT_SIZE: f32 = 4.0;
     const MAX_FONT_SIZE: f32 = 96.0;
     if !size.is_finite() || size <= 0.0 {
-        DEFAULT_FONT_SIZE
+        amux_term::font::DEFAULT_FONT_SIZE
     } else {
         size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
     }
@@ -303,7 +301,10 @@ fn main() -> anyhow::Result<()> {
 
     let app_config = load_app_config();
     let font_size = app_config.font_size;
-    let font_family = app_config.font_family.clone();
+    let font_config = amux_term::font::FontConfig {
+        family: app_config.font_family.clone(),
+        size: app_config.font_size,
+    };
 
     // Initialize sound player with configured sound setting
     let mut sound_player = system_notify::SoundPlayer::new();
@@ -394,7 +395,7 @@ fn main() -> anyhow::Result<()> {
             #[cfg(feature = "gpu-renderer")]
             let gpu_renderer = _cc.wgpu_render_state.as_ref().map(|rs| {
                 tracing::info!("GPU renderer initialized (wgpu backend)");
-                GpuRenderer::new(rs.clone(), font_size, &font_family)
+                GpuRenderer::new(rs.clone(), &font_config)
             });
 
             Ok(Box::new(AmuxApp {
@@ -2392,7 +2393,7 @@ impl AmuxApp {
                     self.font_size = (self.font_size - 1.0).max(4.0);
                 }
                 menu_bar::MenuAction::ZoomReset => {
-                    self.font_size = DEFAULT_FONT_SIZE;
+                    self.font_size = amux_term::font::DEFAULT_FONT_SIZE;
                 }
             }
         }
