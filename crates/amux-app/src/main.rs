@@ -2362,6 +2362,7 @@ impl AmuxApp {
                     self.do_close_cascade();
                 }
                 menu_bar::MenuAction::SaveSession => {
+                    self.flush_pending_io();
                     let data = self.build_session_data();
                     if let Err(e) = amux_session::save(&data) {
                         tracing::error!("Failed to save session: {}", e);

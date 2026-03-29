@@ -97,7 +97,11 @@ pub(crate) fn build() -> Menu {
     let save_session = MenuItem::new("Save Session", true, accel(CMD_SHIFT, Code::KeyS));
 
     let toggle_sidebar = MenuItem::new("Toggle Sidebar", true, accel(CMD, Code::KeyB));
-    let toggle_notifications = MenuItem::new("Toggle Notifications", true, None);
+    #[cfg(target_os = "macos")]
+    let toggle_notifications = MenuItem::new("Toggle Notifications", true, accel(CMD, Code::KeyI));
+    #[cfg(not(target_os = "macos"))]
+    let toggle_notifications =
+        MenuItem::new("Toggle Notifications", true, accel(CMD_SHIFT, Code::KeyI));
     let zoom_in = MenuItem::new("Zoom In", true, accel(CMD, Code::Equal));
     let zoom_out = MenuItem::new("Zoom Out", true, accel(CMD, Code::Minus));
     let zoom_reset = MenuItem::new("Actual Size", true, accel(CMD, Code::Digit0));
@@ -226,42 +230,45 @@ pub(crate) fn attach_to_window(menu: &Menu, frame: &eframe::Frame) -> bool {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     if let Ok(handle) = frame.window_handle() {
         if let RawWindowHandle::Win32(win32) = handle.as_raw() {
-            unsafe {
-                let _ = menu.init_for_hwnd(win32.hwnd.get() as _);
+            match unsafe { menu.init_for_hwnd(win32.hwnd.get() as _) } {
+                Ok(()) => return true,
+                Err(e) => {
+                    tracing::error!("Failed to attach menu bar to HWND: {e}");
+                    return false;
+                }
             }
-            return true;
         }
     }
     false
 }
 
-/// Drain pending menu events and return the next action, if any.
+/// Drain pending menu events and return the next recognized action, if any.
+/// Skips unrecognized event IDs (e.g. from predefined items handled by the OS)
+/// so they don't block processing of subsequent events in the queue.
 pub(crate) fn take_pending_action() -> Option<MenuAction> {
     let items = MENU_ITEMS.get()?;
-    if let Ok(event) = MenuEvent::receiver().try_recv() {
+    loop {
+        let event = MenuEvent::receiver().try_recv().ok()?;
         let id = &event.id;
         if *id == items.new_workspace {
-            Some(MenuAction::NewWorkspace)
+            return Some(MenuAction::NewWorkspace);
         } else if *id == items.new_tab {
-            Some(MenuAction::NewTab)
+            return Some(MenuAction::NewTab);
         } else if *id == items.close_tab {
-            Some(MenuAction::CloseTab)
+            return Some(MenuAction::CloseTab);
         } else if *id == items.save_session {
-            Some(MenuAction::SaveSession)
+            return Some(MenuAction::SaveSession);
         } else if *id == items.toggle_sidebar {
-            Some(MenuAction::ToggleSidebar)
+            return Some(MenuAction::ToggleSidebar);
         } else if *id == items.toggle_notifications {
-            Some(MenuAction::ToggleNotificationPanel)
+            return Some(MenuAction::ToggleNotificationPanel);
         } else if *id == items.zoom_in {
-            Some(MenuAction::ZoomIn)
+            return Some(MenuAction::ZoomIn);
         } else if *id == items.zoom_out {
-            Some(MenuAction::ZoomOut)
+            return Some(MenuAction::ZoomOut);
         } else if *id == items.zoom_reset {
-            Some(MenuAction::ZoomReset)
-        } else {
-            None
+            return Some(MenuAction::ZoomReset);
         }
-    } else {
-        None
+        // Unknown ID (predefined OS item, etc.) — skip and keep draining.
     }
 }
