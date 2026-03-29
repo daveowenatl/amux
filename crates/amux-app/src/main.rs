@@ -419,6 +419,18 @@ fn main() -> anyhow::Result<()> {
             Some(session)
         }
         Ok(None) => None,
+        Err(amux_session::SessionError::VersionMismatch { version, expected }) => {
+            tracing::warn!(
+                "Session version {} not supported (expected {}), starting fresh",
+                version,
+                expected
+            );
+            None
+        }
+        Err(amux_session::SessionError::Corrupted(e)) => {
+            tracing::error!("Session file corrupted: {}, starting fresh", e);
+            None
+        }
         Err(e) => {
             tracing::warn!("Failed to load session, starting fresh: {}", e);
             None

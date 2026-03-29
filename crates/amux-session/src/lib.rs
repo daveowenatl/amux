@@ -5,6 +5,19 @@ use std::path::PathBuf;
 use amux_layout::PaneTree;
 use serde::{Deserialize, Serialize};
 
+/// Typed errors for session persistence operations.
+#[derive(Debug, thiserror::Error)]
+pub enum SessionError {
+    #[error("corrupted session file: {0}")]
+    Corrupted(#[from] serde_json::Error),
+
+    #[error("unsupported session version {version} (expected {expected})")]
+    VersionMismatch { version: u32, expected: u32 },
+
+    #[error("session file I/O error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
 // --- Limits ---
 
 /// Maximum scrollback lines saved per surface.
@@ -143,7 +156,7 @@ pub fn session_path() -> PathBuf {
 }
 
 /// Save session data to the given path using atomic write (write to .tmp, then rename).
-fn save_to_path(data: &SessionData, path: &std::path::Path) -> anyhow::Result<()> {
+fn save_to_path(data: &SessionData, path: &std::path::Path) -> Result<(), SessionError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -164,7 +177,7 @@ fn save_to_path(data: &SessionData, path: &std::path::Path) -> anyhow::Result<()
 }
 
 /// Load session data from the given path. Returns `None` if the file does not exist.
-fn load_from_path(path: &std::path::Path) -> anyhow::Result<Option<SessionData>> {
+fn load_from_path(path: &std::path::Path) -> Result<Option<SessionData>, SessionError> {
     if !path.exists() {
         return Ok(None);
     }
@@ -173,7 +186,10 @@ fn load_from_path(path: &std::path::Path) -> anyhow::Result<Option<SessionData>>
     let data: SessionData = serde_json::from_str(&content)?;
 
     if data.version != 1 {
-        anyhow::bail!("unsupported session version: {}", data.version);
+        return Err(SessionError::VersionMismatch {
+            version: data.version,
+            expected: 1,
+        });
     }
 
     // Reject empty sessions (no workspaces, or all workspaces have no panes)
@@ -185,7 +201,7 @@ fn load_from_path(path: &std::path::Path) -> anyhow::Result<Option<SessionData>>
 }
 
 /// Delete the given session file.
-fn clear_path(path: &std::path::Path) -> anyhow::Result<()> {
+fn clear_path(path: &std::path::Path) -> Result<(), SessionError> {
     if path.exists() {
         fs::remove_file(path)?;
     }
@@ -193,17 +209,17 @@ fn clear_path(path: &std::path::Path) -> anyhow::Result<()> {
 }
 
 /// Save session data to the default session file.
-pub fn save(data: &SessionData) -> anyhow::Result<()> {
+pub fn save(data: &SessionData) -> Result<(), SessionError> {
     save_to_path(data, &session_path())
 }
 
 /// Load session data from the default session file.
-pub fn load() -> anyhow::Result<Option<SessionData>> {
+pub fn load() -> Result<Option<SessionData>, SessionError> {
     load_from_path(&session_path())
 }
 
 /// Delete the default session file.
-pub fn clear() -> anyhow::Result<()> {
+pub fn clear() -> Result<(), SessionError> {
     clear_path(&session_path())
 }
 
