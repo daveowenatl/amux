@@ -65,6 +65,7 @@ fn get_cwd_from_pid(pid: u32) -> Option<String> {
 }
 
 const DEFAULT_FONT_SIZE: f32 = 14.0;
+const DEFAULT_FONT_FAMILY: &str = "IBM Plex Mono";
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
 const TAB_BAR_HEIGHT: f32 = 24.0;
 /// Content top inset: tab bar height + 1px border between tab bar and content.
@@ -84,6 +85,9 @@ const TERMINAL_BOTTOM_PAD: f32 = 4.0;
 #[serde(default)]
 struct AppConfig {
     font_size: f32,
+    /// Font family for terminal text (e.g. "JetBrains Mono", "Menlo").
+    /// Resolved against system-installed fonts by cosmic-text.
+    font_family: String,
     notifications: NotificationConfig,
 }
 
@@ -91,6 +95,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             font_size: DEFAULT_FONT_SIZE,
+            font_family: DEFAULT_FONT_FAMILY.to_owned(),
             notifications: NotificationConfig::default(),
         }
     }
@@ -250,15 +255,20 @@ fn install_system_font_fallback(ctx: &egui::Context) {
         if fonts.font_data.contains_key(name) {
             continue;
         }
-        if let Ok(data) = std::fs::read(path) {
-            fonts
-                .font_data
-                .insert(name.to_owned(), egui::FontData::from_owned(data).into());
-            loaded.push(name);
-            if is_proportional {
-                proportional_fonts.push(name);
-            } else {
-                mono_fonts.push(name);
+        match std::fs::read(path) {
+            Ok(data) => {
+                fonts
+                    .font_data
+                    .insert(name.to_owned(), egui::FontData::from_owned(data).into());
+                loaded.push(name);
+                if is_proportional {
+                    proportional_fonts.push(name);
+                } else {
+                    mono_fonts.push(name);
+                }
+            }
+            Err(e) => {
+                tracing::debug!("Font fallback not found: {} ({})", path, e);
             }
         }
     }
@@ -293,6 +303,7 @@ fn main() -> anyhow::Result<()> {
 
     let app_config = load_app_config();
     let font_size = app_config.font_size;
+    let font_family = app_config.font_family.clone();
 
     // Initialize sound player with configured sound setting
     let mut sound_player = system_notify::SoundPlayer::new();
@@ -383,7 +394,7 @@ fn main() -> anyhow::Result<()> {
             #[cfg(feature = "gpu-renderer")]
             let gpu_renderer = _cc.wgpu_render_state.as_ref().map(|rs| {
                 tracing::info!("GPU renderer initialized (wgpu backend)");
-                GpuRenderer::new(rs.clone(), font_size)
+                GpuRenderer::new(rs.clone(), font_size, &font_family)
             });
 
             Ok(Box::new(AmuxApp {

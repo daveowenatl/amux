@@ -22,6 +22,7 @@ pub struct SoftRenderer {
     #[allow(dead_code)]
     font_size: f32,
     metrics: Metrics,
+    font_family: String,
 }
 
 #[derive(Clone)]
@@ -35,16 +36,27 @@ struct CachedGlyph {
 }
 
 impl SoftRenderer {
-    /// Create a new renderer with the given font size.
-    pub fn new(font_size: f32) -> Self {
+    /// Create a new renderer with the given font size and family.
+    pub fn new(font_size: f32, font_family: &str) -> Self {
+        let t0 = std::time::Instant::now();
         let mut font_system = FontSystem::new();
+        tracing::info!(
+            "SoftRenderer FontSystem::new() loaded {} fonts in {:.0?}",
+            font_system.db().len(),
+            t0.elapsed()
+        );
+
+        // Set our bundled font as the monospace default so Family::Monospace
+        // resolves to IBM Plex Mono first, with system fonts as fallback.
+        font_system.db_mut().set_monospace_family("IBM Plex Mono");
+
         let swash_cache = SwashCache::new();
 
         // Measure monospace cell dimensions by laying out a single character
         let line_height = (font_size * 1.3).ceil();
         let metrics = Metrics::new(font_size, line_height);
 
-        let cell_width = measure_cell_width(&mut font_system, metrics).ceil();
+        let cell_width = measure_cell_width(&mut font_system, metrics, font_family).ceil();
         let cell_height = line_height;
 
         Self {
@@ -55,6 +67,7 @@ impl SoftRenderer {
             cell_height,
             font_size,
             metrics,
+            font_family: font_family.to_owned(),
         }
     }
 
@@ -132,6 +145,7 @@ impl SoftRenderer {
                         y_offset,
                         fg_rgba,
                         attrs.intensity() == wezterm_term::Intensity::Bold,
+                        attrs.italic(),
                     );
                 }
             }
@@ -168,6 +182,7 @@ impl SoftRenderer {
         y_origin: i32,
         fg_color: Pixel,
         bold: bool,
+        italic: bool,
     ) {
         // Layout the glyph using cosmic-text buffer
         let weight = if bold {
@@ -175,7 +190,15 @@ impl SoftRenderer {
         } else {
             cosmic_text::Weight::NORMAL
         };
-        let attrs = Attrs::new().family(Family::Monospace).weight(weight);
+        let style = if italic {
+            cosmic_text::Style::Italic
+        } else {
+            cosmic_text::Style::Normal
+        };
+        let attrs = Attrs::new()
+            .family(Family::Name(&self.font_family))
+            .weight(weight)
+            .style(style);
 
         let mut buffer = Buffer::new_empty(self.metrics);
         {
@@ -312,14 +335,14 @@ impl SoftRenderer {
 }
 
 /// Measure monospace cell width by laying out "M" and reading the advance.
-fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics) -> f32 {
+fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics, family: &str) -> f32 {
     let mut buffer = Buffer::new_empty(metrics);
     {
         let mut borrowed = buffer.borrow_with(font_system);
         borrowed.set_size(Some(200.0), Some(metrics.line_height));
         borrowed.set_text(
             "M",
-            Attrs::new().family(Family::Monospace),
+            Attrs::new().family(Family::Name(family)),
             Shaping::Advanced,
         );
         borrowed.shape_until_scroll(true);

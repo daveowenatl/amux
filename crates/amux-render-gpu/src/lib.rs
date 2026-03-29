@@ -31,7 +31,7 @@ impl GpuRenderer {
     ///
     /// Initializes pipelines, glyph atlas, and font system. Registers GPU
     /// resources in egui's callback resource map.
-    pub fn new(render_state: egui_wgpu::RenderState, font_size: f32) -> Self {
+    pub fn new(render_state: egui_wgpu::RenderState, font_size: f32, font_family: &str) -> Self {
         let target_format = render_state.target_format;
         let target_is_srgb = target_format.is_srgb();
         tracing::info!("GPU renderer target_format: {target_format:?} (sRGB: {target_is_srgb})");
@@ -51,15 +51,27 @@ impl GpuRenderer {
             ..Default::default()
         });
 
+        let t0 = std::time::Instant::now();
         let mut font_system = FontSystem::new();
+        tracing::info!(
+            "FontSystem::new() loaded {} fonts in {:.0?}",
+            font_system.db().len(),
+            t0.elapsed()
+        );
+
+        // Set our bundled font as the monospace default so Family::Monospace
+        // resolves to IBM Plex Mono first, with system fonts as fallback.
+        font_system.db_mut().set_monospace_family("IBM Plex Mono");
+
         let swash_cache = SwashCache::new();
 
         // Measure cell dimensions via cosmic-text (same approach as amux-render-soft).
+        let font_family = font_family.to_owned();
         let line_height = (font_size * 1.3).ceil();
         let metrics = Metrics::new(font_size, line_height);
         // Ceil cell width to an integer pixel to prevent hairline gaps between
         // adjacent cells caused by fractional coordinates accumulating rounding errors.
-        let cell_width = measure_cell_width(&mut font_system, metrics).ceil();
+        let cell_width = measure_cell_width(&mut font_system, metrics, &font_family).ceil();
         let cell_height = line_height;
 
         // Register resources in egui's callback_resources.
@@ -81,6 +93,7 @@ impl GpuRenderer {
                 image_cache: std::collections::HashMap::new(),
                 shape_cache: std::collections::HashMap::new(),
                 image_sampler,
+                font_family: font_family.clone(),
             });
 
         Self {
@@ -142,7 +155,7 @@ impl GpuRenderer {
             .callback_resources
             .get_mut::<TerminalGpuResources>()
         {
-            let cell_width = measure_cell_width(&mut r.font_system, metrics).ceil();
+            let cell_width = measure_cell_width(&mut r.font_system, metrics, &r.font_family).ceil();
             r.metrics = metrics;
             // Clear all pane render states to force full rebuild with new metrics.
             r.pane_states.clear();
@@ -172,14 +185,14 @@ impl GpuRenderer {
 }
 
 /// Measure monospace cell width by laying out "M" and reading the advance.
-fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics) -> f32 {
+fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics, family: &str) -> f32 {
     let mut buffer = Buffer::new_empty(metrics);
     {
         let mut borrowed = buffer.borrow_with(font_system);
         borrowed.set_size(Some(200.0), Some(metrics.line_height));
         borrowed.set_text(
             "M",
-            Attrs::new().family(Family::Monospace),
+            Attrs::new().family(Family::Name(family)),
             Shaping::Advanced,
         );
         borrowed.shape_until_scroll(true);

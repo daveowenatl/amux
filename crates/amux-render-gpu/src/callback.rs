@@ -262,6 +262,8 @@ pub struct TerminalGpuResources {
     /// Shape cache: maps (text, bold, italic) → shaped glyph data.
     /// Avoids re-running cosmic-text shaping for previously seen glyphs.
     pub shape_cache: HashMap<ShapeCacheKey, Vec<ShapedGlyphEntry>>,
+    /// Font family name for shaping (e.g. "IBM Plex Mono", "JetBrains Mono").
+    pub font_family: String,
     /// Shared sampler for image textures.
     pub image_sampler: wgpu::Sampler,
 }
@@ -946,7 +948,7 @@ fn shape_and_rasterize(
         cosmic_text::Style::Normal
     };
     let attrs = Attrs::new()
-        .family(cosmic_text::fontdb::Family::Monospace)
+        .family(cosmic_text::fontdb::Family::Name(&resources.font_family))
         .weight(weight)
         .style(style);
 
