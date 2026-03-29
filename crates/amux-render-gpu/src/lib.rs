@@ -60,13 +60,21 @@ impl GpuRenderer {
             t0.elapsed()
         );
 
-        // Load bundled IBM Plex Mono so it's always available as our default.
+        // Load bundled IBM Plex Mono (all weights/styles) so they're always
+        // available as our default. Italic faces are needed because cosmic-text
+        // 0.12 does not synthesize faux italic.
         font_system
             .db_mut()
             .load_font_data(font::MONO_REGULAR.to_vec());
         font_system
             .db_mut()
             .load_font_data(font::MONO_BOLD.to_vec());
+        font_system
+            .db_mut()
+            .load_font_data(font::MONO_ITALIC.to_vec());
+        font_system
+            .db_mut()
+            .load_font_data(font::MONO_BOLD_ITALIC.to_vec());
 
         // Default to the bundled IBM Plex Mono for Family::Monospace resolution.
         font_system
