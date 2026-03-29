@@ -7,12 +7,14 @@
 /// Menu item clicks are delivered via `muda::MenuEvent::receiver()`, drained
 /// each frame in the egui update loop.
 ///
-/// Accelerators registered here use `CMD_OR_CTRL` (Cmd on macOS, Ctrl on
-/// Windows/Linux). On both platforms the system menu bar consumes the key
-/// event before it reaches the egui event loop, so the duplicate shortcut
-/// handlers in `handle_shortcuts()` will not double-fire.
+/// Accelerators match the keybindings in `handle_shortcuts()`: Cmd on macOS,
+/// Ctrl+Shift on Windows/Linux for workspace/tab ops, Ctrl for view ops.
+/// On both platforms the system menu bar consumes the key event before it
+/// reaches the egui event loop, so the shortcut handlers will not double-fire.
 use muda::accelerator::{Accelerator, Code, Modifiers};
-use muda::{AboutMetadata, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+#[cfg(target_os = "macos")]
+use muda::AboutMetadata;
+use muda::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 
 /// Actions that can be triggered from the native menu bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +51,12 @@ const CMD: Modifiers = Modifiers::SUPER;
 #[cfg(not(target_os = "macos"))]
 const CMD: Modifiers = Modifiers::CONTROL;
 
+/// Ctrl+Shift on non-macOS — matches `handle_shortcuts()` which uses
+/// Ctrl+Shift for workspace/tab operations to avoid stealing terminal
+/// control keys (Ctrl+N/T/W/S).
+#[cfg(not(target_os = "macos"))]
+const CMD_SHIFT: Modifiers = Modifiers::CONTROL.union(Modifiers::SHIFT);
+
 fn accel(mods: Modifiers, code: Code) -> Option<Accelerator> {
     Some(Accelerator::new(Some(mods), code))
 }
@@ -58,12 +66,36 @@ fn accel(mods: Modifiers, code: Code) -> Option<Accelerator> {
 /// On macOS this sets the app-global menu bar via `init_for_nsapp()`.
 /// On Windows, call `init_for_hwnd()` once the window handle is available
 /// (see `attach_to_window()`).
+///
+/// Accelerators match the existing keybindings in `handle_shortcuts()`:
+/// - macOS: Cmd+key
+/// - Windows/Linux: Ctrl+Shift+key for workspace/tab ops; Ctrl+key for
+///   view ops (sidebar, zoom) that don't conflict with terminal control chars.
 pub(crate) fn build() -> Menu {
     // --- Custom action items ---
+    // On non-macOS, workspace/tab operations use Ctrl+Shift to avoid
+    // stealing terminal control keys (Ctrl+N = new line, Ctrl+W = word
+    // erase, Ctrl+S = XOFF).
+    #[cfg(target_os = "macos")]
     let new_workspace = MenuItem::new("New Workspace", true, accel(CMD, Code::KeyN));
+    #[cfg(not(target_os = "macos"))]
+    let new_workspace = MenuItem::new("New Workspace", true, accel(CMD_SHIFT, Code::KeyN));
+
+    #[cfg(target_os = "macos")]
     let new_tab = MenuItem::new("New Tab", true, accel(CMD, Code::KeyT));
+    #[cfg(not(target_os = "macos"))]
+    let new_tab = MenuItem::new("New Tab", true, accel(CMD_SHIFT, Code::KeyT));
+
+    #[cfg(target_os = "macos")]
     let close_tab = MenuItem::new("Close Tab", true, accel(CMD, Code::KeyW));
+    #[cfg(not(target_os = "macos"))]
+    let close_tab = MenuItem::new("Close Tab", true, accel(CMD_SHIFT, Code::KeyW));
+
+    #[cfg(target_os = "macos")]
     let save_session = MenuItem::new("Save Session", true, accel(CMD, Code::KeyS));
+    #[cfg(not(target_os = "macos"))]
+    let save_session = MenuItem::new("Save Session", true, accel(CMD_SHIFT, Code::KeyS));
+
     let toggle_sidebar = MenuItem::new("Toggle Sidebar", true, accel(CMD, Code::KeyB));
     let toggle_notifications = MenuItem::new("Toggle Notifications", true, None);
     let zoom_in = MenuItem::new("Zoom In", true, accel(CMD, Code::Equal));

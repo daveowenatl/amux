@@ -344,16 +344,14 @@ fn main() -> anyhow::Result<()> {
     // Build the native menu bar (cross-platform via muda).
     let menu = menu_bar::build();
 
-    let mut viewport = egui::ViewportBuilder::default()
+    let viewport = egui::ViewportBuilder::default()
         .with_inner_size([1000.0, 600.0])
         .with_title("amux");
     #[cfg(target_os = "macos")]
-    {
-        viewport = viewport
-            .with_fullsize_content_view(true)
-            .with_titlebar_shown(false)
-            .with_title_shown(false);
-    }
+    let viewport = viewport
+        .with_fullsize_content_view(true)
+        .with_titlebar_shown(false)
+        .with_title_shown(false);
 
     let options = eframe::NativeOptions {
         viewport,
@@ -1396,13 +1394,10 @@ impl eframe::App for AmuxApp {
         }
 
         // Attach native menu bar to the window (Windows: per-HWND).
+        // Retries each frame until the HWND is available.
         #[cfg(target_os = "windows")]
         if !self.menu_attached {
-            if menu_bar::attach_to_window(&self.menu, _frame) {
-                self.menu_attached = true;
-            } else {
-                tracing::debug!("Native menu bar not yet attached; will retry next frame");
-            }
+            self.menu_attached = menu_bar::attach_to_window(&self.menu, _frame);
         }
 
         self.selection_changed = false;
