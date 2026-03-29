@@ -1,5 +1,6 @@
 mod sidebar;
 mod system_notify;
+mod theme;
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -65,12 +66,14 @@ fn get_cwd_from_pid(pid: u32) -> Option<String> {
 const DEFAULT_FONT_SIZE: f32 = 14.0;
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
 const TAB_BAR_HEIGHT: f32 = 24.0;
+/// Content top inset: tab bar height + 1px border between tab bar and content.
+const TAB_CONTENT_TOP_INSET: f32 = TAB_BAR_HEIGHT + 1.0;
+/// Visual padding above the tab bar. On macOS with fullSizeContentView,
+/// this covers the native title bar area where traffic light buttons sit.
+const TERMINAL_TOP_PAD: f32 = 28.0;
 /// Visual padding below the terminal grid (does not reduce PTY rows).
-/// Painted with TERMINAL_BG so it blends with the terminal background.
+/// Painted with terminal background color so it blends with the terminal.
 const TERMINAL_BOTTOM_PAD: f32 = 4.0;
-/// Default terminal background color, used for padding strips and unfilled areas.
-/// Will be replaced by palette-based color when color scheme config is added.
-const TERMINAL_BG: egui::Color32 = egui::Color32::from_gray(0);
 
 // ---------------------------------------------------------------------------
 // App config (loaded from ~/.config/amux/config.toml)
@@ -184,27 +187,43 @@ fn install_system_font_fallback(ctx: &egui::Context) {
 
     // Platform-specific font candidates: (path, name, is_symbol_font)
     // We try to load a monospace font + a symbols font for maximum coverage.
-    let candidates: &[(&str, &str, bool)] = if cfg!(target_os = "macos") {
+    // (path, name, is_symbol_font, is_proportional)
+    let candidates: &[(&str, &str, bool, bool)] = if cfg!(target_os = "macos") {
         &[
+            // SF Pro (system font) for UI chrome text
+            ("/System/Library/Fonts/SFNS.ttf", "sf_pro", false, true),
             // SF Mono: single .ttf with good Unicode coverage
-            ("/System/Library/Fonts/SFNSMono.ttf", "sf_mono", false),
+            (
+                "/System/Library/Fonts/SFNSMono.ttf",
+                "sf_mono",
+                false,
+                false,
+            ),
             // Apple Symbols: broad Unicode symbol coverage
             (
                 "/System/Library/Fonts/Apple Symbols.ttf",
                 "apple_symbols",
                 true,
+                false,
             ),
             // Supplemental Andale Mono as another option
             (
                 "/System/Library/Fonts/Supplemental/Andale Mono.ttf",
                 "andale_mono",
                 false,
+                false,
             ),
         ]
     } else if cfg!(target_os = "windows") {
         &[
-            ("C:\\Windows\\Fonts\\consola.ttf", "consolas", false),
-            ("C:\\Windows\\Fonts\\segmdl2.ttf", "segoe_symbols", true),
+            ("C:\\Windows\\Fonts\\segoeui.ttf", "segoe_ui", false, true),
+            ("C:\\Windows\\Fonts\\consola.ttf", "consolas", false, false),
+            (
+                "C:\\Windows\\Fonts\\segmdl2.ttf",
+                "segoe_symbols",
+                true,
+                false,
+            ),
         ]
     } else {
         &[
@@ -212,16 +231,21 @@ fn install_system_font_fallback(ctx: &egui::Context) {
                 "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
                 "dejavu_mono",
                 false,
+                false,
             ),
             (
                 "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
                 "dejavu_mono",
                 false,
+                false,
             ),
         ]
     };
 
-    for &(path, name, _is_symbol) in candidates {
+    let mut proportional_fonts = Vec::new();
+    let mut mono_fonts = Vec::new();
+
+    for &(path, name, _is_symbol, is_proportional) in candidates {
         if fonts.font_data.contains_key(name) {
             continue;
         }
@@ -230,6 +254,11 @@ fn install_system_font_fallback(ctx: &egui::Context) {
                 .font_data
                 .insert(name.to_owned(), egui::FontData::from_owned(data).into());
             loaded.push(name);
+            if is_proportional {
+                proportional_fonts.push(name);
+            } else {
+                mono_fonts.push(name);
+            }
         }
     }
 
@@ -238,12 +267,19 @@ fn install_system_font_fallback(ctx: &egui::Context) {
         return;
     }
 
-    // Add all loaded fonts as fallbacks to both families
-    for family_key in [egui::FontFamily::Monospace, egui::FontFamily::Proportional] {
-        if let Some(family) = fonts.families.get_mut(&family_key) {
-            for name in &loaded {
-                family.push((*name).to_owned());
-            }
+    // Proportional fonts: put system UI font first, then mono as fallback
+    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        for name in &proportional_fonts {
+            family.insert(0, (*name).to_owned());
+        }
+        for name in &mono_fonts {
+            family.push((*name).to_owned());
+        }
+    }
+    // Monospace fonts: add all as fallbacks
+    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+        for name in &loaded {
+            family.push((*name).to_owned());
         }
     }
 
@@ -266,7 +302,10 @@ fn main() -> anyhow::Result<()> {
     let (ipc_rx, ipc_addr) = amux_ipc::start_server()?;
     tracing::info!("IPC server: {}", ipc_addr);
 
-    let config = Arc::new(AmuxTermConfig::default());
+    let theme = theme::Theme::default();
+    let mut term_config = AmuxTermConfig::default();
+    theme.apply_to_palette(&mut term_config.color_palette);
+    let config = Arc::new(term_config);
 
     // Try to restore a previous session
     let restored = match amux_session::load() {
@@ -287,10 +326,32 @@ fn main() -> anyhow::Result<()> {
         fresh_startup(&ipc_addr, &config)?
     };
 
+    // Force dark appearance on macOS so the title bar matches the app's dark chrome.
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSAppearance, NSApplication};
+        use objc2_foundation::{MainThreadMarker, NSString};
+
+        if let Some(mtm) = MainThreadMarker::new() {
+            let app = NSApplication::sharedApplication(mtm);
+            let dark =
+                NSAppearance::appearanceNamed(&NSString::from_str("NSAppearanceNameDarkAqua"));
+            app.setAppearance(dark.as_deref());
+        }
+    }
+
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1000.0, 600.0])
+        .with_title("amux");
+    #[cfg(target_os = "macos")]
+    {
+        viewport = viewport
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1000.0, 600.0])
-            .with_title("amux"),
+        viewport,
         ..Default::default()
     };
 
@@ -301,6 +362,14 @@ fn main() -> anyhow::Result<()> {
         Box::new(move |_cc| {
             // Add system monospace font as fallback for braille/symbol coverage
             install_system_font_fallback(&_cc.egui_ctx);
+
+            // Hide the panel resize handle entirely (cursor still changes on hover).
+            _cc.egui_ctx.style_mut(|style| {
+                style.visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::TRANSPARENT;
+                style.visuals.widgets.inactive.fg_stroke.color = egui::Color32::TRANSPARENT;
+                style.visuals.widgets.hovered.fg_stroke.color = egui::Color32::TRANSPARENT;
+                style.visuals.widgets.active.fg_stroke.color = egui::Color32::TRANSPARENT;
+            });
 
             #[cfg(feature = "gpu-renderer")]
             let gpu_renderer = _cc.wgpu_render_state.as_ref().map(|rs| {
@@ -319,6 +388,7 @@ fn main() -> anyhow::Result<()> {
                 ipc_rx,
                 socket_addr: ipc_addr,
                 config,
+                theme,
                 last_panel_rect: None,
                 notifications: state.notifications,
                 show_notification_panel: false,
@@ -997,6 +1067,7 @@ struct AmuxApp {
     ipc_rx: std::sync::mpsc::Receiver<IpcCommand>,
     socket_addr: amux_ipc::IpcAddr,
     config: Arc<AmuxTermConfig>,
+    theme: theme::Theme,
     last_panel_rect: Option<egui::Rect>,
     notifications: NotificationStore,
     show_notification_panel: bool,
@@ -1379,6 +1450,7 @@ impl eframe::App for AmuxApp {
                 self.active_workspace_idx,
                 &self.notifications,
                 &workspace_metadata,
+                &self.theme,
             );
             for action in sidebar_actions {
                 match action {
@@ -1448,7 +1520,21 @@ impl eframe::App for AmuxApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
-                let panel_rect = ui.available_rect_before_wrap();
+                let full_rect = ui.available_rect_before_wrap();
+                // Paint top padding strip with titlebar color.
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_max(
+                        full_rect.min,
+                        egui::pos2(full_rect.max.x, full_rect.min.y + TERMINAL_TOP_PAD),
+                    ),
+                    0.0,
+                    self.theme.titlebar_bg(),
+                );
+                // Shift content area down by the top padding.
+                let panel_rect = egui::Rect::from_min_max(
+                    egui::pos2(full_rect.min.x, full_rect.min.y + TERMINAL_TOP_PAD),
+                    full_rect.max,
+                );
                 self.last_panel_rect = Some(panel_rect);
 
                 // Handle divider dragging
@@ -1509,7 +1595,7 @@ impl eframe::App for AmuxApp {
                     let dividers = self.active_workspace().tree.dividers(panel_rect);
                     let painter = ui.painter();
                     for div in &dividers {
-                        painter.rect_filled(div.rect, 0.0, egui::Color32::from_gray(60));
+                        painter.rect_filled(div.rect, 0.0, self.theme.chrome.divider);
                     }
 
                     // Render each pane (with its own tab bar)
@@ -1610,7 +1696,7 @@ impl AmuxApp {
         let tab_rect =
             egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), TAB_BAR_HEIGHT));
         let content_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.min.x, rect.min.y + TAB_BAR_HEIGHT),
+            egui::pos2(rect.min.x, rect.min.y + TAB_CONTENT_TOP_INSET),
             egui::pos2(rect.max.x, rect.max.y - TERMINAL_BOTTOM_PAD),
         );
         // Paint bottom padding strip with terminal background color.
@@ -1620,12 +1706,15 @@ impl AmuxApp {
                 rect.max,
             ),
             0.0,
-            TERMINAL_BG,
+            self.theme.terminal_bg(),
         );
 
         {
             let painter = ui.painter();
-            painter.rect_filled(tab_rect, 0.0, egui::Color32::from_gray(35));
+            painter.rect_filled(tab_rect, 0.0, self.theme.tab_bar_bg());
+            let bar_stroke = egui::Stroke::new(1.0, self.theme.chrome.tab_bar_border);
+            painter.hline(tab_rect.x_range(), tab_rect.min.y, bar_stroke);
+            painter.hline(tab_rect.x_range(), tab_rect.max.y, bar_stroke);
 
             let active_idx = managed.active_surface_idx;
             let tab_font = egui::FontId::proportional(11.0);
@@ -1654,7 +1743,7 @@ impl AmuxApp {
                     .as_deref()
                     .unwrap_or_else(|| surface.pane.title());
                 let label = if raw_title.is_empty() {
-                    format!("tab {}", surface.id)
+                    format!("tab {}", surface.id + 1)
                 } else if raw_title.chars().count() > 20 {
                     let prefix: String = raw_title.chars().take(17).collect();
                     format!("{prefix}...")
@@ -1676,15 +1765,15 @@ impl AmuxApp {
                 let tab_hovered = hover_pos.is_some_and(|p| this_tab.contains(p));
 
                 // Tab background + border
-                let border_color = egui::Color32::from_gray(55);
+                let border_color = self.theme.chrome.tab_border;
                 if is_active {
-                    painter.rect_filled(this_tab, 0.0, egui::Color32::from_gray(50));
+                    painter.rect_filled(this_tab, 0.0, self.theme.chrome.tab_active_bg);
                     // Active highlight at the top
                     let topline = egui::Rect::from_min_size(
                         egui::pos2(x, tab_rect.min.y),
                         egui::vec2(tab_w, 2.0),
                     );
-                    painter.rect_filled(topline, 0.0, egui::Color32::from_rgb(80, 140, 220));
+                    painter.rect_filled(topline, 0.0, self.theme.chrome.accent);
                 }
                 // 1px border around each tab
                 painter.rect_stroke(
@@ -1820,11 +1909,7 @@ impl AmuxApp {
                             egui::pos2(drop_x - 1.0, tab_rect.min.y + 2.0),
                             egui::vec2(2.0, TAB_BAR_HEIGHT - 4.0),
                         );
-                        painter.rect_filled(
-                            indicator_rect,
-                            1.0,
-                            egui::Color32::from_rgb(0, 145, 255),
-                        );
+                        painter.rect_filled(indicator_rect, 1.0, self.theme.chrome.accent);
                     }
                 }
             }
@@ -3571,7 +3656,7 @@ impl AmuxApp {
                                 let dot_color = if notif.read {
                                     egui::Color32::from_gray(60)
                                 } else {
-                                    egui::Color32::from_rgb(0, 145, 255)
+                                    self.theme.chrome.accent
                                 };
                                 ui.label(
                                     egui::RichText::new(source_icon).size(10.0).color(dot_color),
