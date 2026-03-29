@@ -38,8 +38,19 @@ pub struct SavedWorkspace {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SavedManagedPane {
+    /// Panel type identifier (default "terminal"). Future-proofing for
+    /// non-terminal panels (e.g., markdown, browser).
+    #[serde(default = "default_panel_type")]
+    pub panel_type: String,
     pub surfaces: Vec<SavedSurface>,
     pub active_surface_idx: usize,
+}
+
+/// The panel type identifier for terminal panes.
+pub const PANEL_TYPE_TERMINAL: &str = "terminal";
+
+fn default_panel_type() -> String {
+    PANEL_TYPE_TERMINAL.to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -179,6 +190,7 @@ mod tests {
         panes.insert(
             0,
             SavedManagedPane {
+                panel_type: "terminal".to_string(),
                 surfaces: vec![SavedSurface {
                     id: 0,
                     title: "zsh".to_string(),
@@ -292,6 +304,18 @@ mod tests {
         }"#;
         let surface: SavedSurface = serde_json::from_str(json).unwrap();
         assert!(surface.user_title.is_none());
+    }
+
+    #[test]
+    fn deserialize_without_panel_type_defaults_to_terminal() {
+        let json = r#"{
+            "surfaces": [
+                { "id": 0, "title": "zsh", "cols": 80, "rows": 24 }
+            ],
+            "active_surface_idx": 0
+        }"#;
+        let pane: SavedManagedPane = serde_json::from_str(json).unwrap();
+        assert_eq!(pane.panel_type, "terminal");
     }
 
     #[test]
