@@ -5,6 +5,29 @@ use std::path::PathBuf;
 use amux_layout::PaneTree;
 use serde::{Deserialize, Serialize};
 
+// --- Limits ---
+
+/// Maximum scrollback lines saved per surface.
+pub const MAX_SCROLLBACK_LINES: usize = 4_000;
+
+/// Maximum total characters of scrollback saved per surface.
+/// Prevents unbounded session file growth from long lines (e.g., minified JSON).
+pub const MAX_SCROLLBACK_CHARS: usize = 400_000;
+
+/// Truncate scrollback text to fit within `max_chars`, keeping the most recent
+/// output (truncating from the top). Avoids cutting mid-line.
+pub fn truncate_scrollback(text: &str, max_chars: usize) -> &str {
+    if text.len() <= max_chars {
+        return text;
+    }
+    let excess = text.len() - max_chars;
+    // Find the next newline after the truncation point to avoid mid-line cut.
+    match text[excess..].find('\n') {
+        Some(i) => &text[excess + i + 1..],
+        None => &text[excess..],
+    }
+}
+
 // --- Data Model ---
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -305,5 +328,31 @@ mod tests {
 
         let result = load_from_path(&path).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn truncate_scrollback_noop_when_under_limit() {
+        let text = "line1\nline2\nline3\n";
+        assert_eq!(truncate_scrollback(text, 1000), text);
+    }
+
+    #[test]
+    fn truncate_scrollback_cuts_from_top() {
+        let text = "aaaa\nbbbb\ncccc\ndddd\n";
+        // 20 chars, limit=15: excess=5, text[5..]="bbbb\ncccc\ndddd\n",
+        // find('\n')=Some(4), start=5+4+1=10, text[10..]="cccc\ndddd\n"
+        let result = truncate_scrollback(text, 15);
+        assert_eq!(result, "cccc\ndddd\n");
+    }
+
+    #[test]
+    fn truncate_scrollback_avoids_mid_line_cut() {
+        // "abc\ndef\nghi\n" = 12 chars, limit 8 → excess 4
+        // text[4..] = "def\nghi\n", first \n at index 3 → skip to "ghi\n"
+        // Wait: excess=4, text[4..]="def\nghi\n", find('\n')=Some(3), so start=4+3+1=8
+        // text[8..] = "ghi\n"
+        let text = "abc\ndef\nghi\n";
+        let result = truncate_scrollback(text, 8);
+        assert_eq!(result, "ghi\n");
     }
 }
