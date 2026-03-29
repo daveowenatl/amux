@@ -42,6 +42,18 @@ pub(crate) struct SurfaceMetadata {
     pub(crate) surface_title: Option<String>,
 }
 
+/// Info about a process that has exited.
+pub(crate) struct ExitInfo {
+    pub(crate) message: String,
+}
+
+/// Action to take when user presses a key on a dead pane.
+pub(crate) enum DeadPaneAction {
+    None,
+    Close,
+    Restart,
+}
+
 /// A terminal tab within a pane. Each pane can have multiple surfaces.
 pub(crate) struct PaneSurface {
     pub(crate) id: u64,
@@ -52,6 +64,8 @@ pub(crate) struct PaneSurface {
     pub(crate) metadata: SurfaceMetadata,
     /// User-set title override. When set, takes precedence over OSC 0/2 title.
     pub(crate) user_title: Option<String>,
+    /// Set when the PTY process exits.
+    pub(crate) exited: Option<ExitInfo>,
 }
 
 /// A leaf in the split tree. Each pane has its own tab bar with surfaces.

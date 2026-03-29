@@ -1063,6 +1063,7 @@ fn spawn_surface(
         scroll_accum: 0.0,
         metadata,
         user_title: None,
+        exited: None,
     })
 }
 
@@ -1436,6 +1437,22 @@ impl eframe::App for AmuxApp {
                 }
                 if bytes_this_frame >= MAX_BYTES_PER_SURFACE_PER_FRAME {
                     pending_data = true;
+                }
+                // Detect process exit once the channel is drained
+                if surface.exited.is_none() && !surface.pane.is_alive() {
+                    let message = match surface.pane.exit_status() {
+                        Some(status) => {
+                            if let Some(signal) = status.signal() {
+                                format!("Process killed ({signal})")
+                            } else if status.success() {
+                                "Process exited (code 0)".to_string()
+                            } else {
+                                format!("Process exited (code {})", status.exit_code())
+                            }
+                        }
+                        None => "Process exited".to_string(),
+                    };
+                    surface.exited = Some(ExitInfo { message });
                 }
             }
         }
@@ -1822,6 +1839,8 @@ impl AmuxApp {
 
                 let tab_hovered = hover_pos.is_some_and(|p| this_tab.contains(p));
 
+                let is_dead = surface.exited.is_some();
+
                 // Tab background + border
                 let border_color = self.theme.chrome.tab_border;
                 if is_active {
@@ -1831,7 +1850,12 @@ impl AmuxApp {
                         egui::pos2(x, tab_rect.min.y),
                         egui::vec2(tab_w, 2.0),
                     );
-                    painter.rect_filled(topline, 0.0, self.theme.chrome.accent);
+                    let accent = if is_dead {
+                        egui::Color32::from_gray(60)
+                    } else {
+                        self.theme.chrome.accent
+                    };
+                    painter.rect_filled(topline, 0.0, accent);
                 }
                 // 1px border around each tab
                 painter.rect_stroke(
@@ -1840,8 +1864,9 @@ impl AmuxApp {
                     egui::Stroke::new(1.0, border_color),
                     egui::StrokeKind::Outside,
                 );
-
-                let (text_color, text_font) = if is_active {
+                let (text_color, text_font) = if is_dead {
+                    (egui::Color32::from_gray(80), tab_font.clone())
+                } else if is_active {
                     (egui::Color32::WHITE, tab_font_bold.clone())
                 } else {
                     (egui::Color32::from_gray(130), tab_font.clone())
@@ -2114,6 +2139,11 @@ impl AmuxApp {
             #[cfg(feature = "gpu-renderer")]
             pane_id,
         );
+
+        // Render exit overlay when process has exited
+        if let Some(exit_info) = &surface.exited {
+            render_exit_overlay(ui, content_rect, &exit_info.message, self.font_size);
+        }
 
         // Render copy mode cursor overlay
         if let Some(cm) = self.copy_mode.as_ref().filter(|cm| cm.pane_id == pane_id) {
@@ -2821,6 +2851,46 @@ impl AmuxApp {
 
         self.close_pane(focused_id);
         true
+    }
+
+    /// Restart the active surface in a pane by spawning a new shell in the
+    /// same working directory and replacing the dead surface in-place.
+    fn restart_surface(&mut self, pane_id: PaneId) {
+        let ws_id = self
+            .workspaces
+            .iter()
+            .find(|ws| ws.tree.iter_panes().contains(&pane_id))
+            .map(|ws| ws.id)
+            .unwrap_or(0);
+
+        let managed = match self.panes.get_mut(&pane_id) {
+            Some(m) => m,
+            None => return,
+        };
+        let old_surface = managed.active_surface_mut();
+        let cwd = old_surface.metadata.cwd.clone();
+        let (cols, rows) = old_surface.pane.dimensions();
+        let sf_id = self.next_surface_id;
+        self.next_surface_id += 1;
+
+        match spawn_surface(
+            cols as u16,
+            rows as u16,
+            &self.socket_addr,
+            &self.config,
+            ws_id,
+            sf_id,
+            cwd.as_deref(),
+            None,
+        ) {
+            Ok(new_surface) => {
+                let idx = managed.active_surface_idx;
+                managed.surfaces[idx] = new_surface;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to restart surface: {e}");
+            }
+        }
     }
 
     /// Close a pane entirely. Finds the owning workspace (not necessarily the
@@ -4180,6 +4250,36 @@ impl AmuxApp {
         };
         let surface = managed.active_surface_mut();
 
+        // When the process has exited, intercept Enter (close) and R (restart)
+        if surface.exited.is_some() {
+            let mut action = DeadPaneAction::None;
+            for event in &events {
+                if let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } = event
+                {
+                    match key {
+                        egui::Key::Enter => action = DeadPaneAction::Close,
+                        egui::Key::R if modifiers.is_none() => {
+                            action = DeadPaneAction::Restart;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            match action {
+                DeadPaneAction::Close => self.close_pane(focused_id),
+                DeadPaneAction::Restart => {
+                    self.restart_surface(focused_id);
+                }
+                DeadPaneAction::None => {}
+            }
+            return has_input;
+        }
+
         for event in &events {
             match event {
                 egui::Event::Text(text) => {
@@ -5260,6 +5360,60 @@ fn render_pane(
             text_color,
         );
     }
+}
+
+/// Render a semi-transparent overlay at the bottom of a pane showing exit status
+/// and available actions (Enter to close, R to restart).
+fn render_exit_overlay(ui: &mut egui::Ui, rect: egui::Rect, message: &str, font_size: f32) {
+    let painter = ui.painter_at(rect);
+    let overlay_font = egui::FontId::monospace(font_size * 0.85);
+    let small_font = egui::FontId::monospace(font_size * 0.75);
+
+    let line1 = message;
+    let line2 = "Press Enter to close  |  R to restart";
+
+    let g1 = painter.layout_no_wrap(
+        line1.to_string(),
+        overlay_font.clone(),
+        egui::Color32::WHITE,
+    );
+    let g2 = painter.layout_no_wrap(line2.to_string(), small_font, egui::Color32::from_gray(160));
+
+    let text_width = g1.size().x.max(g2.size().x);
+    let text_height = g1.size().y + g2.size().y + 4.0;
+    let padding = 8.0;
+    let box_width = text_width + padding * 2.0;
+    let box_height = text_height + padding * 2.0;
+
+    let box_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            rect.center().x - box_width / 2.0,
+            rect.bottom() - box_height - 12.0,
+        ),
+        egui::vec2(box_width, box_height),
+    );
+
+    // Semi-transparent background with border
+    painter.rect_filled(
+        box_rect,
+        4.0,
+        egui::Color32::from_rgba_unmultiplied(30, 30, 30, 220),
+    );
+    painter.rect_stroke(
+        box_rect,
+        4.0,
+        egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
+        egui::StrokeKind::Outside,
+    );
+
+    // Center text lines
+    let x1 = box_rect.center().x - g1.size().x / 2.0;
+    let y1 = box_rect.min.y + padding;
+    painter.galley(egui::pos2(x1, y1), g1, egui::Color32::WHITE);
+
+    let x2 = box_rect.center().x - g2.size().x / 2.0;
+    let y2 = y1 + text_height - g2.size().y;
+    painter.galley(egui::pos2(x2, y2), g2, egui::Color32::from_gray(160));
 }
 
 fn srgba_to_egui(color: SrgbaTuple) -> egui::Color32 {
