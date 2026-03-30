@@ -92,11 +92,9 @@ pub(crate) fn extract_selection_text(
 
         if i > 0 {
             // Check if previous line was wrapped — if so, don't add newline
-            if i > 0 {
-                let prev_line = &lines[i - 1];
-                if !prev_line.last_cell_was_wrapped() {
-                    result.push('\n');
-                }
+            let prev_line = &lines[i - 1];
+            if !prev_line.last_cell_was_wrapped() {
+                result.push('\n');
             }
         }
         result.push_str(line_text.trim_end());
