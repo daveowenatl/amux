@@ -317,13 +317,40 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_json_returns_error() {
+    fn corrupt_json_returns_corrupted_variant() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("session.json");
         fs::write(&path, "not valid json").unwrap();
 
-        let result = load_from_path(&path);
-        assert!(result.is_err());
+        let err = load_from_path(&path).unwrap_err();
+        assert!(
+            matches!(err, SessionError::Corrupted(_)),
+            "expected Corrupted, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn wrong_version_returns_version_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+
+        let mut session = minimal_session();
+        session.version = 99;
+        // Write directly to bypass version check in save_to_path
+        let json = serde_json::to_string(&session).unwrap();
+        fs::write(&path, &json).unwrap();
+
+        let err = load_from_path(&path).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SessionError::VersionMismatch {
+                    version: 99,
+                    expected: 1
+                }
+            ),
+            "expected VersionMismatch, got: {err:?}"
+        );
     }
 
     #[test]

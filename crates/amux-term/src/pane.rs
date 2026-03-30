@@ -13,8 +13,8 @@ use crate::osc::{ChannelAlertHandler, NotificationEvent};
 /// Typed errors for terminal pane operations.
 #[derive(Debug, thiserror::Error)]
 pub enum TermError {
-    #[error("failed to spawn PTY: {0}")]
-    PtySpawnFailed(#[source] anyhow::Error),
+    #[error("PTY setup failed: {0}")]
+    PtySetupFailed(#[source] anyhow::Error),
 
     #[error("resize failed: {0}")]
     ResizeFailed(#[source] anyhow::Error),
@@ -85,16 +85,16 @@ impl TerminalPane {
         };
         let pair = pty_system
             .openpty(pty_size)
-            .map_err(TermError::PtySpawnFailed)?;
+            .map_err(TermError::PtySetupFailed)?;
 
         let child = pair
             .slave
             .spawn_command(cmd)
-            .map_err(TermError::PtySpawnFailed)?;
+            .map_err(TermError::PtySetupFailed)?;
         let reader = pair
             .master
             .try_clone_reader()
-            .map_err(TermError::PtySpawnFailed)?;
+            .map_err(TermError::PtySetupFailed)?;
 
         let terminal_size = TerminalSize {
             rows: rows as usize,
@@ -107,7 +107,7 @@ impl TerminalPane {
         let writer = pair
             .master
             .take_writer()
-            .map_err(TermError::PtySpawnFailed)?;
+            .map_err(TermError::PtySetupFailed)?;
         let shared = Arc::new(Mutex::new(writer));
         let terminal_writer = SharedWriter(Arc::clone(&shared));
         let mut terminal = Terminal::new(
