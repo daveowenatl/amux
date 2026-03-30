@@ -200,6 +200,21 @@ impl AmuxApp {
                         gpu.set_font_size(self.font_size);
                     }
                 }
+                menu_bar::MenuAction::Copy => {
+                    self.copy_selection();
+                }
+                menu_bar::MenuAction::Paste => {
+                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                        if let Ok(text) = clipboard.get_text() {
+                            if !text.is_empty() {
+                                self.do_paste(&text);
+                            }
+                        }
+                    }
+                }
+                menu_bar::MenuAction::SelectAll => {
+                    self.select_all_visible();
+                }
             }
         }
     }

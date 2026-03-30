@@ -596,7 +596,7 @@ impl eframe::App for AmuxApp {
                 if let Some(zoomed_id) = zoomed {
                     // Zoomed mode: render single pane fullscreen
                     let content_rect = egui::Rect::from_min_max(
-                        egui::pos2(panel_rect.min.x, panel_rect.min.y + TAB_BAR_HEIGHT),
+                        egui::pos2(panel_rect.min.x, panel_rect.min.y + TAB_CONTENT_TOP_INSET),
                         egui::pos2(panel_rect.max.x, panel_rect.max.y - TERMINAL_BOTTOM_PAD),
                     );
                     let sel_changed = self.handle_selection_mouse(ui, zoomed_id, content_rect);
@@ -632,7 +632,7 @@ impl eframe::App for AmuxApp {
                     for &(id, rect) in &layout {
                         if id == focused {
                             let content_rect = egui::Rect::from_min_max(
-                                egui::pos2(rect.min.x, rect.min.y + TAB_BAR_HEIGHT),
+                                egui::pos2(rect.min.x, rect.min.y + TAB_CONTENT_TOP_INSET),
                                 egui::pos2(rect.max.x, rect.max.y - TERMINAL_BOTTOM_PAD),
                             );
                             let sel_changed = self.handle_selection_mouse(ui, id, content_rect);
