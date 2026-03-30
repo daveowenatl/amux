@@ -94,8 +94,11 @@ pub fn load_app_config() -> AppConfig {
                     tracing::warn!("Failed to parse {}: {}", path.display(), e);
                 }
             },
-            Err(_) => {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 tracing::debug!("No config file at {}", path.display());
+            }
+            Err(e) => {
+                tracing::warn!("Failed to read {}: {}", path.display(), e);
             }
         }
     }
