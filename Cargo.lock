@@ -160,6 +160,13 @@ dependencies = [
 [[package]]
 name = "amux-core"
 version = "0.1.0"
+dependencies = [
+ "amux-layout",
+ "dirs",
+ "serde",
+ "toml",
+ "tracing",
+]
 
 [[package]]
 name = "amux-ipc"

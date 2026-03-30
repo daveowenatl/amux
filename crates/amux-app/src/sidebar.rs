@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use amux_notify::NotificationStore;
 use egui::Color32;
 
-use crate::{SidebarDragState, SidebarState, SurfaceMetadata, Workspace};
+use amux_core::model::{SidebarDragState, SidebarState, SurfaceMetadata, Workspace};
 
 // ---------------------------------------------------------------------------
 // Colors (cmux dark mode equivalents)
