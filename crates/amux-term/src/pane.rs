@@ -7,7 +7,7 @@ use wezterm_term::color::ColorPalette;
 use wezterm_term::terminal::Terminal;
 use wezterm_term::{CursorPosition, StableRowIndex, TerminalSize};
 
-use crate::backend::TerminalBackend;
+use crate::backend::{CursorPos, Palette, ProcessExit, StableRow, TerminalBackend};
 use crate::config::AmuxTermConfig;
 use crate::osc::{ChannelAlertHandler, NotificationEvent};
 
@@ -240,16 +240,17 @@ impl TerminalPane {
         matches!(self.child.try_wait(), Ok(None))
     }
 
-    /// Get the child exit status, if it has exited.
-    pub fn exit_status(&mut self) -> Option<portable_pty::ExitStatus> {
+    /// Get the child exit status, if it has exited (portable-pty native type).
+    pub fn pty_exit_status(&mut self) -> Option<portable_pty::ExitStatus> {
         match self.child.try_wait() {
             Ok(Some(status)) => Some(status),
             _ => None,
         }
     }
 
-    /// Get stable row indices of lines changed since the last `mark_rendered()` call.
-    pub fn changed_lines(&self) -> Vec<StableRowIndex> {
+    /// Get stable row indices of lines changed since the last `mark_rendered()` call
+    /// (wezterm-native StableRowIndex type).
+    pub fn changed_line_indices(&self) -> Vec<StableRowIndex> {
         let size = self.terminal.get_size();
         let screen = self.terminal.screen();
         // Compute the visible stable row range
@@ -263,8 +264,8 @@ impl TerminalPane {
         self.seqno = self.terminal.current_seqno();
     }
 
-    /// Get the current cursor position.
-    pub fn cursor(&self) -> CursorPosition {
+    /// Get the current cursor position (wezterm-native type).
+    pub fn cursor_pos(&self) -> CursorPosition {
         self.terminal.cursor_pos()
     }
 
@@ -274,8 +275,8 @@ impl TerminalPane {
         (size.cols, size.rows)
     }
 
-    /// Get the current color palette.
-    pub fn palette(&self) -> ColorPalette {
+    /// Get the current color palette (wezterm-native type).
+    pub fn color_palette(&self) -> ColorPalette {
         self.terminal.palette()
     }
 
@@ -606,12 +607,12 @@ impl TerminalBackend for TerminalPane {
         self.dimensions()
     }
 
-    fn cursor(&self) -> CursorPosition {
-        self.cursor()
+    fn cursor(&self) -> CursorPos {
+        self.cursor_pos().into()
     }
 
-    fn palette(&self) -> ColorPalette {
-        self.palette()
+    fn palette(&self) -> Palette {
+        self.color_palette().into()
     }
 
     fn is_alt_screen_active(&self) -> bool {
@@ -630,12 +631,15 @@ impl TerminalBackend for TerminalPane {
         self.is_alive()
     }
 
-    fn exit_status(&mut self) -> Option<portable_pty::ExitStatus> {
-        self.exit_status()
+    fn exit_status(&mut self) -> Option<ProcessExit> {
+        self.pty_exit_status().map(Into::into)
     }
 
-    fn changed_lines(&self) -> Vec<StableRowIndex> {
-        self.changed_lines()
+    fn changed_lines(&self) -> Vec<StableRow> {
+        self.changed_line_indices()
+            .into_iter()
+            .map(|r| r as StableRow)
+            .collect()
     }
 
     fn mark_rendered(&mut self) {

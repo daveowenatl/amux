@@ -8,6 +8,7 @@ description = "Terminal pane abstraction wrapping wezterm-term + portable-pty"
 [dependencies]
 amux-core = { workspace = true }
 wezterm-term = { workspace = true }
+wezterm-surface = { workspace = true }
 portable-pty = { workspace = true }
 winit = { workspace = true }
 url = { workspace = true }

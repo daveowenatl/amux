@@ -1,11 +1,170 @@
 use std::io::Read;
 
 use url::Url;
-use wezterm_term::color::ColorPalette;
-use wezterm_term::{CursorPosition, StableRowIndex};
 
 use crate::osc::NotificationEvent;
 use crate::pane::{AdvanceResult, SequenceNo, TermError};
+
+// --- Amux-native types ---
+// These replace wezterm-term/portable-pty types in the trait so backends
+// don't need to produce wezterm-specific types.
+
+/// RGBA color as linear f32 values in [0.0, 1.0].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Color(pub f32, pub f32, pub f32, pub f32);
+
+impl Color {
+    pub const BLACK: Self = Self(0.0, 0.0, 0.0, 1.0);
+    pub const WHITE: Self = Self(1.0, 1.0, 1.0, 1.0);
+    pub const TRANSPARENT: Self = Self(0.0, 0.0, 0.0, 0.0);
+}
+
+/// Terminal cursor position.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CursorPos {
+    pub x: usize,
+    pub y: i64,
+    pub shape: CursorShape,
+    pub visible: bool,
+}
+
+/// Cursor rendering shape.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CursorShape {
+    #[default]
+    Default,
+    BlinkingBlock,
+    SteadyBlock,
+    BlinkingUnderline,
+    SteadyUnderline,
+    BlinkingBar,
+    SteadyBar,
+}
+
+/// Terminal color palette — the semantic colors a backend exposes.
+#[derive(Clone, Debug)]
+pub struct Palette {
+    pub foreground: Color,
+    pub background: Color,
+    pub cursor_fg: Color,
+    pub cursor_bg: Color,
+    pub cursor_border: Color,
+    pub selection_fg: Color,
+    pub selection_bg: Color,
+    /// 256-entry xterm color table (ANSI 0-15 + 216 cube + 24 grayscale).
+    pub colors: Vec<Color>,
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self {
+            foreground: Color::WHITE,
+            background: Color::BLACK,
+            cursor_fg: Color::BLACK,
+            cursor_bg: Color::WHITE,
+            cursor_border: Color::WHITE,
+            selection_fg: Color::BLACK,
+            selection_bg: Color(0.4, 0.6, 1.0, 1.0),
+            colors: Vec::new(),
+        }
+    }
+}
+
+/// Process exit status.
+#[derive(Clone, Copy, Debug)]
+pub struct ProcessExit {
+    code: i32,
+    signal: Option<u32>,
+}
+
+impl ProcessExit {
+    pub fn new(code: i32, signal: Option<u32>) -> Self {
+        Self { code, signal }
+    }
+
+    /// True if the process exited with code 0 and no signal.
+    pub fn success(&self) -> bool {
+        self.signal.is_none() && self.code == 0
+    }
+
+    /// Exit code (0 = success).
+    pub fn exit_code(&self) -> i32 {
+        self.code
+    }
+
+    /// Signal that killed the process, if any.
+    pub fn signal(&self) -> Option<u32> {
+        self.signal
+    }
+}
+
+/// Stable row index — identifies a row across scrollback changes.
+pub type StableRow = i64;
+
+// --- Conversions from wezterm-term / portable-pty types ---
+
+impl From<wezterm_term::color::SrgbaTuple> for Color {
+    fn from(c: wezterm_term::color::SrgbaTuple) -> Self {
+        Self(c.0, c.1, c.2, c.3)
+    }
+}
+
+impl From<Color> for wezterm_term::color::SrgbaTuple {
+    fn from(c: Color) -> Self {
+        Self(c.0, c.1, c.2, c.3)
+    }
+}
+
+impl From<wezterm_term::CursorPosition> for CursorPos {
+    fn from(c: wezterm_term::CursorPosition) -> Self {
+        Self {
+            x: c.x,
+            y: c.y,
+            shape: c.shape.into(),
+            visible: c.visibility == wezterm_surface::CursorVisibility::Visible,
+        }
+    }
+}
+
+impl From<wezterm_surface::CursorShape> for CursorShape {
+    fn from(s: wezterm_surface::CursorShape) -> Self {
+        match s {
+            wezterm_surface::CursorShape::Default => Self::Default,
+            wezterm_surface::CursorShape::BlinkingBlock => Self::BlinkingBlock,
+            wezterm_surface::CursorShape::SteadyBlock => Self::SteadyBlock,
+            wezterm_surface::CursorShape::BlinkingUnderline => Self::BlinkingUnderline,
+            wezterm_surface::CursorShape::SteadyUnderline => Self::SteadyUnderline,
+            wezterm_surface::CursorShape::BlinkingBar => Self::BlinkingBar,
+            wezterm_surface::CursorShape::SteadyBar => Self::SteadyBar,
+        }
+    }
+}
+
+impl From<wezterm_term::color::ColorPalette> for Palette {
+    fn from(p: wezterm_term::color::ColorPalette) -> Self {
+        Self {
+            foreground: p.foreground.into(),
+            background: p.background.into(),
+            cursor_fg: p.cursor_fg.into(),
+            cursor_bg: p.cursor_bg.into(),
+            cursor_border: p.cursor_border.into(),
+            selection_fg: p.selection_fg.into(),
+            selection_bg: p.selection_bg.into(),
+            colors: p.colors.0.iter().map(|&c| Color::from(c)).collect(),
+        }
+    }
+}
+
+impl From<portable_pty::ExitStatus> for ProcessExit {
+    fn from(s: portable_pty::ExitStatus) -> Self {
+        Self {
+            code: if s.success() { 0 } else { 1 },
+            signal: None,
+        }
+    }
+}
+
+// --- The trait ---
 
 /// Trait abstracting the terminal backend (wezterm-term, libghostty, etc.).
 ///
@@ -14,8 +173,8 @@ use crate::pane::{AdvanceResult, SequenceNo, TermError};
 /// (`screen()`) — that is backend-specific and accessed via the concrete type
 /// for GPU rendering and cell-level iteration.
 ///
-/// Step 1 of the libghostty POC: the trait uses wezterm-term types (CursorPosition,
-/// ColorPalette, StableRowIndex). Step 2 will introduce amux-native equivalents.
+/// Uses amux-native types (CursorPos, Palette, etc.) so backends don't need
+/// to produce wezterm-specific types.
 pub trait TerminalBackend {
     // --- Lifecycle ---
 
@@ -46,11 +205,11 @@ pub trait TerminalBackend {
     /// Terminal dimensions as (cols, rows).
     fn dimensions(&self) -> (usize, usize);
 
-    /// Current cursor position.
-    fn cursor(&self) -> CursorPosition;
+    /// Current cursor position, shape, and visibility.
+    fn cursor(&self) -> CursorPos;
 
     /// Current color palette.
-    fn palette(&self) -> ColorPalette;
+    fn palette(&self) -> Palette;
 
     /// Whether the alternate screen buffer is active.
     fn is_alt_screen_active(&self) -> bool;
@@ -67,12 +226,12 @@ pub trait TerminalBackend {
     fn is_alive(&mut self) -> bool;
 
     /// Child exit status, if it has exited.
-    fn exit_status(&mut self) -> Option<portable_pty::ExitStatus>;
+    fn exit_status(&mut self) -> Option<ProcessExit>;
 
     // --- Change tracking ---
 
     /// Stable row indices of lines changed since last `mark_rendered()`.
-    fn changed_lines(&self) -> Vec<StableRowIndex>;
+    fn changed_lines(&self) -> Vec<StableRow>;
 
     /// Mark the current state as rendered.
     fn mark_rendered(&mut self);

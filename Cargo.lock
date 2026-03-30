@@ -250,6 +250,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "wezterm-surface",
  "wezterm-term",
  "winit",
 ]

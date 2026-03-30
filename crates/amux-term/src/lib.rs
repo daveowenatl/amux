@@ -7,5 +7,7 @@ pub mod mouse_encoder;
 pub mod osc;
 pub mod pane;
 
-pub use backend::TerminalBackend;
+pub use backend::{
+    Color, CursorPos, CursorShape, Palette, ProcessExit, StableRow, TerminalBackend,
+};
 pub use pane::TermError;

@@ -35,8 +35,8 @@ pub(crate) fn render_pane(
         if actual_cols == 0 || actual_rows == 0 {
             return;
         }
-        let palette = pane.palette();
-        let cursor = pane.cursor();
+        let palette = pane.color_palette();
+        let cursor = pane.cursor_pos();
         let screen = pane.screen();
         let gpu_selection = selection.map(|sel| {
             let (start, end) = sel.normalized();
@@ -72,8 +72,8 @@ pub(crate) fn render_pane(
         return;
     }
 
-    let palette = pane.palette();
-    let cursor = pane.cursor();
+    let palette = pane.color_palette();
+    let cursor = pane.cursor_pos();
     let screen = pane.screen();
 
     let painter = ui.painter();

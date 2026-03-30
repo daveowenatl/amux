@@ -389,7 +389,7 @@ impl AmuxApp {
         let pane_id = self.focused_pane_id();
         if let Some(managed) = self.panes.get(&pane_id) {
             let surface = managed.active_surface();
-            let cursor = surface.pane.cursor();
+            let cursor = surface.pane.cursor_pos();
             let screen = surface.pane.screen();
             let (_, rows) = surface.pane.dimensions();
             let total = screen.scrollback_rows();
