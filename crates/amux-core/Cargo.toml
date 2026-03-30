@@ -7,6 +7,7 @@ description = "amux shared logic: key encoding, data model, config, session mana
 
 [dependencies]
 amux-layout = { workspace = true }
+portable-pty = { workspace = true }
 # Note: amux-term is NOT a dependency here to avoid cycles (amux-term depends on amux-core).
 # Font defaults are defined locally in config.rs.
 serde = { workspace = true }
