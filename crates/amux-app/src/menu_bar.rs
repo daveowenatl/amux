@@ -114,8 +114,14 @@ pub(crate) fn build() -> Menu {
 
     // Edit menu items — use custom MenuItems (not PredefinedMenuItem) so we
     // receive the event in our handler instead of it being consumed by the OS.
+    #[cfg(target_os = "macos")]
     let copy = MenuItem::new("Copy", true, accel(CMD, Code::KeyC));
+    #[cfg(not(target_os = "macos"))]
+    let copy = MenuItem::new("Copy", true, accel(CMD_SHIFT, Code::KeyC));
+    #[cfg(target_os = "macos")]
     let paste = MenuItem::new("Paste", true, accel(CMD, Code::KeyV));
+    #[cfg(not(target_os = "macos"))]
+    let paste = MenuItem::new("Paste", true, accel(CMD_SHIFT, Code::KeyV));
     #[cfg(target_os = "macos")]
     let select_all = MenuItem::new("Select All", true, accel(CMD, Code::KeyA));
     #[cfg(not(target_os = "macos"))]

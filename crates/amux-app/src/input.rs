@@ -21,7 +21,8 @@ impl AmuxApp {
                     if self.copy_selection() {
                         return true;
                     }
-                    // No selection — let Ctrl+C fall through to terminal as SIGINT
+                    // No selection to copy — leave this Copy event unhandled so any
+                    // terminal Ctrl+C behavior (e.g. SIGINT) remains unaffected.
                     continue;
                 }
                 egui::Event::Cut => {
