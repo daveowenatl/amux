@@ -68,6 +68,9 @@ objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSDockTile"] }
 muda = { version = "0.17", default-features = false, features = ["gtk"] }
 raw-window-handle = "0.6"
 
+# Date/time
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"

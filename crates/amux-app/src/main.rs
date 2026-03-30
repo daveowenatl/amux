@@ -372,58 +372,9 @@ impl AmuxApp {
     }
 }
 
-/// Simple ISO 8601 timestamp without a chrono dependency.
+/// ISO 8601 UTC timestamp for session metadata.
 fn chrono_now() -> String {
-    let dur = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = dur.as_secs();
-    // Approximate UTC datetime (good enough for session metadata)
-    let days = secs / 86400;
-    let time_secs = secs % 86400;
-    let hours = time_secs / 3600;
-    let mins = (time_secs % 3600) / 60;
-    let s = time_secs % 60;
-    // Simple days-since-epoch to date (approximate, ignoring leap seconds)
-    let mut y = 1970i64;
-    let mut remaining_days = days as i64;
-    loop {
-        let year_days = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
-            366
-        } else {
-            365
-        };
-        if remaining_days < year_days {
-            break;
-        }
-        remaining_days -= year_days;
-        y += 1;
-    }
-    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let month_days = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut m = 0;
-    for (i, &md) in month_days.iter().enumerate() {
-        if remaining_days < md as i64 {
-            m = i + 1;
-            break;
-        }
-        remaining_days -= md as i64;
-    }
-    let d = remaining_days + 1;
-    format!("{y:04}-{m:02}-{d:02}T{hours:02}:{mins:02}:{s:02}Z")
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
 impl eframe::App for AmuxApp {
