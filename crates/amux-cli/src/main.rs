@@ -183,6 +183,9 @@ enum Command {
         /// Notification title
         #[arg(long)]
         title: Option<String>,
+        /// Notification subtitle (e.g. "Permission Required", "Task Completed")
+        #[arg(long)]
+        subtitle: Option<String>,
         /// Target workspace ID (defaults to AMUX_WORKSPACE_ID)
         #[arg(long)]
         workspace: Option<String>,
@@ -670,6 +673,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Notify {
             body,
             title,
+            subtitle,
             workspace,
             pane,
         } => {
@@ -684,6 +688,9 @@ async fn main() -> anyhow::Result<()> {
             });
             if let Some(t) = title {
                 params["title"] = serde_json::json!(t);
+            }
+            if let Some(s) = subtitle {
+                params["subtitle"] = serde_json::json!(s);
             }
             let resp = client.call("notify.send", params).await?;
             if cli.json {

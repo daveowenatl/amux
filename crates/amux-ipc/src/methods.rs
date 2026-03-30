@@ -134,6 +134,8 @@ pub struct NotifySendParams {
     pub pane_id: String,
     #[serde(default)]
     pub title: Option<String>,
+    #[serde(default)]
+    pub subtitle: Option<String>,
     pub body: String,
 }
 
@@ -150,6 +152,7 @@ pub struct NotifyListEntry {
     pub workspace_id: String,
     pub pane_id: String,
     pub title: String,
+    pub subtitle: String,
     pub body: String,
     pub source: String,
     pub read: bool,

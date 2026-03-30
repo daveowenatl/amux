@@ -72,6 +72,7 @@ pub struct Notification {
     pub pane_id: u64,
     pub surface_id: u64,
     pub title: String,
+    pub subtitle: String,
     pub body: String,
     pub source: NotificationSource,
     pub created_at: Instant,
@@ -157,12 +158,14 @@ impl NotificationStore {
     }
 
     /// Add a notification. Triggers a flash on the target pane.
+    #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
         workspace_id: u64,
         pane_id: u64,
         surface_id: u64,
         title: String,
+        subtitle: String,
         body: String,
         source: NotificationSource,
     ) -> u64 {
@@ -175,6 +178,7 @@ impl NotificationStore {
             pane_id,
             surface_id,
             title,
+            subtitle,
             body,
             source,
             created_at: Instant::now(),
@@ -191,12 +195,14 @@ impl NotificationStore {
 
     /// Push a notification but immediately mark it as read (for focused-pane
     /// notifications — still triggers arrival flash but no persistent ring).
+    #[allow(clippy::too_many_arguments)]
     pub fn push_read(
         &mut self,
         workspace_id: u64,
         pane_id: u64,
         surface_id: u64,
         title: String,
+        subtitle: String,
         body: String,
         source: NotificationSource,
     ) -> u64 {
@@ -209,6 +215,7 @@ impl NotificationStore {
             pane_id,
             surface_id,
             title,
+            subtitle,
             body,
             source,
             created_at: Instant::now(),
@@ -448,6 +455,7 @@ mod tests {
             10,
             100,
             "Test".into(),
+            String::new(),
             "body".into(),
             NotificationSource::Bell,
         );
@@ -465,6 +473,7 @@ mod tests {
             10,
             100,
             "Test".into(),
+            String::new(),
             "body".into(),
             NotificationSource::Toast,
         );
@@ -478,12 +487,21 @@ mod tests {
     #[test]
     fn mark_pane_read_clears_unread() {
         let mut store = NotificationStore::new();
-        store.push(1, 10, 100, "A".into(), "a".into(), NotificationSource::Bell);
+        store.push(
+            1,
+            10,
+            100,
+            "A".into(),
+            String::new(),
+            "a".into(),
+            NotificationSource::Bell,
+        );
         store.push(
             1,
             10,
             101,
             "B".into(),
+            String::new(),
             "b".into(),
             NotificationSource::Toast,
         );
@@ -502,8 +520,24 @@ mod tests {
     #[test]
     fn mark_all_read() {
         let mut store = NotificationStore::new();
-        store.push(1, 10, 100, "A".into(), "a".into(), NotificationSource::Bell);
-        store.push(2, 20, 200, "B".into(), "b".into(), NotificationSource::Cli);
+        store.push(
+            1,
+            10,
+            100,
+            "A".into(),
+            String::new(),
+            "a".into(),
+            NotificationSource::Bell,
+        );
+        store.push(
+            2,
+            20,
+            200,
+            "B".into(),
+            String::new(),
+            "b".into(),
+            NotificationSource::Cli,
+        );
         store.mark_all_read();
         assert_eq!(store.pane_unread(10), 0);
         assert_eq!(store.pane_unread(20), 0);
@@ -517,6 +551,7 @@ mod tests {
             10,
             100,
             "First".into(),
+            String::new(),
             "a".into(),
             NotificationSource::Bell,
         );
@@ -525,6 +560,7 @@ mod tests {
             20,
             200,
             "Second".into(),
+            String::new(),
             "b".into(),
             NotificationSource::Toast,
         );
@@ -542,8 +578,24 @@ mod tests {
     #[test]
     fn has_unread_excluding_focused() {
         let mut store = NotificationStore::new();
-        store.push(1, 10, 100, "A".into(), "a".into(), NotificationSource::Bell);
-        store.push(1, 20, 200, "B".into(), "b".into(), NotificationSource::Bell);
+        store.push(
+            1,
+            10,
+            100,
+            "A".into(),
+            String::new(),
+            "a".into(),
+            NotificationSource::Bell,
+        );
+        store.push(
+            1,
+            20,
+            200,
+            "B".into(),
+            String::new(),
+            "b".into(),
+            NotificationSource::Bell,
+        );
 
         assert!(store.has_unread_excluding(&[10, 20], 10));
         assert!(store.has_unread_excluding(&[10, 20], 20));
@@ -553,13 +605,30 @@ mod tests {
     #[test]
     fn workspace_unread_count() {
         let mut store = NotificationStore::new();
-        store.push(1, 10, 100, "A".into(), "a".into(), NotificationSource::Bell);
-        store.push(1, 10, 101, "B".into(), "b".into(), NotificationSource::Bell);
+        store.push(
+            1,
+            10,
+            100,
+            "A".into(),
+            String::new(),
+            "a".into(),
+            NotificationSource::Bell,
+        );
+        store.push(
+            1,
+            10,
+            101,
+            "B".into(),
+            String::new(),
+            "b".into(),
+            NotificationSource::Bell,
+        );
         store.push(
             1,
             20,
             200,
             "C".into(),
+            String::new(),
             "c".into(),
             NotificationSource::Toast,
         );
@@ -579,8 +648,24 @@ mod tests {
     #[test]
     fn remove_pane_cleanup() {
         let mut store = NotificationStore::new();
-        store.push(1, 10, 100, "A".into(), "a".into(), NotificationSource::Bell);
-        store.push(1, 20, 200, "B".into(), "b".into(), NotificationSource::Bell);
+        store.push(
+            1,
+            10,
+            100,
+            "A".into(),
+            String::new(),
+            "a".into(),
+            NotificationSource::Bell,
+        );
+        store.push(
+            1,
+            20,
+            200,
+            "B".into(),
+            String::new(),
+            "b".into(),
+            NotificationSource::Bell,
+        );
         store.remove_pane(10);
         assert!(store.pane_state(10).is_none());
         assert_eq!(store.all_notifications().len(), 1);
@@ -590,7 +675,15 @@ mod tests {
     #[test]
     fn remove_notification_decrements_unread() {
         let mut store = NotificationStore::new();
-        let id = store.push(1, 10, 100, "A".into(), "a".into(), NotificationSource::Bell);
+        let id = store.push(
+            1,
+            10,
+            100,
+            "A".into(),
+            String::new(),
+            "a".into(),
+            NotificationSource::Bell,
+        );
         assert_eq!(store.pane_unread(10), 1);
         store.remove_notification(id);
         assert_eq!(store.pane_unread(10), 0);
@@ -639,8 +732,24 @@ mod tests {
     #[test]
     fn clear_all_notifications() {
         let mut store = NotificationStore::new();
-        store.push(1, 10, 100, "A".into(), "a".into(), NotificationSource::Bell);
-        store.push(2, 20, 200, "B".into(), "b".into(), NotificationSource::Cli);
+        store.push(
+            1,
+            10,
+            100,
+            "A".into(),
+            String::new(),
+            "a".into(),
+            NotificationSource::Bell,
+        );
+        store.push(
+            2,
+            20,
+            200,
+            "B".into(),
+            String::new(),
+            "b".into(),
+            NotificationSource::Cli,
+        );
         store.clear_all();
         assert_eq!(store.all_notifications().len(), 0);
         assert_eq!(store.pane_unread(10), 0);
@@ -651,10 +760,34 @@ mod tests {
     fn mark_workspace_read_only_affects_given_panes() {
         let mut store = NotificationStore::new();
         // Workspace 1 panes: 10, 11
-        store.push(1, 10, 100, "A".into(), "a".into(), NotificationSource::Bell);
-        store.push(1, 11, 101, "B".into(), "b".into(), NotificationSource::Bell);
+        store.push(
+            1,
+            10,
+            100,
+            "A".into(),
+            String::new(),
+            "a".into(),
+            NotificationSource::Bell,
+        );
+        store.push(
+            1,
+            11,
+            101,
+            "B".into(),
+            String::new(),
+            "b".into(),
+            NotificationSource::Bell,
+        );
         // Workspace 2 pane: 20
-        store.push(2, 20, 200, "C".into(), "c".into(), NotificationSource::Bell);
+        store.push(
+            2,
+            20,
+            200,
+            "C".into(),
+            String::new(),
+            "c".into(),
+            NotificationSource::Bell,
+        );
 
         store.mark_workspace_read(&[10, 11]);
         assert_eq!(store.pane_unread(10), 0);
@@ -670,6 +803,7 @@ mod tests {
             10,
             100,
             "First".into(),
+            String::new(),
             "a".into(),
             NotificationSource::Bell,
         );
@@ -678,6 +812,7 @@ mod tests {
             20,
             200,
             "Other".into(),
+            String::new(),
             "b".into(),
             NotificationSource::Bell,
         );
@@ -686,6 +821,7 @@ mod tests {
             10,
             101,
             "Latest".into(),
+            String::new(),
             "c".into(),
             NotificationSource::Bell,
         );
@@ -702,9 +838,33 @@ mod tests {
     #[test]
     fn total_unread_across_panes() {
         let mut store = NotificationStore::new();
-        store.push(1, 10, 100, "A".into(), "a".into(), NotificationSource::Bell);
-        store.push(1, 10, 101, "B".into(), "b".into(), NotificationSource::Bell);
-        store.push(2, 20, 200, "C".into(), "c".into(), NotificationSource::Cli);
+        store.push(
+            1,
+            10,
+            100,
+            "A".into(),
+            String::new(),
+            "a".into(),
+            NotificationSource::Bell,
+        );
+        store.push(
+            1,
+            10,
+            101,
+            "B".into(),
+            String::new(),
+            "b".into(),
+            NotificationSource::Bell,
+        );
+        store.push(
+            2,
+            20,
+            200,
+            "C".into(),
+            String::new(),
+            "c".into(),
+            NotificationSource::Cli,
+        );
         assert_eq!(store.total_unread(), 3);
 
         store.mark_pane_read(10);

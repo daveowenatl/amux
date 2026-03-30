@@ -136,6 +136,8 @@ pub struct SavedNotification {
     pub pane_id: u64,
     pub surface_id: u64,
     pub title: String,
+    #[serde(default)]
+    pub subtitle: String,
     pub body: String,
     pub source: String,
     pub read: bool,
