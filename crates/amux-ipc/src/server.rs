@@ -30,8 +30,8 @@ impl EventBroadcaster {
 ///
 /// Returns the command receiver (for the main thread to drain), the IPC address,
 /// and an `EventBroadcaster` for pushing events to subscribed clients.
-pub fn start_server() -> anyhow::Result<(std_mpsc::Receiver<IpcCommand>, IpcAddr, EventBroadcaster)>
-{
+pub fn start_server(
+) -> Result<(std_mpsc::Receiver<IpcCommand>, IpcAddr, EventBroadcaster), crate::IpcError> {
     let addr = default_addr();
     cleanup_stale(&addr);
 
@@ -59,8 +59,8 @@ pub fn start_server() -> anyhow::Result<(std_mpsc::Receiver<IpcCommand>, IpcAddr
             write_last_addr(&addr)?;
             Ok((cmd_rx, addr, broadcaster))
         }
-        Ok(Err(e)) => anyhow::bail!("IPC server bind failed: {}", e),
-        Err(_) => anyhow::bail!("IPC server thread exited before binding"),
+        Ok(Err(e)) => Err(crate::IpcError::BindFailed(e)),
+        Err(_) => Err(crate::IpcError::ServerThreadDied),
     }
 }
 

@@ -2,6 +2,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 
 use crate::protocol::{Request, Response};
 use crate::socket_path::IpcAddr;
+use crate::IpcError;
 
 /// IPC client for connecting to the amux server.
 pub struct IpcClient {
@@ -18,7 +19,7 @@ pub struct IpcClient {
 
 impl IpcClient {
     /// Connect to the amux IPC server at the given address.
-    pub async fn connect(addr: &IpcAddr) -> anyhow::Result<Self> {
+    pub async fn connect(addr: &IpcAddr) -> Result<Self, IpcError> {
         #[cfg(unix)]
         {
             let IpcAddr::Unix(ref path) = addr;
@@ -47,7 +48,7 @@ impl IpcClient {
         &mut self,
         method: &str,
         params: serde_json::Value,
-    ) -> anyhow::Result<Response> {
+    ) -> Result<Response, IpcError> {
         let req = Request {
             id: uuid::Uuid::new_v4().to_string(),
             method: method.to_string(),
@@ -62,14 +63,14 @@ impl IpcClient {
             .reader
             .next_line()
             .await?
-            .ok_or_else(|| anyhow::anyhow!("connection closed"))?;
+            .ok_or(IpcError::ConnectionClosed)?;
         let resp: Response = serde_json::from_str(&line)?;
         Ok(resp)
     }
 
     /// Read the next line from the server (event or response).
     /// Returns `None` if the connection is closed.
-    pub async fn read_line(&mut self) -> anyhow::Result<Option<String>> {
+    pub async fn read_line(&mut self) -> Result<Option<String>, IpcError> {
         Ok(self.reader.next_line().await?)
     }
 }

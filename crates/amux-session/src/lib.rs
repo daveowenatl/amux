@@ -5,6 +5,24 @@ use std::path::PathBuf;
 use amux_layout::PaneTree;
 use serde::{Deserialize, Serialize};
 
+/// Typed errors for session persistence operations.
+#[derive(Debug, thiserror::Error)]
+pub enum SessionError {
+    /// Load-time deserialization failure (corrupt or incompatible file).
+    #[error("corrupted session file: {0}")]
+    Corrupted(serde_json::Error),
+
+    /// Save-time serialization failure.
+    #[error("failed to serialize session: {0}")]
+    Serialize(serde_json::Error),
+
+    #[error("unsupported session version {version} (expected {expected})")]
+    VersionMismatch { version: u32, expected: u32 },
+
+    #[error("session file I/O error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
 // --- Limits ---
 
 /// Maximum scrollback lines saved per surface.
@@ -143,12 +161,12 @@ pub fn session_path() -> PathBuf {
 }
 
 /// Save session data to the given path using atomic write (write to .tmp, then rename).
-fn save_to_path(data: &SessionData, path: &std::path::Path) -> anyhow::Result<()> {
+fn save_to_path(data: &SessionData, path: &std::path::Path) -> Result<(), SessionError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let json = serde_json::to_string_pretty(data)?;
+    let json = serde_json::to_string_pretty(data).map_err(SessionError::Serialize)?;
     let tmp_path = path.with_extension("json.tmp");
     fs::write(&tmp_path, &json)?;
 
@@ -163,18 +181,31 @@ fn save_to_path(data: &SessionData, path: &std::path::Path) -> anyhow::Result<()
     Ok(())
 }
 
+/// Lightweight header for version checking before full deserialization.
+#[derive(Deserialize)]
+struct SessionHeader {
+    version: u32,
+}
+
 /// Load session data from the given path. Returns `None` if the file does not exist.
-fn load_from_path(path: &std::path::Path) -> anyhow::Result<Option<SessionData>> {
+fn load_from_path(path: &std::path::Path) -> Result<Option<SessionData>, SessionError> {
     if !path.exists() {
         return Ok(None);
     }
 
     let content = fs::read_to_string(path)?;
-    let data: SessionData = serde_json::from_str(&content)?;
 
-    if data.version != 1 {
-        anyhow::bail!("unsupported session version: {}", data.version);
+    // Check version before full deserialization so incompatible schemas
+    // produce VersionMismatch instead of Corrupted.
+    let header: SessionHeader = serde_json::from_str(&content).map_err(SessionError::Corrupted)?;
+    if header.version != 1 {
+        return Err(SessionError::VersionMismatch {
+            version: header.version,
+            expected: 1,
+        });
     }
+
+    let data: SessionData = serde_json::from_str(&content).map_err(SessionError::Corrupted)?;
 
     // Reject empty sessions (no workspaces, or all workspaces have no panes)
     if data.workspaces.is_empty() || data.workspaces.iter().all(|ws| ws.panes.is_empty()) {
@@ -185,7 +216,7 @@ fn load_from_path(path: &std::path::Path) -> anyhow::Result<Option<SessionData>>
 }
 
 /// Delete the given session file.
-fn clear_path(path: &std::path::Path) -> anyhow::Result<()> {
+fn clear_path(path: &std::path::Path) -> Result<(), SessionError> {
     if path.exists() {
         fs::remove_file(path)?;
     }
@@ -193,17 +224,17 @@ fn clear_path(path: &std::path::Path) -> anyhow::Result<()> {
 }
 
 /// Save session data to the default session file.
-pub fn save(data: &SessionData) -> anyhow::Result<()> {
+pub fn save(data: &SessionData) -> Result<(), SessionError> {
     save_to_path(data, &session_path())
 }
 
 /// Load session data from the default session file.
-pub fn load() -> anyhow::Result<Option<SessionData>> {
+pub fn load() -> Result<Option<SessionData>, SessionError> {
     load_from_path(&session_path())
 }
 
 /// Delete the default session file.
-pub fn clear() -> anyhow::Result<()> {
+pub fn clear() -> Result<(), SessionError> {
     clear_path(&session_path())
 }
 
@@ -301,13 +332,40 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_json_returns_error() {
+    fn corrupt_json_returns_corrupted_variant() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("session.json");
         fs::write(&path, "not valid json").unwrap();
 
-        let result = load_from_path(&path);
-        assert!(result.is_err());
+        let err = load_from_path(&path).unwrap_err();
+        assert!(
+            matches!(err, SessionError::Corrupted(_)),
+            "expected Corrupted, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn wrong_version_returns_version_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+
+        let mut session = minimal_session();
+        session.version = 99;
+        // Write directly to bypass version check in save_to_path
+        let json = serde_json::to_string(&session).unwrap();
+        fs::write(&path, &json).unwrap();
+
+        let err = load_from_path(&path).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SessionError::VersionMismatch {
+                    version: 99,
+                    expected: 1
+                }
+            ),
+            "expected VersionMismatch, got: {err:?}"
+        );
     }
 
     #[test]
