@@ -472,4 +472,20 @@ mod tests {
         // excess=6, no newline found, returns text[6..] = "ghijklmnop"
         assert_eq!(result, "ghijklmnop");
     }
+
+    #[test]
+    fn deserialize_notification_without_subtitle_defaults_empty() {
+        let json = r#"{
+            "id": 1,
+            "workspace_id": 1,
+            "pane_id": 10,
+            "surface_id": 100,
+            "title": "T",
+            "body": "B",
+            "source": "cli",
+            "read": false
+        }"#;
+        let n: SavedNotification = serde_json::from_str(json).unwrap();
+        assert_eq!(n.subtitle, "");
+    }
 }

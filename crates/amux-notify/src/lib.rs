@@ -455,13 +455,14 @@ mod tests {
             10,
             100,
             "Test".into(),
-            String::new(),
+            "Permission Required".into(),
             "body".into(),
             NotificationSource::Bell,
         );
         assert_eq!(id, 1);
         assert_eq!(store.pane_unread(10), 1);
         assert_eq!(store.all_notifications().len(), 1);
+        assert_eq!(store.all_notifications()[0].subtitle, "Permission Required");
         assert!(!store.all_notifications()[0].read);
     }
 
@@ -473,12 +474,13 @@ mod tests {
             10,
             100,
             "Test".into(),
-            String::new(),
+            "Task Completed".into(),
             "body".into(),
             NotificationSource::Toast,
         );
         assert_eq!(store.pane_unread(10), 0);
         assert_eq!(store.all_notifications().len(), 1);
+        assert_eq!(store.all_notifications()[0].subtitle, "Task Completed");
         assert!(store.all_notifications()[0].read);
         // But flash should still be set
         assert!(store.pane_state(10).unwrap().flash_started_at.is_some());
