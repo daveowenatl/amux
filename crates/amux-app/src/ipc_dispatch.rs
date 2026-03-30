@@ -1,0 +1,672 @@
+//! IPC command dispatch — handles all JSON-RPC methods from connected clients.
+
+use amux_layout::{PaneId, SplitDirection};
+use amux_notify::NotificationSource;
+
+use crate::managed_pane::PaneSurface;
+use crate::{spawn_surface, AmuxApp};
+
+impl AmuxApp {
+    pub(crate) fn process_ipc_commands(&mut self) {
+        while let Ok(cmd) = self.ipc_rx.try_recv() {
+            let response = self.dispatch_ipc(&cmd.request);
+            let _ = cmd.reply_tx.send(response);
+        }
+    }
+
+    fn dispatch_ipc(&mut self, req: &amux_ipc::Request) -> amux_ipc::Response {
+        use amux_ipc::Response;
+        match req.method.as_str() {
+            "system.ping" => Response::ok(req.id.clone(), serde_json::json!({"pong": true})),
+            "system.capabilities" => Response::ok(
+                req.id.clone(),
+                serde_json::json!({"methods": amux_ipc::methods::METHODS}),
+            ),
+            "system.identify" => {
+                let ws = self.active_workspace();
+                let focused = ws.focused_pane;
+                let sf_id = self
+                    .panes
+                    .get(&focused)
+                    .map(|m| m.active_surface().id)
+                    .unwrap_or(0);
+                Response::ok(
+                    req.id.clone(),
+                    serde_json::json!({
+                        "workspace_id": ws.id.to_string(),
+                        "surface_id": sf_id.to_string(),
+                    }),
+                )
+            }
+            "surface.list" => {
+                let mut surfaces = Vec::new();
+                for ws in &self.workspaces {
+                    for pane_id in ws.tree.iter_panes() {
+                        if let Some(managed) = self.panes.get_mut(&pane_id) {
+                            for (sf_idx, sf) in managed.surfaces.iter_mut().enumerate() {
+                                let (cols, rows) = sf.pane.dimensions();
+                                surfaces.push(serde_json::json!({
+                                    "id": sf.id.to_string(),
+                                    "pane_id": pane_id.to_string(),
+                                    "workspace_id": ws.id.to_string(),
+                                    "title": sf.pane.title(),
+                                    "cols": cols,
+                                    "rows": rows,
+                                    "alive": sf.pane.is_alive(),
+                                    "active": sf_idx == managed.active_surface_idx,
+                                }));
+                            }
+                        }
+                    }
+                }
+                Response::ok(req.id.clone(), serde_json::json!({"surfaces": surfaces}))
+            }
+            "surface.set_cwd" => {
+                match serde_json::from_value::<amux_ipc::methods::SetCwdParams>(req.params.clone())
+                {
+                    Ok(params) => {
+                        let surface = self.resolve_surface_mut(&params.surface_id);
+                        match surface {
+                            Some(sf) => {
+                                sf.metadata.cwd = params.cwd.filter(|s| !s.is_empty());
+                                Response::ok(req.id.clone(), serde_json::json!({}))
+                            }
+                            None => Response::err(req.id.clone(), "not_found", "surface not found"),
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "surface.set_git" => {
+                match serde_json::from_value::<amux_ipc::methods::SetGitParams>(req.params.clone())
+                {
+                    Ok(params) => {
+                        let surface = self.resolve_surface_mut(&params.surface_id);
+                        match surface {
+                            Some(sf) => {
+                                sf.metadata.git_branch = params.branch;
+                                sf.metadata.git_dirty = params.dirty;
+                                Response::ok(req.id.clone(), serde_json::json!({}))
+                            }
+                            None => Response::err(req.id.clone(), "not_found", "surface not found"),
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "surface.set_pr" => {
+                match serde_json::from_value::<amux_ipc::methods::SetPrParams>(req.params.clone()) {
+                    Ok(params) => {
+                        let surface = self.resolve_surface_mut(&params.surface_id);
+                        match surface {
+                            Some(sf) => {
+                                sf.metadata.pr_number = params.number;
+                                sf.metadata.pr_title = params.title;
+                                sf.metadata.pr_state = params.state;
+                                Response::ok(req.id.clone(), serde_json::json!({}))
+                            }
+                            None => Response::err(req.id.clone(), "not_found", "surface not found"),
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "surface.send_text" => {
+                match serde_json::from_value::<amux_ipc::methods::SendTextParams>(
+                    req.params.clone(),
+                ) {
+                    Ok(params) => {
+                        let surface = self.resolve_surface_mut(&params.surface_id);
+                        match surface {
+                            Some(sf) => match sf.pane.write_bytes(params.text.as_bytes()) {
+                                Ok(_) => Response::ok(req.id.clone(), serde_json::json!({})),
+                                Err(e) => {
+                                    Response::err(req.id.clone(), "write_error", &e.to_string())
+                                }
+                            },
+                            None => Response::err(req.id.clone(), "not_found", "surface not found"),
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "surface.read_text" => {
+                match serde_json::from_value::<amux_ipc::methods::ReadTextParams>(
+                    req.params.clone(),
+                ) {
+                    Ok(params) => {
+                        let surface = self.resolve_surface(&params.surface_id);
+                        match surface {
+                            Some(sf) => {
+                                let text = if let Some(ref line_spec) = params.lines {
+                                    sf.pane.read_screen_lines(line_spec, params.ansi)
+                                } else if params.ansi {
+                                    let (_, rows) = sf.pane.dimensions();
+                                    sf.pane.read_scrollback_text(rows)
+                                } else {
+                                    sf.pane.read_screen_text()
+                                };
+                                Response::ok(req.id.clone(), serde_json::json!({"text": text}))
+                            }
+                            None => Response::err(req.id.clone(), "not_found", "surface not found"),
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "pane.split" => {
+                #[derive(serde::Deserialize)]
+                struct SplitParams {
+                    #[serde(default = "default_direction")]
+                    direction: String,
+                }
+                fn default_direction() -> String {
+                    "right".to_string()
+                }
+                match serde_json::from_value::<SplitParams>(req.params.clone()) {
+                    Ok(params) => {
+                        let dir = match params.direction.as_str() {
+                            "down" | "vertical" => SplitDirection::Vertical,
+                            _ => SplitDirection::Horizontal,
+                        };
+                        match self.spawn_pane_with_surface() {
+                            Some(new_id) => {
+                                let ws = self.active_workspace_mut();
+                                if ws.tree.split(ws.focused_pane, dir, new_id) {
+                                    self.set_focus(new_id);
+                                    Response::ok(
+                                        req.id.clone(),
+                                        serde_json::json!({"pane_id": new_id.to_string()}),
+                                    )
+                                } else {
+                                    self.panes.remove(&new_id);
+                                    Response::err(
+                                        req.id.clone(),
+                                        "split_failed",
+                                        "failed to split pane tree",
+                                    )
+                                }
+                            }
+                            None => Response::err(
+                                req.id.clone(),
+                                "spawn_failed",
+                                "failed to spawn pane",
+                            ),
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "pane.close" => {
+                #[derive(serde::Deserialize)]
+                struct CloseParams {
+                    #[serde(default)]
+                    pane_id: Option<String>,
+                }
+                match serde_json::from_value::<CloseParams>(req.params.clone()) {
+                    Ok(params) => {
+                        let focused = self.focused_pane_id();
+                        let target = params
+                            .pane_id
+                            .and_then(|s| s.parse::<PaneId>().ok())
+                            .unwrap_or(focused);
+                        let ws = self.active_workspace_mut();
+                        if ws.tree.iter_panes().len() <= 1 {
+                            return Response::err(
+                                req.id.clone(),
+                                "last_pane",
+                                "cannot close the last pane",
+                            );
+                        }
+                        if let Some(new_focus) = ws.tree.close(target) {
+                            let should_refocus = ws.focused_pane == target;
+                            ws.last_pane_sizes.remove(&target);
+                            if ws.zoomed == Some(target) {
+                                ws.zoomed = None;
+                            }
+                            self.panes.remove(&target);
+                            self.notifications.remove_pane(target);
+                            if should_refocus {
+                                self.set_focus(new_focus);
+                            }
+                            Response::ok(
+                                req.id.clone(),
+                                serde_json::json!({"focused": self.focused_pane_id().to_string()}),
+                            )
+                        } else {
+                            Response::err(req.id.clone(), "not_found", "pane not found in tree")
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "pane.focus" => {
+                #[derive(serde::Deserialize)]
+                struct FocusParams {
+                    pane_id: String,
+                }
+                match serde_json::from_value::<FocusParams>(req.params.clone()) {
+                    Ok(params) => match params.pane_id.parse::<PaneId>() {
+                        Ok(id) if self.active_workspace().tree.contains(id) => {
+                            self.set_focus(id);
+                            Response::ok(req.id.clone(), serde_json::json!({}))
+                        }
+                        _ => Response::err(req.id.clone(), "not_found", "pane not found"),
+                    },
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "pane.list" => {
+                let ws = self.active_workspace();
+                let pane_ids = ws.tree.iter_panes();
+                let focused = ws.focused_pane;
+                let mut pane_list = Vec::new();
+                for id in &pane_ids {
+                    if let Some(managed) = self.panes.get_mut(id) {
+                        let sf = managed.active_surface_mut();
+                        let (cols, rows) = sf.pane.dimensions();
+                        let alive = sf.pane.is_alive();
+                        let tab_count = managed.surfaces.len();
+                        pane_list.push(serde_json::json!({
+                            "id": id.to_string(),
+                            "focused": *id == focused,
+                            "cols": cols,
+                            "rows": rows,
+                            "alive": alive,
+                            "tab_count": tab_count,
+                        }));
+                    }
+                }
+                Response::ok(req.id.clone(), serde_json::json!({"panes": pane_list}))
+            }
+            "workspace.create" => {
+                #[derive(serde::Deserialize)]
+                struct CreateParams {
+                    #[serde(default)]
+                    title: Option<String>,
+                }
+                match serde_json::from_value::<CreateParams>(req.params.clone()) {
+                    Ok(params) => {
+                        if let Some(ws_id) = self.create_workspace(params.title) {
+                            Response::ok(
+                                req.id.clone(),
+                                serde_json::json!({"workspace_id": ws_id.to_string()}),
+                            )
+                        } else {
+                            Response::err(
+                                req.id.clone(),
+                                "spawn_failed",
+                                "Failed to spawn pane for workspace",
+                            )
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "workspace.list" => {
+                let list: Vec<serde_json::Value> = self
+                    .workspaces
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, ws)| {
+                        serde_json::json!({
+                            "id": ws.id.to_string(),
+                            "title": ws.title,
+                            "pane_count": ws.tree.iter_panes().len(),
+                            "active": idx == self.active_workspace_idx,
+                        })
+                    })
+                    .collect();
+                Response::ok(req.id.clone(), serde_json::json!({"workspaces": list}))
+            }
+            "workspace.close" => {
+                #[derive(serde::Deserialize)]
+                struct CloseParams {
+                    workspace_id: String,
+                }
+                match serde_json::from_value::<CloseParams>(req.params.clone()) {
+                    Ok(params) => {
+                        if let Some(idx) = self
+                            .workspaces
+                            .iter()
+                            .position(|ws| ws.id.to_string() == params.workspace_id)
+                        {
+                            if self.workspaces.len() <= 1 {
+                                return Response::err(
+                                    req.id.clone(),
+                                    "last_workspace",
+                                    "cannot close the last workspace",
+                                );
+                            }
+                            self.close_workspace_at(idx);
+                            Response::ok(req.id.clone(), serde_json::json!({}))
+                        } else {
+                            Response::err(req.id.clone(), "not_found", "workspace not found")
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "workspace.focus" => {
+                #[derive(serde::Deserialize)]
+                struct FocusParams {
+                    workspace_id: String,
+                }
+                match serde_json::from_value::<FocusParams>(req.params.clone()) {
+                    Ok(params) => {
+                        if let Some(idx) = self
+                            .workspaces
+                            .iter()
+                            .position(|ws| ws.id.to_string() == params.workspace_id)
+                        {
+                            self.active_workspace_idx = idx;
+                            Response::ok(req.id.clone(), serde_json::json!({}))
+                        } else {
+                            Response::err(req.id.clone(), "not_found", "workspace not found")
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "surface.create" => {
+                #[derive(serde::Deserialize)]
+                struct CreateParams {
+                    #[serde(default)]
+                    pane_id: Option<String>,
+                }
+                match serde_json::from_value::<CreateParams>(req.params.clone()) {
+                    Ok(params) => {
+                        let target_pane = params
+                            .pane_id
+                            .and_then(|s| s.parse::<PaneId>().ok())
+                            .unwrap_or(self.focused_pane_id());
+
+                        // Validate pane exists before spawning a surface
+                        if !self.panes.contains_key(&target_pane) {
+                            Response::err(req.id.clone(), "not_found", "pane not found")
+                        } else {
+                            // Find the workspace that owns this pane
+                            let ws_id = self
+                                .workspaces
+                                .iter()
+                                .find(|ws| ws.tree.iter_panes().contains(&target_pane))
+                                .map(|ws| ws.id)
+                                .unwrap_or_else(|| self.active_workspace().id);
+
+                            let sf_id = self.next_surface_id;
+                            self.next_surface_id += 1;
+
+                            match spawn_surface(
+                                80,
+                                24,
+                                &self.socket_addr,
+                                &self.socket_token,
+                                &self.config,
+                                ws_id,
+                                sf_id,
+                                None,
+                                None,
+                            ) {
+                                Ok(surface) => {
+                                    let managed = self.panes.get_mut(&target_pane).unwrap();
+                                    managed.surfaces.push(surface);
+                                    managed.active_surface_idx = managed.surfaces.len() - 1;
+                                    Response::ok(
+                                        req.id.clone(),
+                                        serde_json::json!({"surface_id": sf_id.to_string()}),
+                                    )
+                                }
+                                Err(e) => {
+                                    Response::err(req.id.clone(), "spawn_error", &e.to_string())
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "surface.close" => {
+                #[derive(serde::Deserialize)]
+                struct CloseParams {
+                    #[serde(default)]
+                    surface_id: Option<String>,
+                }
+                match serde_json::from_value::<CloseParams>(req.params.clone()) {
+                    Ok(params) => {
+                        let focused = self.focused_pane_id();
+                        if let Some(sf_id_str) = params.surface_id {
+                            // Find and close the specific surface
+                            if let Ok(sf_id) = sf_id_str.parse::<u64>() {
+                                // Find which pane owns this surface
+                                let target = self.panes.iter().find_map(|(&pid, m)| {
+                                    m.surfaces
+                                        .iter()
+                                        .position(|s| s.id == sf_id)
+                                        .map(|idx| (pid, idx))
+                                });
+                                if let Some((pane_id, idx)) = target {
+                                    let managed = self.panes.get_mut(&pane_id).unwrap();
+                                    if managed.surfaces.len() <= 1 {
+                                        self.close_pane(pane_id);
+                                    } else {
+                                        managed.surfaces.remove(idx);
+                                        if managed.active_surface_idx >= managed.surfaces.len() {
+                                            managed.active_surface_idx = managed.surfaces.len() - 1;
+                                        }
+                                    }
+                                    Response::ok(req.id.clone(), serde_json::json!({}))
+                                } else {
+                                    Response::err(req.id.clone(), "not_found", "surface not found")
+                                }
+                            } else {
+                                Response::err(
+                                    req.id.clone(),
+                                    "invalid_params",
+                                    "invalid surface_id",
+                                )
+                            }
+                        } else {
+                            // Close active surface in focused pane
+                            if let Some(managed) = self.panes.get_mut(&focused) {
+                                if managed.surfaces.len() <= 1 {
+                                    self.close_pane(focused);
+                                } else {
+                                    managed.surfaces.remove(managed.active_surface_idx);
+                                    if managed.active_surface_idx >= managed.surfaces.len() {
+                                        managed.active_surface_idx = managed.surfaces.len() - 1;
+                                    }
+                                }
+                                Response::ok(req.id.clone(), serde_json::json!({}))
+                            } else {
+                                Response::err(req.id.clone(), "not_found", "pane not found")
+                            }
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "surface.focus" => {
+                #[derive(serde::Deserialize)]
+                struct FocusParams {
+                    surface_id: String,
+                }
+                match serde_json::from_value::<FocusParams>(req.params.clone()) {
+                    Ok(params) => {
+                        if let Ok(sf_id) = params.surface_id.parse::<u64>() {
+                            // Find the pane that owns this surface
+                            let found = self.panes.iter_mut().find_map(|(pid, managed)| {
+                                managed
+                                    .surfaces
+                                    .iter()
+                                    .position(|s| s.id == sf_id)
+                                    .map(|idx| (*pid, idx))
+                            });
+                            if let Some((pid, idx)) = found {
+                                self.panes.get_mut(&pid).unwrap().active_surface_idx = idx;
+                                // Switch to the owning workspace before setting focus
+                                if let Some(ws_idx) = self
+                                    .workspaces
+                                    .iter()
+                                    .position(|ws| ws.tree.iter_panes().contains(&pid))
+                                {
+                                    self.active_workspace_idx = ws_idx;
+                                }
+                                self.set_focus(pid);
+                                return Response::ok(req.id.clone(), serde_json::json!({}));
+                            }
+                            Response::err(req.id.clone(), "not_found", "surface not found")
+                        } else {
+                            Response::err(req.id.clone(), "invalid_params", "invalid surface_id")
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "status.set" => {
+                match serde_json::from_value::<amux_ipc::methods::StatusSetParams>(
+                    req.params.clone(),
+                ) {
+                    Ok(params) => {
+                        let ws_id = params.workspace_id.parse::<u64>().unwrap_or(0);
+                        let state = match params.state.as_str() {
+                            "active" => amux_notify::AgentState::Active,
+                            "waiting" => amux_notify::AgentState::Waiting,
+                            _ => amux_notify::AgentState::Idle,
+                        };
+                        self.notifications.set_status(
+                            ws_id,
+                            state,
+                            params.label,
+                            params.task,
+                            params.message,
+                        );
+                        Response::ok(req.id.clone(), serde_json::json!({}))
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "notify.send" => {
+                match serde_json::from_value::<amux_ipc::methods::NotifySendParams>(
+                    req.params.clone(),
+                ) {
+                    Ok(params) => {
+                        let ws_id = params.workspace_id.parse::<u64>().unwrap_or(0);
+                        let pane_id = params
+                            .pane_id
+                            .parse::<u64>()
+                            .unwrap_or(self.focused_pane_id());
+                        let title = params.title.unwrap_or_default();
+                        let nid = self.deliver_notification(
+                            ws_id,
+                            pane_id,
+                            0,
+                            title,
+                            params.body,
+                            NotificationSource::Cli,
+                            false,
+                        );
+                        Response::ok(req.id.clone(), serde_json::json!({"notification_id": nid}))
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "notify.list" => {
+                let entries: Vec<serde_json::Value> = self
+                    .notifications
+                    .all_notifications()
+                    .iter()
+                    .map(|n| {
+                        let source_str = match n.source {
+                            NotificationSource::Toast => "toast",
+                            NotificationSource::Bell => "bell",
+                            NotificationSource::Cli => "cli",
+                        };
+                        serde_json::json!({
+                            "id": n.id,
+                            "workspace_id": n.workspace_id.to_string(),
+                            "pane_id": n.pane_id.to_string(),
+                            "title": n.title,
+                            "body": n.body,
+                            "source": source_str,
+                            "read": n.read,
+                        })
+                    })
+                    .collect();
+                Response::ok(
+                    req.id.clone(),
+                    serde_json::json!({"notifications": entries}),
+                )
+            }
+            "notify.clear" => {
+                self.notifications.clear_all();
+                Response::ok(req.id.clone(), serde_json::json!({}))
+            }
+            "session.save" => {
+                self.flush_pending_io();
+                let data = self.build_session_data();
+                match amux_session::save(&data) {
+                    Ok(()) => Response::ok(
+                        req.id.clone(),
+                        serde_json::json!({"path": amux_session::session_path().to_string_lossy()}),
+                    ),
+                    Err(e) => Response::err(req.id.clone(), "save_failed", &e.to_string()),
+                }
+            }
+            _ => Response::err(
+                req.id.clone(),
+                "method_not_found",
+                &format!("unknown method: {}", req.method),
+            ),
+        }
+    }
+
+    fn resolve_surface_mut(&mut self, surface_id: &str) -> Option<&mut PaneSurface> {
+        if surface_id == "default" || surface_id.is_empty() {
+            let focused = self.focused_pane_id();
+            return self.panes.get_mut(&focused).map(|m| m.active_surface_mut());
+        }
+
+        // Try as surface ID first: find which pane contains it
+        if let Ok(sf_id) = surface_id.parse::<u64>() {
+            let target_pane = self
+                .panes
+                .iter()
+                .find(|(_, m)| m.surfaces.iter().any(|s| s.id == sf_id))
+                .map(|(pid, _)| *pid);
+
+            if let Some(pid) = target_pane {
+                return self
+                    .panes
+                    .get_mut(&pid)
+                    .and_then(|m| m.surfaces.iter_mut().find(|s| s.id == sf_id));
+            }
+
+            // Fall back to treating it as a pane ID
+            if let Ok(pane_id) = surface_id.parse::<PaneId>() {
+                return self.panes.get_mut(&pane_id).map(|m| m.active_surface_mut());
+            }
+        }
+
+        None
+    }
+
+    fn resolve_surface(&self, surface_id: &str) -> Option<&PaneSurface> {
+        if surface_id == "default" || surface_id.is_empty() {
+            let focused = self.focused_pane_id();
+            self.panes.get(&focused).map(|m| m.active_surface())
+        } else if let Ok(sf_id) = surface_id.parse::<u64>() {
+            for managed in self.panes.values() {
+                if let Some(sf) = managed.surfaces.iter().find(|s| s.id == sf_id) {
+                    return Some(sf);
+                }
+            }
+            if let Ok(pane_id) = surface_id.parse::<PaneId>() {
+                self.panes.get(&pane_id).map(|m| m.active_surface())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+}
