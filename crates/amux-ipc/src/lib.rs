@@ -8,4 +8,4 @@ pub use client::IpcClient;
 pub use protocol::ServerEvent;
 pub use protocol::{Request, Response, RpcError};
 pub use server::{start_server, EventBroadcaster, IpcCommand, EVENT_TYPES};
-pub use socket_path::{read_last_addr, IpcAddr};
+pub use socket_path::{read_last_addr, read_last_token, write_last_token, IpcAddr};

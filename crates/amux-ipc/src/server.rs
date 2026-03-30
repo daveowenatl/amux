@@ -5,7 +5,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{broadcast, oneshot};
 
 use crate::protocol::{AuthMessage, AuthResponse, Request, Response, ServerEvent};
-use crate::socket_path::{default_addr, write_last_addr, IpcAddr};
+use crate::socket_path::{default_addr, write_last_addr, write_last_token, IpcAddr};
 
 /// A command sent from the IPC server to the main (eframe) thread.
 pub struct IpcCommand {
@@ -33,6 +33,10 @@ impl EventBroadcaster {
 pub fn start_server(
     token: String,
 ) -> anyhow::Result<(std_mpsc::Receiver<IpcCommand>, IpcAddr, EventBroadcaster)> {
+    if token.is_empty() {
+        anyhow::bail!("IPC auth token must not be empty");
+    }
+
     let addr = default_addr();
     cleanup_stale(&addr);
 
@@ -43,6 +47,7 @@ pub fn start_server(
         tx: event_tx.clone(),
     };
     let addr_clone = addr.clone();
+    let token_for_file = token.clone();
 
     std::thread::Builder::new()
         .name("ipc-server".to_string())
@@ -58,6 +63,7 @@ pub fn start_server(
     match bind_rx.recv() {
         Ok(Ok(())) => {
             write_last_addr(&addr)?;
+            write_last_token(&token_for_file)?;
             Ok((cmd_rx, addr, broadcaster))
         }
         Ok(Err(e)) => anyhow::bail!("IPC server bind failed: {}", e),
