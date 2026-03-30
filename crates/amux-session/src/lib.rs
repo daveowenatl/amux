@@ -136,6 +136,8 @@ pub struct SavedNotification {
     pub pane_id: u64,
     pub surface_id: u64,
     pub title: String,
+    #[serde(default)]
+    pub subtitle: String,
     pub body: String,
     pub source: String,
     pub read: bool,
@@ -469,5 +471,21 @@ mod tests {
         let result = truncate_scrollback(text, 10);
         // excess=6, no newline found, returns text[6..] = "ghijklmnop"
         assert_eq!(result, "ghijklmnop");
+    }
+
+    #[test]
+    fn deserialize_notification_without_subtitle_defaults_empty() {
+        let json = r#"{
+            "id": 1,
+            "workspace_id": 1,
+            "pane_id": 10,
+            "surface_id": 100,
+            "title": "T",
+            "body": "B",
+            "source": "cli",
+            "read": false
+        }"#;
+        let n: SavedNotification = serde_json::from_str(json).unwrap();
+        assert_eq!(n.subtitle, "");
     }
 }

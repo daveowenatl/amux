@@ -651,6 +651,7 @@ fn restore_session(
             saved_n.pane_id,
             saved_n.surface_id,
             saved_n.title.clone(),
+            saved_n.subtitle.clone(),
             saved_n.body.clone(),
             source,
         );
@@ -1030,6 +1031,7 @@ impl AmuxApp {
                 pane_id: n.pane_id,
                 surface_id: n.surface_id,
                 title: n.title.clone(),
+                subtitle: n.subtitle.clone(),
                 body: n.body.clone(),
                 source: match n.source {
                     NotificationSource::Toast => "toast",
@@ -2779,7 +2781,16 @@ impl AmuxApp {
             };
 
             let skip_toast = matches!(source, NotificationSource::Bell);
-            self.deliver_notification(ws_id, pane_id, surface_id, title, body, source, skip_toast);
+            self.deliver_notification(
+                ws_id,
+                pane_id,
+                surface_id,
+                title,
+                String::new(),
+                body,
+                source,
+                skip_toast,
+            );
         }
     }
 
@@ -2796,6 +2807,7 @@ impl AmuxApp {
         pane_id: PaneId,
         surface_id: u64,
         title: String,
+        subtitle: String,
         body: String,
         source: NotificationSource,
         skip_toast: bool,
@@ -2804,6 +2816,7 @@ impl AmuxApp {
         let source_str = source.as_str();
         // Clone for the IPC broadcast after the notification is stored.
         let bc_title = title.clone();
+        let bc_subtitle = subtitle.clone();
         let bc_body = body.clone();
 
         let nid = if !self.app_focused {
@@ -2817,7 +2830,7 @@ impl AmuxApp {
             }
             let nid = self
                 .notifications
-                .push(ws_id, pane_id, surface_id, title, body, source);
+                .push(ws_id, pane_id, surface_id, title, subtitle, body, source);
             if self.app_config.notifications.auto_reorder_workspaces {
                 self.bubble_workspace(ws_id);
             }
@@ -2825,7 +2838,7 @@ impl AmuxApp {
         } else if pane_id == focused {
             // Tier 3: app focused, same pane — mark read (flash only)
             self.notifications
-                .push_read(ws_id, pane_id, surface_id, title, body, source)
+                .push_read(ws_id, pane_id, surface_id, title, subtitle, body, source)
         } else {
             // Tier 2: app focused, different pane — in-app sound + command
             if self.app_config.notifications.sound.play_when_focused {
@@ -2839,7 +2852,7 @@ impl AmuxApp {
             }
             let nid = self
                 .notifications
-                .push(ws_id, pane_id, surface_id, title, body, source);
+                .push(ws_id, pane_id, surface_id, title, subtitle, body, source);
             if self.app_config.notifications.auto_reorder_workspaces {
                 self.bubble_workspace(ws_id);
             }
@@ -2854,6 +2867,7 @@ impl AmuxApp {
                 "workspace_id": ws_id.to_string(),
                 "pane_id": pane_id.to_string(),
                 "title": bc_title,
+                "subtitle": bc_subtitle,
                 "body": bc_body,
                 "source": source_str,
             }),

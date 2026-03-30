@@ -556,11 +556,13 @@ impl AmuxApp {
                             .parse::<u64>()
                             .unwrap_or(self.focused_pane_id());
                         let title = params.title.unwrap_or_default();
+                        let subtitle = params.subtitle.unwrap_or_default();
                         let nid = self.deliver_notification(
                             ws_id,
                             pane_id,
                             0,
                             title,
+                            subtitle,
                             params.body,
                             NotificationSource::Cli,
                             false,
@@ -586,6 +588,7 @@ impl AmuxApp {
                             "workspace_id": n.workspace_id.to_string(),
                             "pane_id": n.pane_id.to_string(),
                             "title": n.title,
+                            "subtitle": n.subtitle,
                             "body": n.body,
                             "source": source_str,
                             "read": n.read,
