@@ -781,7 +781,7 @@ fn resolve_addr(cli: &Cli) -> anyhow::Result<IpcAddr> {
         return Ok(IpcAddr::from_stored(&path));
     }
 
-    read_last_addr()
+    Ok(read_last_addr()?)
 }
 
 fn print_response(resp: &amux_ipc::Response, json: bool) {

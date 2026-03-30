@@ -63,7 +63,7 @@ pub fn default_addr() -> IpcAddr {
 
 /// Write the IPC address to `{data_dir}/amux/last-socket-path`
 /// so the CLI can discover it without knowing the PID.
-pub fn write_last_addr(addr: &IpcAddr) -> anyhow::Result<()> {
+pub fn write_last_addr(addr: &IpcAddr) -> Result<(), crate::IpcError> {
     let data_dir = dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("amux");
@@ -73,7 +73,7 @@ pub fn write_last_addr(addr: &IpcAddr) -> anyhow::Result<()> {
 }
 
 /// Read the last-known IPC address (for CLI auto-discovery).
-pub fn read_last_addr() -> anyhow::Result<IpcAddr> {
+pub fn read_last_addr() -> Result<IpcAddr, crate::IpcError> {
     let data_dir = dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("amux");
@@ -83,7 +83,7 @@ pub fn read_last_addr() -> anyhow::Result<IpcAddr> {
 
 /// Write the auth token to `{data_dir}/amux/last-socket-token`
 /// so the CLI can discover it alongside the socket address.
-pub fn write_last_token(token: &str) -> anyhow::Result<()> {
+pub fn write_last_token(token: &str) -> Result<(), crate::IpcError> {
     let data_dir = dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("amux");
@@ -93,7 +93,7 @@ pub fn write_last_token(token: &str) -> anyhow::Result<()> {
 }
 
 /// Read the last-known auth token (for CLI auto-discovery).
-pub fn read_last_token() -> anyhow::Result<String> {
+pub fn read_last_token() -> Result<String, crate::IpcError> {
     let data_dir = dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("amux");

@@ -169,6 +169,7 @@ dependencies = [
  "dirs",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "uuid",
@@ -225,6 +226,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -235,6 +237,7 @@ dependencies = [
  "anyhow",
  "cosmic-text",
  "portable-pty",
+ "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
  "url",

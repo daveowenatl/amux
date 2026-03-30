@@ -32,9 +32,9 @@ impl EventBroadcaster {
 /// and an `EventBroadcaster` for pushing events to subscribed clients.
 pub fn start_server(
     token: String,
-) -> anyhow::Result<(std_mpsc::Receiver<IpcCommand>, IpcAddr, EventBroadcaster)> {
+) -> Result<(std_mpsc::Receiver<IpcCommand>, IpcAddr, EventBroadcaster), crate::IpcError> {
     if token.is_empty() {
-        anyhow::bail!("IPC auth token must not be empty");
+        return Err(crate::IpcError::EmptyToken);
     }
 
     let addr = default_addr();
@@ -66,8 +66,8 @@ pub fn start_server(
             write_last_token(&token_for_file)?;
             Ok((cmd_rx, addr, broadcaster))
         }
-        Ok(Err(e)) => anyhow::bail!("IPC server bind failed: {}", e),
-        Err(_) => anyhow::bail!("IPC server thread exited before binding"),
+        Ok(Err(e)) => Err(crate::IpcError::BindFailed(e)),
+        Err(_) => Err(crate::IpcError::ServerThreadDied),
     }
 }
 

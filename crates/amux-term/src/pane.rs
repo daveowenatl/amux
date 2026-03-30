@@ -10,6 +10,19 @@ use wezterm_term::{CursorPosition, StableRowIndex, TerminalSize};
 use crate::config::AmuxTermConfig;
 use crate::osc::{ChannelAlertHandler, NotificationEvent};
 
+/// Typed errors for terminal pane operations.
+#[derive(Debug, thiserror::Error)]
+pub enum TermError {
+    #[error("PTY setup failed: {0}")]
+    PtySetupFailed(#[source] anyhow::Error),
+
+    #[error("resize failed: {0}")]
+    ResizeFailed(#[source] anyhow::Error),
+
+    #[error("write failed: {0}")]
+    WriteFailed(#[source] std::io::Error),
+}
+
 /// Sequence number type (matches wezterm_surface::SequenceNo = usize).
 pub type SequenceNo = usize;
 
@@ -62,7 +75,7 @@ impl TerminalPane {
         rows: u16,
         cmd: CommandBuilder,
         config: Arc<AmuxTermConfig>,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, TermError> {
         let pty_system = native_pty_system();
         let pty_size = PtySize {
             rows,
@@ -70,10 +83,18 @@ impl TerminalPane {
             pixel_width: 0,
             pixel_height: 0,
         };
-        let pair = pty_system.openpty(pty_size)?;
+        let pair = pty_system
+            .openpty(pty_size)
+            .map_err(TermError::PtySetupFailed)?;
 
-        let child = pair.slave.spawn_command(cmd)?;
-        let reader = pair.master.try_clone_reader()?;
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(TermError::PtySetupFailed)?;
+        let reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(TermError::PtySetupFailed)?;
 
         let terminal_size = TerminalSize {
             rows: rows as usize,
@@ -83,7 +104,10 @@ impl TerminalPane {
             dpi: 0,
         };
 
-        let writer = pair.master.take_writer()?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(TermError::PtySetupFailed)?;
         let shared = Arc::new(Mutex::new(writer));
         let terminal_writer = SharedWriter(Arc::clone(&shared));
         let mut terminal = Terminal::new(
@@ -135,14 +159,16 @@ impl TerminalPane {
     }
 
     /// Resize the terminal and PTY to the given dimensions.
-    pub fn resize(&mut self, cols: u16, rows: u16) -> anyhow::Result<()> {
+    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), TermError> {
         let pty_size = PtySize {
             rows,
             cols,
             pixel_width: 0,
             pixel_height: 0,
         };
-        self.master.resize(pty_size)?;
+        self.master
+            .resize(pty_size)
+            .map_err(TermError::ResizeFailed)?;
 
         let terminal_size = TerminalSize {
             rows: rows as usize,
@@ -156,9 +182,9 @@ impl TerminalPane {
     }
 
     /// Write bytes to the PTY (i.e. simulate keyboard input).
-    pub fn write_bytes(&mut self, data: &[u8]) -> anyhow::Result<()> {
+    pub fn write_bytes(&mut self, data: &[u8]) -> Result<(), TermError> {
         let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        writer.write_all(data)?;
+        writer.write_all(data).map_err(TermError::WriteFailed)?;
         Ok(())
     }
 
