@@ -27,6 +27,20 @@ pub struct RpcError {
     pub message: String,
 }
 
+/// Authentication handshake message (first message on every connection).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuthMessage {
+    pub token: String,
+}
+
+/// Authentication response.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuthResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// A server-pushed event (no `id` field — distinguished from responses by `event` field).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerEvent {

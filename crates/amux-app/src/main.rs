@@ -404,7 +404,8 @@ fn main() -> anyhow::Result<()> {
         player.configure(&app_config.notifications.sound.sound);
     }
 
-    let (ipc_rx, ipc_addr, event_broadcaster) = amux_ipc::start_server()?;
+    let socket_token = uuid::Uuid::new_v4().to_string();
+    let (ipc_rx, ipc_addr, event_broadcaster) = amux_ipc::start_server(socket_token.clone())?;
     tracing::info!("IPC server: {}", ipc_addr);
 
     let theme = theme::Theme::default();
@@ -438,9 +439,9 @@ fn main() -> anyhow::Result<()> {
     };
 
     let state = if let Some(session) = restored {
-        restore_session(&session, &ipc_addr, &config)
+        restore_session(&session, &ipc_addr, &socket_token, &config)
     } else {
-        fresh_startup(&ipc_addr, &config)?
+        fresh_startup(&ipc_addr, &socket_token, &config)?
     };
 
     // Force dark appearance on macOS so the title bar matches the app's dark chrome.
@@ -513,6 +514,7 @@ fn main() -> anyhow::Result<()> {
                 ipc_rx,
                 event_broadcaster,
                 socket_addr: ipc_addr,
+                socket_token,
                 config,
                 theme,
                 last_panel_rect: None,
@@ -564,10 +566,11 @@ struct StartupState {
 /// Create a fresh default startup (one workspace, one pane).
 fn fresh_startup(
     ipc_addr: &amux_ipc::IpcAddr,
+    socket_token: &str,
     config: &Arc<AmuxTermConfig>,
 ) -> anyhow::Result<StartupState> {
     let initial_pane_id: PaneId = 0;
-    let surface = spawn_surface(80, 24, ipc_addr, config, 0, 0, None, None)?;
+    let surface = spawn_surface(80, 24, ipc_addr, socket_token, config, 0, 0, None, None)?;
 
     let managed = ManagedPane {
         surfaces: vec![surface],
@@ -609,6 +612,7 @@ fn fresh_startup(
 fn restore_session(
     session: &SessionData,
     ipc_addr: &amux_ipc::IpcAddr,
+    socket_token: &str,
     config: &Arc<AmuxTermConfig>,
 ) -> StartupState {
     let mut workspaces = Vec::new();
@@ -637,6 +641,7 @@ fn restore_session(
                     saved_sf.cols,
                     saved_sf.rows,
                     ipc_addr,
+                    socket_token,
                     config,
                     saved_ws.id,
                     saved_sf.id,
@@ -718,7 +723,7 @@ fn restore_session(
     // If nothing restored, fall back to fresh
     if workspaces.is_empty() {
         tracing::warn!("Session restore produced no workspaces, starting fresh");
-        return match fresh_startup(ipc_addr, config) {
+        return match fresh_startup(ipc_addr, socket_token, config) {
             Ok(result) => result,
             Err(e) => {
                 tracing::error!("Fresh startup also failed: {}", e);
@@ -970,6 +975,7 @@ fn spawn_surface(
     cols: u16,
     rows: u16,
     ipc_addr: &amux_ipc::IpcAddr,
+    socket_token: &str,
     config: &Arc<AmuxTermConfig>,
     workspace_id: u64,
     surface_id: u64,
@@ -979,6 +985,7 @@ fn spawn_surface(
     let shell = default_shell();
     let mut cmd = CommandBuilder::new(&shell);
     cmd.env("AMUX_SOCKET_PATH", ipc_addr.to_string());
+    cmd.env("AMUX_SOCKET_TOKEN", socket_token);
     cmd.env("AMUX_WORKSPACE_ID", workspace_id.to_string());
     cmd.env("AMUX_SURFACE_ID", surface_id.to_string());
     cmd.env("TERM", "xterm-256color");
@@ -1093,6 +1100,7 @@ struct AmuxApp {
     ipc_rx: std::sync::mpsc::Receiver<IpcCommand>,
     event_broadcaster: amux_ipc::EventBroadcaster,
     socket_addr: amux_ipc::IpcAddr,
+    socket_token: String,
     config: Arc<AmuxTermConfig>,
     theme: theme::Theme,
     last_panel_rect: Option<egui::Rect>,
@@ -2033,6 +2041,7 @@ impl AmuxApp {
                             80,
                             24,
                             &self.socket_addr,
+                            &self.socket_token,
                             &self.config,
                             ws_id,
                             sf_id,
@@ -2285,6 +2294,7 @@ impl AmuxApp {
             80,
             24,
             &self.socket_addr,
+            &self.socket_token,
             &self.config,
             ws_id,
             sf_id,
@@ -2322,6 +2332,7 @@ impl AmuxApp {
             80,
             24,
             &self.socket_addr,
+            &self.socket_token,
             &self.config,
             ws_id,
             sf_id,
@@ -2374,6 +2385,7 @@ impl AmuxApp {
             80,
             24,
             &self.socket_addr,
+            &self.socket_token,
             &self.config,
             ws_id,
             sf_id,
@@ -2891,6 +2903,7 @@ impl AmuxApp {
             cols as u16,
             rows as u16,
             &self.socket_addr,
+            &self.socket_token,
             &self.config,
             ws_id,
             sf_id,
@@ -4759,6 +4772,7 @@ impl AmuxApp {
                                 80,
                                 24,
                                 &self.socket_addr,
+                                &self.socket_token,
                                 &self.config,
                                 ws_id,
                                 sf_id,

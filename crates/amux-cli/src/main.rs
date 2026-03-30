@@ -1,4 +1,4 @@
-use amux_ipc::{read_last_addr, IpcAddr, IpcClient};
+use amux_ipc::{read_last_addr, read_last_token, IpcAddr, IpcClient};
 use clap::{Parser, Subcommand};
 use std::io::Read as _;
 
@@ -8,6 +8,10 @@ struct Cli {
     /// Socket path (auto-detected if omitted)
     #[arg(long, global = true)]
     socket: Option<String>,
+
+    /// Auth token (auto-detected from AMUX_SOCKET_TOKEN or stored token)
+    #[arg(long, global = true)]
+    token: Option<String>,
 
     /// Output as JSON
     #[arg(long, global = true)]
@@ -272,6 +276,17 @@ async fn main() -> anyhow::Result<()> {
 
     let addr = resolve_addr(&cli)?;
     let mut client = IpcClient::connect(&addr).await?;
+
+    let token = cli
+        .token
+        .clone()
+        .or_else(|| std::env::var("AMUX_SOCKET_TOKEN").ok())
+        .or_else(|| read_last_token().ok())
+        .unwrap_or_default();
+    if token.is_empty() {
+        anyhow::bail!("No auth token found. Set AMUX_SOCKET_TOKEN or use --token.");
+    }
+    client.authenticate(&token).await?;
 
     match cli.command {
         Command::Ping => {

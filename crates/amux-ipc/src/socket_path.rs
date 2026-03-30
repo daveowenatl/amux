@@ -80,3 +80,23 @@ pub fn read_last_addr() -> Result<IpcAddr, crate::IpcError> {
     let content = std::fs::read_to_string(data_dir.join("last-socket-path"))?;
     Ok(IpcAddr::from_stored(content.trim()))
 }
+
+/// Write the auth token to `{data_dir}/amux/last-socket-token`
+/// so the CLI can discover it alongside the socket address.
+pub fn write_last_token(token: &str) -> Result<(), crate::IpcError> {
+    let data_dir = dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("amux");
+    std::fs::create_dir_all(&data_dir)?;
+    std::fs::write(data_dir.join("last-socket-token"), token)?;
+    Ok(())
+}
+
+/// Read the last-known auth token (for CLI auto-discovery).
+pub fn read_last_token() -> Result<String, crate::IpcError> {
+    let data_dir = dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("amux");
+    let content = std::fs::read_to_string(data_dir.join("last-socket-token"))?;
+    Ok(content.trim().to_string())
+}
