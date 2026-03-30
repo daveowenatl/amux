@@ -10,6 +10,8 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use amux_core::config::{self, AppConfig};
+use amux_core::model::{DragState, SidebarState, Workspace};
 use amux_ipc::IpcCommand;
 use amux_layout::{NavDirection, PaneId, PaneTree, SplitDirection};
 use amux_notify::{
@@ -81,114 +83,6 @@ const TERMINAL_BOTTOM_PAD: f32 = 4.0;
 // ---------------------------------------------------------------------------
 // App config (loaded from ~/.config/amux/config.toml)
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(default)]
-struct AppConfig {
-    font_size: f32,
-    /// Font family for terminal text (e.g. "JetBrains Mono", "Menlo").
-    /// Resolved against system-installed fonts by cosmic-text.
-    font_family: String,
-    notifications: NotificationConfig,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            font_size: font::DEFAULT_FONT_SIZE,
-            font_family: font::DEFAULT_FONT_FAMILY.to_owned(),
-            notifications: NotificationConfig::default(),
-        }
-    }
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(default)]
-struct NotificationConfig {
-    /// Deliver OS-native toast notifications when the app is unfocused.
-    system_notifications: bool,
-    /// Automatically move workspaces to the top of the sidebar on notification.
-    auto_reorder_workspaces: bool,
-    /// Show unread count on macOS dock icon / Windows taskbar.
-    dock_badge: bool,
-    /// Shell command to run on each notification (receives AMUX_NOTIFICATION_* env vars).
-    custom_command: Option<String>,
-    /// Notification sound settings.
-    sound: NotificationSoundConfig,
-}
-
-impl Default for NotificationConfig {
-    fn default() -> Self {
-        Self {
-            system_notifications: true,
-            auto_reorder_workspaces: true,
-            dock_badge: true,
-            custom_command: None,
-            sound: NotificationSoundConfig::default(),
-        }
-    }
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(default)]
-struct NotificationSoundConfig {
-    /// "system", "none", or path to a .wav/.ogg/.mp3 file.
-    sound: String,
-    /// Play sound even when app is focused (suppressed notification feedback).
-    play_when_focused: bool,
-}
-
-impl Default for NotificationSoundConfig {
-    fn default() -> Self {
-        Self {
-            sound: "system".to_string(),
-            play_when_focused: true,
-        }
-    }
-}
-
-fn load_app_config() -> AppConfig {
-    let config_path = if cfg!(target_os = "windows") {
-        dirs::config_dir().map(|d| d.join("amux").join("config.toml"))
-    } else {
-        dirs::home_dir().map(|d| d.join(".config").join("amux").join("config.toml"))
-    };
-
-    if let Some(path) = config_path {
-        match std::fs::read_to_string(&path) {
-            Ok(contents) => match toml::from_str::<AppConfig>(&contents) {
-                Ok(mut config) => {
-                    tracing::info!("Loaded config from {}", path.display());
-                    config.font_size = validate_font_size(config.font_size);
-                    // Trim whitespace; treat empty as default.
-                    config.font_family = config.font_family.trim().to_owned();
-                    if config.font_family.is_empty() {
-                        config.font_family = font::DEFAULT_FONT_FAMILY.to_owned();
-                    }
-                    return config;
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to parse {}: {}", path.display(), e);
-                }
-            },
-            Err(_) => {
-                tracing::debug!("No config file at {}", path.display());
-            }
-        }
-    }
-
-    AppConfig::default()
-}
-
-fn validate_font_size(size: f32) -> f32 {
-    const MIN_FONT_SIZE: f32 = 4.0;
-    const MAX_FONT_SIZE: f32 = 96.0;
-    if !size.is_finite() || size <= 0.0 {
-        font::DEFAULT_FONT_SIZE
-    } else {
-        size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
-    }
-}
 
 /// Cached font family for semibold/bold UI text (sidebar titles, active tabs).
 /// Uses a static Arc<str> to avoid allocating on every call.
@@ -387,7 +281,7 @@ fn install_system_font_fallback(ctx: &egui::Context) {
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let app_config = load_app_config();
+    let app_config = config::load_app_config();
     let font_size = app_config.font_size;
     // FontConfig is only consumed by the GPU renderer; gate to avoid unused
     // warnings in non-GPU builds. font_family is GPU-only — the egui fallback
@@ -927,47 +821,6 @@ fn cleanup_addr(addr: &amux_ipc::IpcAddr) {
         #[cfg(windows)]
         amux_ipc::IpcAddr::NamedPipe(_) => {}
     }
-}
-
-// --- Data Model ---
-// Hierarchy: Workspace > PaneTree (splits) > Pane (each has tab bar) > Surface (terminal tab)
-// Core pane types (ManagedPane, PaneSurface, SurfaceMetadata, SelectionState, etc.)
-// live in managed_pane.rs.
-
-/// A workspace shown in the sidebar. Owns the split tree.
-pub(crate) struct Workspace {
-    pub(crate) id: u64,
-    pub(crate) title: String,
-    pub(crate) tree: PaneTree,
-    pub(crate) focused_pane: PaneId,
-    pub(crate) zoomed: Option<PaneId>,
-    pub(crate) dragging_divider: Option<DragState>,
-    pub(crate) last_pane_sizes: HashMap<PaneId, (usize, usize)>,
-    /// Optional workspace color for sidebar indicator.
-    pub(crate) color: Option<[u8; 4]>,
-}
-
-pub(crate) struct SidebarState {
-    pub(crate) visible: bool,
-    pub(crate) width: f32,
-    /// Drag reorder state.
-    pub(crate) drag: Option<SidebarDragState>,
-}
-
-pub(crate) struct SidebarDragState {
-    /// Index of workspace being dragged.
-    pub(crate) source_idx: usize,
-    /// Current pointer Y position.
-    pub(crate) current_y: f32,
-    /// Computed drop target index.
-    pub(crate) drop_target_idx: usize,
-    /// Y midpoints of each row for computing drop position.
-    pub(crate) row_midpoints: Vec<f32>,
-}
-
-struct DragState {
-    node_path: Vec<usize>,
-    direction: SplitDirection,
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -21,38 +21,17 @@
 
 use std::sync::mpsc;
 
-use amux_layout::PaneId;
 use amux_term::pane::TerminalPane;
 
+// Re-export core model types so existing `use managed_pane::*` keeps working.
+pub(crate) use amux_core::model::{
+    CopyModeState, DeadPaneAction, ExitInfo, FindState, PanelInfo, SelectionMode, SelectionState,
+    SurfaceMetadata, WORD_DELIMITERS,
+};
+
 // ---------------------------------------------------------------------------
-// Data Model
+// Terminal-dependent types (stay in amux-app)
 // ---------------------------------------------------------------------------
-// Hierarchy: Workspace > PaneTree (splits) > Pane (each has tab bar) > Surface (terminal tab)
-
-/// Per-surface metadata reported by shell integration, agent hooks, or OSC sequences.
-#[derive(Default, Clone)]
-pub(crate) struct SurfaceMetadata {
-    pub(crate) cwd: Option<String>,
-    pub(crate) git_branch: Option<String>,
-    pub(crate) git_dirty: bool,
-    pub(crate) pr_number: Option<u32>,
-    pub(crate) pr_title: Option<String>,
-    pub(crate) pr_state: Option<String>, // "open", "merged", "closed"
-    /// Surface title from OSC 0/2 (window title set by shell/agent).
-    pub(crate) surface_title: Option<String>,
-}
-
-/// Info about a process that has exited.
-pub(crate) struct ExitInfo {
-    pub(crate) message: String,
-}
-
-/// Action to take when user presses a key on a dead pane.
-pub(crate) enum DeadPaneAction {
-    None,
-    Close,
-    Restart,
-}
 
 /// A terminal tab within a pane. Each pane can have multiple surfaces.
 pub(crate) struct PaneSurface {
@@ -137,92 +116,3 @@ impl ManagedPane {
         }
     }
 }
-
-/// Summary of a pane's state, usable without knowing the concrete panel type.
-#[allow(dead_code)]
-pub(crate) struct PanelInfo {
-    pub(crate) panel_type: &'static str,
-    pub(crate) title: String,
-    pub(crate) is_alive: bool,
-    pub(crate) surface_count: usize,
-}
-
-// ---------------------------------------------------------------------------
-// Selection
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SelectionMode {
-    Cell,
-    Word,
-    Line,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct SelectionState {
-    pub(crate) anchor: (usize, usize), // (col, stable_row)
-    pub(crate) end: (usize, usize),    // (col, stable_row)
-    pub(crate) mode: SelectionMode,
-    pub(crate) active: bool, // true while mouse is held
-}
-
-impl SelectionState {
-    /// Return (start, end) normalized so start <= end in reading order.
-    pub(crate) fn normalized(&self) -> ((usize, usize), (usize, usize)) {
-        let a = self.anchor;
-        let b = self.end;
-        if a.1 < b.1 || (a.1 == b.1 && a.0 <= b.0) {
-            (a, b)
-        } else {
-            (b, a)
-        }
-    }
-
-    /// Check if a cell at (col, stable_row) is within the selection.
-    pub(crate) fn contains(&self, col: usize, stable_row: usize) -> bool {
-        let (start, end) = self.normalized();
-        if stable_row < start.1 || stable_row > end.1 {
-            return false;
-        }
-        if start.1 == end.1 {
-            // Single line
-            col >= start.0 && col <= end.0
-        } else if stable_row == start.1 {
-            col >= start.0
-        } else if stable_row == end.1 {
-            col <= end.0
-        } else {
-            true // middle line
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Find / Copy Mode
-// ---------------------------------------------------------------------------
-
-/// State for the in-pane find/search bar.
-pub(crate) struct FindState {
-    pub(crate) query: String,
-    /// Matches as (phys_row, start_col, end_col_exclusive).
-    pub(crate) matches: Vec<(usize, usize, usize)>,
-    pub(crate) current_match: usize,
-    /// The pane this search applies to.
-    pub(crate) pane_id: PaneId,
-    /// True on the first frame after opening, for initial focus.
-    pub(crate) just_opened: bool,
-}
-
-/// State for vi-style copy mode (scrollback navigation + visual selection).
-pub(crate) struct CopyModeState {
-    pub(crate) pane_id: PaneId,
-    /// Cursor position in (col, phys_row).
-    pub(crate) cursor: (usize, usize),
-    /// Visual selection anchor (col, phys_row), set when 'v' is pressed.
-    pub(crate) visual_anchor: Option<(usize, usize)>,
-    /// Line-visual mode (V).
-    pub(crate) line_visual: bool,
-}
-
-/// Word boundary delimiters for double-click selection.
-pub(crate) const WORD_DELIMITERS: &str = " \t\n()[]{}'\"|<>&;:,.`~!@#$%^*-+=?/\\";
