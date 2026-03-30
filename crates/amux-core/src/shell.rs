@@ -46,16 +46,27 @@ pub fn inject_shell_integration(shell: &str, cmd: &mut CommandBuilder) {
         }
         "bash" => {
             // Bootstrap integration via PROMPT_COMMAND on first interactive prompt.
-            // This runs once, then restores any original PROMPT_COMMAND.
+            // Preserve any existing PROMPT_COMMAND so user hooks still fire.
             let bash_script = integration_dir.join("amux-bash-integration.bash");
-            let bootstrap = format!(
-                concat!(
-                    "unset PROMPT_COMMAND; ",
-                    "if [[ -r \"{}\" ]]; then source \"{}\"; fi",
-                ),
-                bash_script.display(),
-                bash_script.display(),
-            );
+            let orig = std::env::var("PROMPT_COMMAND").unwrap_or_default();
+            let bootstrap = if orig.is_empty() {
+                format!(
+                    "unset PROMPT_COMMAND; if [[ -r \"{}\" ]]; then source \"{}\"; fi",
+                    bash_script.display(),
+                    bash_script.display(),
+                )
+            } else {
+                format!(
+                    concat!(
+                        "unset PROMPT_COMMAND; ",
+                        "if [[ -r \"{}\" ]]; then source \"{}\"; fi; ",
+                        "{}",
+                    ),
+                    bash_script.display(),
+                    bash_script.display(),
+                    orig,
+                )
+            };
             cmd.env("PROMPT_COMMAND", &bootstrap);
         }
         _ => {}
@@ -126,21 +137,35 @@ pub fn ensure_claude_wrapper_dir() -> Option<std::path::PathBuf> {
         return None;
     }
 
-    let wrapper_path = bin_dir.join("claude");
-    let wrapper_content = include_str!("../../../resources/bin/claude");
-
-    let needs_write = std::fs::read_to_string(&wrapper_path)
-        .map(|existing| existing != wrapper_content)
-        .unwrap_or(true);
-
-    if needs_write && std::fs::write(&wrapper_path, wrapper_content).is_err() {
-        return None;
-    }
-    // Make executable (unix)
     #[cfg(unix)]
-    if needs_write {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755));
+    {
+        let wrapper_path = bin_dir.join("claude");
+        let wrapper_content = include_str!("../../../resources/bin/claude");
+
+        let needs_write = std::fs::read_to_string(&wrapper_path)
+            .map(|existing| existing != wrapper_content)
+            .unwrap_or(true);
+
+        if needs_write && std::fs::write(&wrapper_path, wrapper_content).is_err() {
+            return None;
+        }
+        if needs_write {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+    #[cfg(windows)]
+    {
+        let wrapper_path = bin_dir.join("claude.cmd");
+        let wrapper_content = "@echo off\r\nclaude.exe %*\r\n";
+
+        let needs_write = std::fs::read_to_string(&wrapper_path)
+            .map(|existing| existing != wrapper_content)
+            .unwrap_or(true);
+
+        if needs_write && std::fs::write(&wrapper_path, wrapper_content).is_err() {
+            return None;
+        }
     }
 
     Some(bin_dir)
