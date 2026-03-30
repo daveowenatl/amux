@@ -8,8 +8,13 @@ use serde::{Deserialize, Serialize};
 /// Typed errors for session persistence operations.
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
+    /// Load-time deserialization failure (corrupt or incompatible file).
     #[error("corrupted session file: {0}")]
-    Corrupted(#[from] serde_json::Error),
+    Corrupted(serde_json::Error),
+
+    /// Save-time serialization failure.
+    #[error("failed to serialize session: {0}")]
+    Serialize(serde_json::Error),
 
     #[error("unsupported session version {version} (expected {expected})")]
     VersionMismatch { version: u32, expected: u32 },
@@ -161,7 +166,7 @@ fn save_to_path(data: &SessionData, path: &std::path::Path) -> Result<(), Sessio
         fs::create_dir_all(parent)?;
     }
 
-    let json = serde_json::to_string_pretty(data)?;
+    let json = serde_json::to_string_pretty(data).map_err(SessionError::Serialize)?;
     let tmp_path = path.with_extension("json.tmp");
     fs::write(&tmp_path, &json)?;
 
@@ -176,6 +181,12 @@ fn save_to_path(data: &SessionData, path: &std::path::Path) -> Result<(), Sessio
     Ok(())
 }
 
+/// Lightweight header for version checking before full deserialization.
+#[derive(Deserialize)]
+struct SessionHeader {
+    version: u32,
+}
+
 /// Load session data from the given path. Returns `None` if the file does not exist.
 fn load_from_path(path: &std::path::Path) -> Result<Option<SessionData>, SessionError> {
     if !path.exists() {
@@ -183,14 +194,18 @@ fn load_from_path(path: &std::path::Path) -> Result<Option<SessionData>, Session
     }
 
     let content = fs::read_to_string(path)?;
-    let data: SessionData = serde_json::from_str(&content)?;
 
-    if data.version != 1 {
+    // Check version before full deserialization so incompatible schemas
+    // produce VersionMismatch instead of Corrupted.
+    let header: SessionHeader = serde_json::from_str(&content).map_err(SessionError::Corrupted)?;
+    if header.version != 1 {
         return Err(SessionError::VersionMismatch {
-            version: data.version,
+            version: header.version,
             expected: 1,
         });
     }
+
+    let data: SessionData = serde_json::from_str(&content).map_err(SessionError::Corrupted)?;
 
     // Reject empty sessions (no workspaces, or all workspaces have no panes)
     if data.workspaces.is_empty() || data.workspaces.iter().all(|ws| ws.panes.is_empty()) {
