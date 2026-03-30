@@ -7,6 +7,7 @@ use wezterm_term::color::ColorPalette;
 use wezterm_term::terminal::Terminal;
 use wezterm_term::{CursorPosition, StableRowIndex, TerminalSize};
 
+use crate::backend::TerminalBackend;
 use crate::config::AmuxTermConfig;
 use crate::osc::{ChannelAlertHandler, NotificationEvent};
 
@@ -307,6 +308,11 @@ impl TerminalPane {
         self.seqno
     }
 
+    /// Total rows in scrollback + visible screen.
+    pub fn scrollback_rows(&self) -> usize {
+        self.terminal.screen().scrollback_rows()
+    }
+
     /// Read lines from the scrollback or visible screen, with optional ANSI formatting.
     ///
     /// `line_spec` formats:
@@ -564,6 +570,120 @@ impl TerminalPane {
             }
         }
         matches
+    }
+}
+
+impl TerminalBackend for TerminalPane {
+    fn advance(&mut self) -> AdvanceResult {
+        self.advance()
+    }
+
+    fn resize(&mut self, cols: u16, rows: u16) -> Result<(), TermError> {
+        self.resize(cols, rows)
+    }
+
+    fn write_bytes(&mut self, data: &[u8]) -> Result<(), TermError> {
+        self.write_bytes(data)
+    }
+
+    fn feed_bytes(&mut self, data: &[u8]) {
+        self.feed_bytes(data);
+    }
+
+    fn take_reader(&mut self) -> Option<Box<dyn Read + Send>> {
+        self.take_reader()
+    }
+
+    fn title(&self) -> &str {
+        self.title()
+    }
+
+    fn working_dir(&self) -> Option<&Url> {
+        self.working_dir()
+    }
+
+    fn dimensions(&self) -> (usize, usize) {
+        self.dimensions()
+    }
+
+    fn cursor(&self) -> CursorPosition {
+        self.cursor()
+    }
+
+    fn palette(&self) -> ColorPalette {
+        self.palette()
+    }
+
+    fn is_alt_screen_active(&self) -> bool {
+        self.is_alt_screen_active()
+    }
+
+    fn bracketed_paste_enabled(&self) -> bool {
+        self.bracketed_paste_enabled()
+    }
+
+    fn child_pid(&self) -> Option<u32> {
+        self.child_pid()
+    }
+
+    fn is_alive(&mut self) -> bool {
+        self.is_alive()
+    }
+
+    fn exit_status(&mut self) -> Option<portable_pty::ExitStatus> {
+        self.exit_status()
+    }
+
+    fn changed_lines(&self) -> Vec<StableRowIndex> {
+        self.changed_lines()
+    }
+
+    fn mark_rendered(&mut self) {
+        self.mark_rendered();
+    }
+
+    fn current_seqno(&self) -> SequenceNo {
+        self.current_seqno()
+    }
+
+    fn rendered_seqno(&self) -> SequenceNo {
+        self.rendered_seqno()
+    }
+
+    fn scrollback_rows(&self) -> usize {
+        self.scrollback_rows()
+    }
+
+    fn read_screen_lines(&self, line_spec: &str, ansi: bool) -> String {
+        self.read_screen_lines(line_spec, ansi)
+    }
+
+    fn read_screen_text(&self) -> String {
+        self.read_screen_text()
+    }
+
+    fn read_scrollback_text(&self, max_lines: usize) -> String {
+        self.read_scrollback_text(max_lines)
+    }
+
+    fn read_scrollback_text_range(&self, start: usize, end: usize) -> String {
+        self.read_scrollback_text_range(start, end)
+    }
+
+    fn search_scrollback(&self, query: &str) -> Vec<(usize, usize, usize)> {
+        self.search_scrollback(query)
+    }
+
+    fn erase_scrollback(&mut self) {
+        self.erase_scrollback();
+    }
+
+    fn focus_changed(&mut self, focused: bool) {
+        self.focus_changed(focused);
+    }
+
+    fn drain_notifications(&self) -> Vec<NotificationEvent> {
+        self.drain_notifications()
     }
 }
 
