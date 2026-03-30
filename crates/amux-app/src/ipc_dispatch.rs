@@ -4,7 +4,7 @@ use amux_layout::{PaneId, SplitDirection};
 use amux_notify::NotificationSource;
 
 use crate::managed_pane::PaneSurface;
-use crate::{spawn_surface, AmuxApp};
+use crate::{startup, AmuxApp};
 
 impl AmuxApp {
     pub(crate) fn process_ipc_commands(&mut self) {
@@ -396,7 +396,7 @@ impl AmuxApp {
                             let sf_id = self.next_surface_id;
                             self.next_surface_id += 1;
 
-                            match spawn_surface(
+                            match startup::spawn_surface(
                                 80,
                                 24,
                                 &self.socket_addr,

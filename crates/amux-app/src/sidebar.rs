@@ -308,7 +308,7 @@ fn render_workspace_row(
     let has_pr = metadata.is_some_and(|m| m.pr_number.is_some());
 
     // Compute title text early so we can measure if it needs two lines.
-    let title_font = crate::bold_font(TITLE_FONT_SIZE);
+    let title_font = crate::fonts::bold_font(TITLE_FONT_SIZE);
     let display_title = if let Some(task) = status.as_ref().and_then(|s| s.task.as_ref()) {
         format!("\u{2731} {task}")
     } else if let Some(st) = metadata.and_then(|m| m.surface_title.as_ref()) {
