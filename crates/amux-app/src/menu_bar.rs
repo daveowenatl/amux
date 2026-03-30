@@ -28,6 +28,9 @@ pub(crate) enum MenuAction {
     ZoomIn,
     ZoomOut,
     ZoomReset,
+    Copy,
+    Paste,
+    SelectAll,
 }
 
 /// Stored menu item IDs, used to match incoming `MenuEvent`s to actions.
@@ -41,6 +44,9 @@ struct MenuItems {
     zoom_in: muda::MenuId,
     zoom_out: muda::MenuId,
     zoom_reset: muda::MenuId,
+    copy: muda::MenuId,
+    paste: muda::MenuId,
+    select_all: muda::MenuId,
 }
 
 static MENU_ITEMS: std::sync::OnceLock<MenuItems> = std::sync::OnceLock::new();
@@ -106,6 +112,15 @@ pub(crate) fn build() -> Menu {
     let zoom_out = MenuItem::new("Zoom Out", true, accel(CMD, Code::Minus));
     let zoom_reset = MenuItem::new("Actual Size", true, accel(CMD, Code::Digit0));
 
+    // Edit menu items — use custom MenuItems (not PredefinedMenuItem) so we
+    // receive the event in our handler instead of it being consumed by the OS.
+    let copy = MenuItem::new("Copy", true, accel(CMD, Code::KeyC));
+    let paste = MenuItem::new("Paste", true, accel(CMD, Code::KeyV));
+    #[cfg(target_os = "macos")]
+    let select_all = MenuItem::new("Select All", true, accel(CMD, Code::KeyA));
+    #[cfg(not(target_os = "macos"))]
+    let select_all = MenuItem::new("Select All", true, accel(CMD_SHIFT, Code::KeyA));
+
     // Store IDs for event matching
     if MENU_ITEMS
         .set(MenuItems {
@@ -118,6 +133,9 @@ pub(crate) fn build() -> Menu {
             zoom_in: zoom_in.id().clone(),
             zoom_out: zoom_out.id().clone(),
             zoom_reset: zoom_reset.id().clone(),
+            copy: copy.id().clone(),
+            paste: paste.id().clone(),
+            select_all: select_all.id().clone(),
         })
         .is_err()
     {
@@ -167,11 +185,8 @@ pub(crate) fn build() -> Menu {
     // --- Edit menu ---
     {
         let edit_menu = Submenu::new("Edit", true);
-        let _ = edit_menu.append_items(&[
-            &PredefinedMenuItem::copy(None),
-            &PredefinedMenuItem::paste(None),
-            &PredefinedMenuItem::select_all(None),
-        ]);
+        let _ =
+            edit_menu.append_items(&[&copy, &paste, &PredefinedMenuItem::separator(), &select_all]);
         let _ = menu.append(&edit_menu);
     }
 
@@ -268,6 +283,12 @@ pub(crate) fn take_pending_action() -> Option<MenuAction> {
             return Some(MenuAction::ZoomOut);
         } else if *id == items.zoom_reset {
             return Some(MenuAction::ZoomReset);
+        } else if *id == items.copy {
+            return Some(MenuAction::Copy);
+        } else if *id == items.paste {
+            return Some(MenuAction::Paste);
+        } else if *id == items.select_all {
+            return Some(MenuAction::SelectAll);
         }
         // Unknown ID (predefined OS item, etc.) — skip and keep draining.
     }

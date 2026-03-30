@@ -14,6 +14,26 @@ impl AmuxApp {
         let events = ctx.input(|i| i.events.clone());
 
         for event in &events {
+            // Handle platform copy/cut events (egui may fire these instead of
+            // Key events for Cmd+C / Cmd+X on macOS).
+            match event {
+                egui::Event::Copy => {
+                    if self.copy_selection() {
+                        return true;
+                    }
+                    // No selection — let Ctrl+C fall through to terminal as SIGINT
+                    continue;
+                }
+                egui::Event::Cut => {
+                    // Terminal text is read-only; treat cut as copy.
+                    if self.copy_selection() {
+                        return true;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+
             if let egui::Event::Key {
                 key,
                 pressed: true,
