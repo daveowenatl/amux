@@ -4,7 +4,7 @@ use std::sync::mpsc as std_mpsc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{broadcast, oneshot};
 
-use crate::protocol::{Request, Response, ServerEvent};
+use crate::protocol::{AuthMessage, AuthResponse, Request, Response, ServerEvent};
 use crate::socket_path::{default_addr, write_last_addr, IpcAddr};
 
 /// A command sent from the IPC server to the main (eframe) thread.
@@ -30,8 +30,9 @@ impl EventBroadcaster {
 ///
 /// Returns the command receiver (for the main thread to drain), the IPC address,
 /// and an `EventBroadcaster` for pushing events to subscribed clients.
-pub fn start_server() -> anyhow::Result<(std_mpsc::Receiver<IpcCommand>, IpcAddr, EventBroadcaster)>
-{
+pub fn start_server(
+    token: String,
+) -> anyhow::Result<(std_mpsc::Receiver<IpcCommand>, IpcAddr, EventBroadcaster)> {
     let addr = default_addr();
     cleanup_stale(&addr);
 
@@ -50,7 +51,7 @@ pub fn start_server() -> anyhow::Result<(std_mpsc::Receiver<IpcCommand>, IpcAddr
                 .enable_all()
                 .build()
                 .expect("tokio runtime");
-            rt.block_on(run_server(addr_clone, cmd_tx, bind_tx, event_tx));
+            rt.block_on(run_server(addr_clone, cmd_tx, bind_tx, event_tx, token));
         })?;
 
     // Wait for the server thread to report bind success/failure
@@ -88,6 +89,7 @@ async fn run_server(
     cmd_tx: std_mpsc::Sender<IpcCommand>,
     bind_tx: std_mpsc::Sender<Result<(), String>>,
     event_tx: broadcast::Sender<ServerEvent>,
+    token: String,
 ) {
     let IpcAddr::Unix(ref path) = addr;
     let listener = match tokio::net::UnixListener::bind(path) {
@@ -108,12 +110,14 @@ async fn run_server(
             Ok((stream, _)) => {
                 let tx = cmd_tx.clone();
                 let event_rx = event_tx.subscribe();
+                let tok = token.clone();
                 let (reader, writer) = stream.into_split();
                 tokio::spawn(handle_connection(
                     BufReader::new(reader),
                     writer,
                     tx,
                     event_rx,
+                    tok,
                 ));
             }
             Err(e) => {
@@ -133,6 +137,7 @@ async fn run_server(
     cmd_tx: std_mpsc::Sender<IpcCommand>,
     bind_tx: std_mpsc::Sender<Result<(), String>>,
     event_tx: broadcast::Sender<ServerEvent>,
+    token: String,
 ) {
     use tokio::net::windows::named_pipe::ServerOptions;
 
@@ -169,12 +174,14 @@ async fn run_server(
 
         let tx = cmd_tx.clone();
         let event_rx = event_tx.subscribe();
+        let tok = token.clone();
         let (reader, writer) = tokio::io::split(connected);
         tokio::spawn(handle_connection(
             BufReader::new(reader),
             writer,
             tx,
             event_rx,
+            tok,
         ));
     }
 }
@@ -196,11 +203,39 @@ async fn handle_connection<R, W>(
     mut writer: W,
     cmd_tx: std_mpsc::Sender<IpcCommand>,
     mut event_rx: broadcast::Receiver<ServerEvent>,
+    expected_token: String,
 ) where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
     let mut lines = reader.lines();
+
+    // --- Auth handshake: first message must be a valid token ---
+    let auth_line = match lines.next_line().await {
+        Ok(Some(line)) => line,
+        _ => return,
+    };
+    let auth_ok = match serde_json::from_str::<AuthMessage>(&auth_line) {
+        Ok(msg) => msg.token == expected_token,
+        Err(_) => false,
+    };
+    if !auth_ok {
+        let resp = AuthResponse {
+            ok: false,
+            error: Some("unauthorized".to_string()),
+        };
+        let _ = write_json(&mut writer, &resp).await;
+        return;
+    }
+    let resp = AuthResponse {
+        ok: true,
+        error: None,
+    };
+    if write_json(&mut writer, &resp).await.is_err() {
+        return;
+    }
+
+    // --- Authenticated: proceed with normal request handling ---
     let mut subscriptions: HashSet<String> = HashSet::new();
 
     loop {
@@ -363,26 +398,29 @@ fn handle_unsubscribe(request: &Request, subscriptions: &mut HashSet<String>) ->
     )
 }
 
-async fn write_response<W: tokio::io::AsyncWrite + Unpin>(
+async fn write_json<W: tokio::io::AsyncWrite + Unpin, T: serde::Serialize>(
     writer: &mut W,
-    response: &Response,
+    value: &T,
 ) -> anyhow::Result<()> {
-    let mut json = serde_json::to_string(response)?;
+    let mut json = serde_json::to_string(value)?;
     json.push('\n');
     writer.write_all(json.as_bytes()).await?;
     writer.flush().await?;
     Ok(())
 }
 
+async fn write_response<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    response: &Response,
+) -> anyhow::Result<()> {
+    write_json(writer, response).await
+}
+
 async fn write_event<W: tokio::io::AsyncWrite + Unpin>(
     writer: &mut W,
     event: &ServerEvent,
 ) -> anyhow::Result<()> {
-    let mut json = serde_json::to_string(event)?;
-    json.push('\n');
-    writer.write_all(json.as_bytes()).await?;
-    writer.flush().await?;
-    Ok(())
+    write_json(writer, event).await
 }
 
 #[cfg(test)]

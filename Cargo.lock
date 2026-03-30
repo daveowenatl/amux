@@ -138,6 +138,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "wezterm-surface",
  "wezterm-term",
  "winit",

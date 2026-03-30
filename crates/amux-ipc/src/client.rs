@@ -1,6 +1,6 @@
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 
-use crate::protocol::{Request, Response};
+use crate::protocol::{AuthMessage, AuthResponse, Request, Response};
 use crate::socket_path::IpcAddr;
 
 /// IPC client for connecting to the amux server.
@@ -40,6 +40,29 @@ impl IpcClient {
                 writer: write_half,
             })
         }
+    }
+
+    /// Authenticate with the server using a token.
+    /// Must be called before any other method.
+    pub async fn authenticate(&mut self, token: &str) -> anyhow::Result<()> {
+        let msg = AuthMessage {
+            token: token.to_string(),
+        };
+        let mut json = serde_json::to_string(&msg)?;
+        json.push('\n');
+        self.writer.write_all(json.as_bytes()).await?;
+        self.writer.flush().await?;
+
+        let line = self
+            .reader
+            .next_line()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("connection closed during auth"))?;
+        let resp: AuthResponse = serde_json::from_str(&line)?;
+        if !resp.ok {
+            anyhow::bail!("authentication failed: {}", resp.error.unwrap_or_default());
+        }
+        Ok(())
     }
 
     /// Send a JSON-RPC request and wait for the response.

@@ -273,6 +273,9 @@ async fn main() -> anyhow::Result<()> {
     let addr = resolve_addr(&cli)?;
     let mut client = IpcClient::connect(&addr).await?;
 
+    let token = std::env::var("AMUX_SOCKET_TOKEN").unwrap_or_default();
+    client.authenticate(&token).await?;
+
     match cli.command {
         Command::Ping => {
             let resp = client.call("system.ping", serde_json::json!({})).await?;
