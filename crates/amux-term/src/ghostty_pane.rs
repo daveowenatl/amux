@@ -28,7 +28,11 @@ use crate::pane::{AdvanceResult, SequenceNo, TermError};
 /// `RenderState` is behind `RefCell` for interior mutability — the trait's
 /// `&self` methods need to take snapshots for screen reading.
 pub struct GhosttyPane<'alloc, 'cb> {
-    terminal: Terminal<'alloc, 'cb>,
+    /// Boxed so the vtable pointer registered via `on_pty_write` etc. remains
+    /// stable when GhosttyPane is moved (into AnyBackend, PaneSurface, etc.).
+    /// libghostty-vt stores `&self.vtable` as a raw C pointer; moving Terminal
+    /// after callback registration would leave a dangling pointer → SIGSEGV.
+    terminal: Box<Terminal<'alloc, 'cb>>,
     render_state: RefCell<RenderState<'alloc>>,
     #[allow(dead_code)]
     master: Box<dyn MasterPty + Send>,
@@ -83,8 +87,13 @@ where
             rows,
             max_scrollback: 10_000,
         };
-        let mut terminal =
-            Terminal::new(opts).map_err(|e| TermError::PtySetupFailed(anyhow::anyhow!("{e}")))?;
+        // Box the terminal BEFORE registering callbacks. libghostty-vt stores
+        // a raw pointer to Terminal.vtable via ghostty_terminal_set(USERDATA, &self.vtable).
+        // Boxing first ensures the vtable has a stable heap address that survives
+        // moves of GhosttyPane into AnyBackend/PaneSurface.
+        let mut terminal = Box::new(
+            Terminal::new(opts).map_err(|e| TermError::PtySetupFailed(anyhow::anyhow!("{e}")))?,
+        );
 
         // Register on_pty_write callback so terminal responses go back to PTY.
         let write_handle = Arc::clone(&shared);

@@ -16,10 +16,13 @@ use crate::osc::NotificationEvent;
 use crate::pane::{AdvanceResult, SequenceNo, TermError, TerminalPane};
 
 /// Runtime-selectable terminal backend.
+///
+/// Both variants are boxed to keep enum size small and avoid
+/// clippy::large_enum_variant.
 pub enum AnyBackend {
-    Wezterm(TerminalPane),
+    Wezterm(Box<TerminalPane>),
     #[cfg(feature = "libghostty")]
-    Ghostty(GhosttyPane<'static, 'static>),
+    Ghostty(Box<GhosttyPane<'static, 'static>>),
 }
 
 impl AnyBackend {

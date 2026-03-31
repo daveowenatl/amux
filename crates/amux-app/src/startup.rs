@@ -481,11 +481,11 @@ pub(crate) fn spawn_surface(
         #[cfg(feature = "libghostty")]
         "ghostty" => {
             let ghostty_pane = amux_term::ghostty_pane::GhosttyPane::spawn(cols, rows, cmd)?;
-            amux_term::AnyBackend::Ghostty(ghostty_pane)
+            amux_term::AnyBackend::Ghostty(Box::new(ghostty_pane))
         }
         _ => {
             let wez_pane = TerminalPane::spawn(cols, rows, cmd, config.clone())?;
-            amux_term::AnyBackend::Wezterm(wez_pane)
+            amux_term::AnyBackend::Wezterm(Box::new(wez_pane))
         }
     };
 
