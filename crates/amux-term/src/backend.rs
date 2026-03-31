@@ -297,6 +297,11 @@ pub trait TerminalBackend {
     /// Returns rows in display order. Colors are palette-resolved.
     fn read_screen_cells(&self, scroll_offset: usize) -> Vec<ScreenRow>;
 
+    /// Read an arbitrary range of physical rows as structured cells.
+    /// `start_row` and `end_row` are 0-based physical row indices (end exclusive).
+    /// Used for selection text extraction, hyperlink detection, etc.
+    fn read_cells_range(&self, start_row: usize, end_row: usize) -> Vec<ScreenRow>;
+
     // --- Terminal control ---
 
     /// Erase scrollback buffer, keeping visible screen.

@@ -531,6 +531,13 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
         rows
     }
 
+    fn read_cells_range(&self, _start_row: usize, _end_row: usize) -> Vec<ScreenRow> {
+        // libghostty render state only exposes the viewport.
+        // For arbitrary row ranges, we'd need grid_ref iteration.
+        // Return viewport cells as a best-effort approximation.
+        self.read_screen_cells(0)
+    }
+
     fn erase_scrollback(&mut self) {
         self.terminal.reset();
     }

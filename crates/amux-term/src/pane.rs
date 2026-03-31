@@ -575,6 +575,43 @@ impl TerminalPane {
         }
         matches
     }
+
+    /// Convert a range of physical rows to `ScreenRow` structs.
+    fn lines_to_screen_rows(&self, start: usize, end: usize, cols: usize) -> Vec<ScreenRow> {
+        let screen = self.terminal.screen();
+        let palette = self.terminal.palette();
+        let lines = screen.lines_in_phys_range(start..end);
+
+        let mut result = Vec::with_capacity(lines.len());
+        for line in &lines {
+            let mut cells = Vec::with_capacity(cols);
+            for cell_ref in line.visible_cells() {
+                let col_idx = cell_ref.cell_index();
+                if col_idx >= cols {
+                    break;
+                }
+                let attrs = cell_ref.attrs();
+                let reverse = attrs.reverse();
+                let fg_srgba = resolve_color(&attrs.foreground(), &palette, true, reverse);
+                let bg_srgba = resolve_color(&attrs.background(), &palette, false, reverse);
+
+                cells.push(ScreenCell {
+                    text: cell_ref.str().to_string(),
+                    fg: Color::from(fg_srgba),
+                    bg: Color::from(bg_srgba),
+                    bold: attrs.intensity() == wezterm_term::Intensity::Bold,
+                    italic: attrs.italic(),
+                    underline: attrs.underline() != wezterm_term::Underline::None,
+                    strikethrough: attrs.strikethrough(),
+                    reverse,
+                    hyperlink_url: attrs.hyperlink().map(|h| h.uri().to_string()),
+                });
+            }
+            let wrapped = line.last_cell_was_wrapped();
+            result.push(ScreenRow { cells, wrapped });
+        }
+        result
+    }
 }
 
 impl TerminalBackend for TerminalPane {
@@ -684,41 +721,15 @@ impl TerminalBackend for TerminalPane {
     fn read_screen_cells(&self, scroll_offset: usize) -> Vec<ScreenRow> {
         let (cols, rows) = self.dimensions();
         let screen = self.terminal.screen();
-        let palette = self.terminal.palette();
         let total = screen.scrollback_rows();
         let end = total.saturating_sub(scroll_offset);
         let start = end.saturating_sub(rows);
-        let lines = screen.lines_in_phys_range(start..end);
+        self.lines_to_screen_rows(start, end, cols)
+    }
 
-        let mut result = Vec::with_capacity(rows);
-        for line in &lines {
-            let mut cells = Vec::with_capacity(cols);
-            for cell_ref in line.visible_cells() {
-                let col_idx = cell_ref.cell_index();
-                if col_idx >= cols {
-                    break;
-                }
-                let attrs = cell_ref.attrs();
-                let reverse = attrs.reverse();
-                let fg_srgba = resolve_color(&attrs.foreground(), &palette, true, reverse);
-                let bg_srgba = resolve_color(&attrs.background(), &palette, false, reverse);
-
-                cells.push(ScreenCell {
-                    text: cell_ref.str().to_string(),
-                    fg: Color::from(fg_srgba),
-                    bg: Color::from(bg_srgba),
-                    bold: attrs.intensity() == wezterm_term::Intensity::Bold,
-                    italic: attrs.italic(),
-                    underline: attrs.underline() != wezterm_term::Underline::None,
-                    strikethrough: attrs.strikethrough(),
-                    reverse,
-                    hyperlink_url: attrs.hyperlink().map(|h| h.uri().to_string()),
-                });
-            }
-            let wrapped = line.last_cell_was_wrapped();
-            result.push(ScreenRow { cells, wrapped });
-        }
-        result
+    fn read_cells_range(&self, start_row: usize, end_row: usize) -> Vec<ScreenRow> {
+        let (cols, _) = self.dimensions();
+        self.lines_to_screen_rows(start_row, end_row, cols)
     }
 
     fn erase_scrollback(&mut self) {

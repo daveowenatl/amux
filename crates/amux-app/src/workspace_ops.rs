@@ -355,7 +355,7 @@ impl AmuxApp {
             let (_, rows) = surface.pane.dimensions();
             let page_size = rows.saturating_sub(1).max(1);
             let lines = pages * page_size as isize;
-            let total = surface.pane.screen().scrollback_rows();
+            let total = surface.pane.scrollback_rows();
             let max_offset = total.saturating_sub(rows);
             let new_offset = surface.scroll_offset as isize - lines;
             surface.scroll_offset = (new_offset.max(0) as usize).min(max_offset);
@@ -367,7 +367,7 @@ impl AmuxApp {
         if let Some(managed) = self.panes.get_mut(&pane_id) {
             let surface = managed.active_surface_mut();
             let (_, rows) = surface.pane.dimensions();
-            let total = surface.pane.screen().scrollback_rows();
+            let total = surface.pane.scrollback_rows();
             let max_offset = total.saturating_sub(rows);
             let new_offset = surface.scroll_offset as isize - lines;
             surface.scroll_offset = (new_offset.max(0) as usize).min(max_offset);
