@@ -2,6 +2,8 @@ pub mod backend;
 pub mod color;
 pub mod config;
 pub mod font;
+#[cfg(feature = "libghostty")]
+pub mod ghostty_pane;
 pub mod key_encoder;
 pub mod mouse_encoder;
 pub mod osc;

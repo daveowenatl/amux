@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 description = "Terminal pane abstraction wrapping wezterm-term + portable-pty"
 
+[features]
+default = []
+libghostty = ["dep:libghostty-vt"]
+
 [dependencies]
 amux-core = { workspace = true }
 wezterm-term = { workspace = true }
@@ -16,6 +20,7 @@ cosmic-text = { workspace = true }
 tracing = { workspace = true }
 anyhow = "1"
 thiserror = { workspace = true }
+libghostty-vt = { workspace = true, optional = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

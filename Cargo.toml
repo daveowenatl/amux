@@ -24,6 +24,7 @@ repository = "https://github.com/yourusername/amux"
 wezterm-term = { git = "https://github.com/wezterm/wezterm", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
 wezterm-surface = { git = "https://github.com/wezterm/wezterm", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
 portable-pty = "0.9"
+libghostty-vt = "0.1"
 
 # Windowing
 winit = "0.30"
