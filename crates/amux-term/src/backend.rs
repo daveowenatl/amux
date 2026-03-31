@@ -158,8 +158,8 @@ impl From<wezterm_term::color::ColorPalette> for Palette {
 impl From<portable_pty::ExitStatus> for ProcessExit {
     fn from(s: portable_pty::ExitStatus) -> Self {
         Self {
-            code: if s.success() { 0 } else { 1 },
-            signal: None,
+            code: s.exit_code() as i32,
+            signal: s.signal().map(|_| 0), // portable-pty gives signal name, not number
         }
     }
 }
