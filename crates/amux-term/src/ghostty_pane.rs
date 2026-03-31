@@ -11,7 +11,7 @@ use std::sync::{mpsc, Arc, Mutex};
 
 use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator};
 use libghostty_vt::style::RgbColor;
-use libghostty_vt::terminal::{Mode, Options as TerminalOptions, Terminal};
+use libghostty_vt::terminal::{Mode, Options as TerminalOptions, Point, PointCoordinate, Terminal};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use url::Url;
 
@@ -95,10 +95,27 @@ where
             })
             .map_err(|e| TermError::PtySetupFailed(anyhow::anyhow!("{e}")))?;
 
+        // Register bell callback for notifications.
+        let (tx, rx) = mpsc::channel();
+        let bell_tx = tx.clone();
+        terminal
+            .on_bell(move |_term| {
+                let _ = bell_tx.send(NotificationEvent::Bell);
+            })
+            .map_err(|e| TermError::PtySetupFailed(anyhow::anyhow!("{e}")))?;
+
+        // Register title change callback.
+        let title_tx = tx;
+        terminal
+            .on_title_changed(move |term| {
+                if let Ok(title) = term.title() {
+                    let _ = title_tx.send(NotificationEvent::TitleChanged(title.to_string()));
+                }
+            })
+            .map_err(|e| TermError::PtySetupFailed(anyhow::anyhow!("{e}")))?;
+
         let render_state =
             RenderState::new().map_err(|e| TermError::PtySetupFailed(anyhow::anyhow!("{e}")))?;
-
-        let (_tx, rx) = mpsc::channel();
 
         Ok(Self {
             terminal,
@@ -152,6 +169,44 @@ where
                     .or_else(|| Url::parse(&format!("file://{pwd}")).ok());
             }
         }
+    }
+
+    /// Read a single row of text via grid_ref point queries.
+    /// Returns the text content of the row, trimmed at the right.
+    fn read_row_text(&self, row: u32, cols: u16) -> String {
+        let mut line = String::new();
+        let mut char_buf = ['\0'; 16];
+        for col in 0..cols {
+            let coord: PointCoordinate =
+                libghostty_vt::ffi::GhosttyPointCoordinate { x: col, y: row }.into();
+            if let Ok(grid_ref) = self.terminal.grid_ref(Point::Screen(coord)) {
+                if let Ok(n) = grid_ref.graphemes(&mut char_buf) {
+                    for &ch in &char_buf[..n] {
+                        line.push(ch);
+                    }
+                } else {
+                    line.push(' ');
+                }
+            } else {
+                line.push(' ');
+            }
+        }
+        line.trim_end().to_string()
+    }
+
+    /// Read a range of rows as text lines using grid_ref.
+    /// `start` and `end` are 0-based row indices (end exclusive).
+    fn read_rows_text(&self, start: u32, end: u32) -> String {
+        let cols = self.terminal.cols().unwrap_or(80);
+        let mut lines = Vec::new();
+        for row in start..end {
+            lines.push(self.read_row_text(row, cols));
+        }
+        // Trim trailing empty lines
+        while lines.last().is_some_and(|l| l.is_empty()) {
+            lines.pop();
+        }
+        lines.join("\n")
     }
 
     /// Read screen text using the render state snapshot iterators.
@@ -335,28 +390,106 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
         self.terminal.total_rows().unwrap_or(0)
     }
 
-    fn read_screen_lines(&self, _line_spec: &str, _ansi: bool) -> String {
-        // TODO: parse line_spec and handle ANSI formatting.
-        // For now, return visible screen text.
-        self.read_text_from_snapshot()
+    fn read_screen_lines(&self, line_spec: &str, _ansi: bool) -> String {
+        // ANSI formatting not yet supported — returns plain text regardless.
+        let total = self.terminal.total_rows().unwrap_or(0) as u32;
+        if total == 0 {
+            return String::new();
+        }
+
+        let (start, end) = if let Some(rest) = line_spec.strip_prefix('-') {
+            // "-N" means last N lines
+            let n: u32 = rest.parse().unwrap_or(total);
+            (total.saturating_sub(n), total)
+        } else if let Some((a, b)) = line_spec.split_once('-') {
+            // "A-B" means lines A through B (1-based)
+            let a: u32 = a.parse().unwrap_or(1);
+            let b: u32 = b.parse().unwrap_or(total);
+            let s = a.saturating_sub(1).min(total);
+            let e = b.min(total);
+            if s >= e {
+                (0, 0)
+            } else {
+                (s, e)
+            }
+        } else {
+            // Single line number (1-based)
+            let n: u32 = line_spec.parse().unwrap_or(1);
+            let idx = n.saturating_sub(1).min(total.saturating_sub(1));
+            (idx, (idx + 1).min(total))
+        };
+
+        self.read_rows_text(start, end)
     }
 
     fn read_screen_text(&self) -> String {
         self.read_text_from_snapshot()
     }
 
-    fn read_scrollback_text(&self, _max_lines: usize) -> String {
-        // libghostty's RenderState iterates the viewport, not full scrollback.
-        // For scrollback, we'd use terminal.grid_ref() point-by-point.
-        self.read_text_from_snapshot()
+    fn read_scrollback_text(&self, max_lines: usize) -> String {
+        let total = self.terminal.total_rows().unwrap_or(0) as u32;
+        let start = total.saturating_sub(max_lines as u32);
+        self.read_rows_text(start, total)
     }
 
-    fn read_scrollback_text_range(&self, _start: usize, _end: usize) -> String {
-        String::new()
+    fn read_scrollback_text_range(&self, start: usize, end: usize) -> String {
+        self.read_rows_text(start as u32, end as u32)
     }
 
-    fn search_scrollback(&self, _query: &str) -> Vec<(usize, usize, usize)> {
-        Vec::new()
+    fn search_scrollback(&self, query: &str) -> Vec<(usize, usize, usize)> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let query_lower = query.to_lowercase();
+        let cols = self.terminal.cols().unwrap_or(80);
+        let total = self.terminal.total_rows().unwrap_or(0) as u32;
+
+        let mut matches = Vec::new();
+        let mut char_buf = ['\0'; 16];
+
+        for row in 0..total {
+            let mut line_text = String::new();
+            let mut col_offsets: Vec<usize> = Vec::new();
+
+            for col in 0..cols {
+                let coord: PointCoordinate =
+                    libghostty_vt::ffi::GhosttyPointCoordinate { x: col, y: row }.into();
+                if let Ok(grid_ref) = self.terminal.grid_ref(Point::Screen(coord)) {
+                    if let Ok(n) = grid_ref.graphemes(&mut char_buf) {
+                        for &ch in &char_buf[..n] {
+                            let mut buf = [0u8; 4];
+                            let s = ch.encode_utf8(&mut buf);
+                            for _ in s.bytes() {
+                                col_offsets.push(col as usize);
+                            }
+                            line_text.push(ch);
+                        }
+                    } else {
+                        col_offsets.push(col as usize);
+                        line_text.push(' ');
+                    }
+                } else {
+                    col_offsets.push(col as usize);
+                    line_text.push(' ');
+                }
+            }
+
+            let line_lower = line_text.to_lowercase();
+            let mut search_start = 0;
+            while let Some(byte_pos) = line_lower[search_start..].find(&query_lower) {
+                let abs_pos = search_start + byte_pos;
+                let end_pos = abs_pos + query_lower.len();
+                let start_col = col_offsets.get(abs_pos).copied().unwrap_or(0);
+                let end_col = col_offsets
+                    .get(end_pos.saturating_sub(1))
+                    .copied()
+                    .unwrap_or(start_col)
+                    + 1;
+                matches.push((row as usize, start_col, end_col));
+                search_start = abs_pos + 1;
+            }
+        }
+        matches
     }
 
     fn read_screen_cells(&self, _scroll_offset: usize) -> Vec<ScreenRow> {

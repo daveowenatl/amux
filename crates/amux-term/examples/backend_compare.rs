@@ -19,9 +19,8 @@ use portable_pty::CommandBuilder;
 fn run_backend(name: &str, pane: &mut dyn TerminalBackend) {
     // Let the shell run
     for _ in 0..30 {
-        match pane.advance() {
-            AdvanceResult::Eof => break,
-            _ => {}
+        if let AdvanceResult::Eof = pane.advance() {
+            break;
         }
         thread::sleep(Duration::from_millis(50));
     }
@@ -63,6 +62,25 @@ fn run_backend(name: &str, pane: &mut dyn TerminalBackend) {
             row.wrapped,
         );
     }
+
+    // Line-spec reading
+    let last2 = pane.read_screen_lines("-2", false);
+    println!("  read_screen_lines(\"-2\"):");
+    for line in last2.lines() {
+        println!("    {line:?}");
+    }
+
+    // Search
+    let hits = pane.search_scrollback("plain");
+    println!("  search_scrollback(\"plain\"): {hits:?}");
+
+    // Scrollback text
+    let scrollback = pane.read_scrollback_text(100);
+    println!(
+        "  read_scrollback_text(100): {} chars, {} lines",
+        scrollback.len(),
+        scrollback.lines().count()
+    );
 
     if let Some(exit) = pane.exit_status() {
         println!(
