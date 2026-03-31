@@ -29,15 +29,39 @@ fn run_backend(name: &str, pane: &mut dyn TerminalBackend) {
     println!("--- {name} ---");
     println!("  Dimensions: {:?}", pane.dimensions());
     println!("  Cursor: {:?}", pane.cursor());
-    println!("  Alt screen: {}", pane.is_alt_screen_active());
-    println!("  Bracketed paste: {}", pane.bracketed_paste_enabled());
-    println!("  Scrollback rows: {}", pane.scrollback_rows());
     println!("  Alive: {}", pane.is_alive());
 
+    // Plain text
     let text = pane.read_screen_text();
     println!("  Screen text ({} chars):", text.len());
     for line in text.lines() {
         println!("    {line:?}");
+    }
+
+    // Cell-level access (what the GPU renderer uses)
+    let rows = pane.read_screen_cells(0);
+    let non_empty: Vec<_> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.cells.iter().any(|c| !c.text.is_empty() && c.text != " "))
+        .collect();
+    println!(
+        "  Screen cells: {} rows ({} non-empty)",
+        rows.len(),
+        non_empty.len()
+    );
+    for (i, row) in &non_empty {
+        let line_text: String = row.cells.iter().map(|c| c.text.as_str()).collect();
+        let has_bold = row.cells.iter().any(|c| c.bold);
+        let has_color = row
+            .cells
+            .iter()
+            .any(|c| c.fg.0 != 1.0 || c.fg.1 != 1.0 || c.fg.2 != 1.0);
+        println!(
+            "    row {i}: {:?} bold={has_bold} color={has_color} wrapped={}",
+            line_text.trim_end(),
+            row.wrapped,
+        );
     }
 
     if let Some(exit) = pane.exit_status() {
@@ -51,10 +75,16 @@ fn run_backend(name: &str, pane: &mut dyn TerminalBackend) {
 }
 
 fn main() {
-    let script = "echo 'ALPHA'; echo 'BRAVO'; echo 'CHARLIE'; exit 0";
+    // Use ANSI color codes to test attribute extraction
+    let script = concat!(
+        "printf '\\033[1mBOLD\\033[0m \\033[3mITALIC\\033[0m \\033[31mRED\\033[0m\\n'; ",
+        "printf 'plain text\\n'; ",
+        "printf '\\033[4munderlined\\033[0m\\n'; ",
+        "exit 0"
+    );
 
-    println!("=== Backend comparison ===");
-    println!("Command: bash -c {script:?}\n");
+    println!("=== Backend comparison (with attributes) ===");
+    println!("Command: bash -c <script with ANSI colors>\n");
 
     // --- wezterm-term backend ---
     let mut cmd1 = CommandBuilder::new("bash");

@@ -10,6 +10,7 @@ pub mod osc;
 pub mod pane;
 
 pub use backend::{
-    Color, CursorPos, CursorShape, Palette, ProcessExit, StableRow, TerminalBackend,
+    Color, CursorPos, CursorShape, Palette, ProcessExit, ScreenCell, ScreenRow, StableRow,
+    TerminalBackend,
 };
 pub use pane::TermError;

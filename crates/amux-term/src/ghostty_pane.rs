@@ -16,7 +16,8 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use url::Url;
 
 use crate::backend::{
-    Color, CursorPos, CursorShape, Palette, ProcessExit, StableRow, TerminalBackend,
+    Color, CursorPos, CursorShape, Palette, ProcessExit, ScreenCell, ScreenRow, StableRow,
+    TerminalBackend,
 };
 use crate::osc::NotificationEvent;
 use crate::pane::{AdvanceResult, SequenceNo, TermError};
@@ -356,6 +357,85 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
 
     fn search_scrollback(&self, _query: &str) -> Vec<(usize, usize, usize)> {
         Vec::new()
+    }
+
+    fn read_screen_cells(&self, _scroll_offset: usize) -> Vec<ScreenRow> {
+        let mut rs = self.render_state.borrow_mut();
+        let snapshot = match rs.update(&self.terminal) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let palette = self.cached_palette.clone();
+        let default_fg = palette.foreground;
+        let default_bg = palette.background;
+
+        let mut row_iter = match RowIterator::new() {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        let mut cell_iter = match CellIterator::new() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        let mut row_iteration = match row_iter.update(&snapshot) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut rows = Vec::new();
+        while let Some(row) = row_iteration.next() {
+            let wrapped = row
+                .raw_row()
+                .map(|r| r.is_wrapped().unwrap_or(false))
+                .unwrap_or(false);
+            let mut cells = Vec::new();
+            if let Ok(mut cell_iteration) = cell_iter.update(row) {
+                while let Some(cell) = cell_iteration.next() {
+                    let text = cell
+                        .graphemes()
+                        .map(|chars| chars.into_iter().collect::<String>())
+                        .unwrap_or_default();
+
+                    let fg = cell
+                        .fg_color()
+                        .ok()
+                        .flatten()
+                        .map(rgb_to_color)
+                        .unwrap_or(default_fg);
+                    let bg = cell
+                        .bg_color()
+                        .ok()
+                        .flatten()
+                        .map(rgb_to_color)
+                        .unwrap_or(default_bg);
+
+                    let style = cell.style().ok();
+                    let bold = style.as_ref().map(|s| s.bold).unwrap_or(false);
+                    let italic = style.as_ref().map(|s| s.italic).unwrap_or(false);
+                    let underline = style
+                        .as_ref()
+                        .map(|s| !matches!(s.underline, libghostty_vt::style::Underline::None))
+                        .unwrap_or(false);
+                    let strikethrough = style.as_ref().map(|s| s.strikethrough).unwrap_or(false);
+                    let inverse = style.as_ref().map(|s| s.inverse).unwrap_or(false);
+
+                    cells.push(ScreenCell {
+                        text,
+                        fg,
+                        bg,
+                        bold,
+                        italic,
+                        underline,
+                        strikethrough,
+                        reverse: inverse,
+                        hyperlink_url: None,
+                    });
+                }
+            }
+            rows.push(ScreenRow { cells, wrapped });
+        }
+        rows
     }
 
     fn erase_scrollback(&mut self) {

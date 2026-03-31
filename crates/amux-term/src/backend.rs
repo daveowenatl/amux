@@ -101,6 +101,33 @@ impl ProcessExit {
 /// Stable row index — identifies a row across scrollback changes.
 pub type StableRow = i64;
 
+// --- Screen cell types for rendering ---
+
+/// A single cell's data, backend-agnostic.
+#[derive(Clone, Debug)]
+pub struct ScreenCell {
+    /// Grapheme cluster (usually one char, can be multi-codepoint).
+    pub text: String,
+    /// Resolved foreground color (already palette-resolved).
+    pub fg: Color,
+    /// Resolved background color.
+    pub bg: Color,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
+    pub reverse: bool,
+    pub hyperlink_url: Option<String>,
+}
+
+/// A row of cells for rendering.
+#[derive(Clone, Debug)]
+pub struct ScreenRow {
+    pub cells: Vec<ScreenCell>,
+    /// Whether this line wraps to the next.
+    pub wrapped: bool,
+}
+
 // --- Conversions from wezterm-term / portable-pty types ---
 
 impl From<wezterm_term::color::SrgbaTuple> for Color {
@@ -262,6 +289,13 @@ pub trait TerminalBackend {
     /// Search scrollback for case-insensitive matches.
     /// Returns `(phys_row, start_col, end_col)` tuples.
     fn search_scrollback(&self, query: &str) -> Vec<(usize, usize, usize)>;
+
+    // --- Cell-level screen access (for rendering) ---
+
+    /// Read visible screen as structured rows/cells with resolved colors.
+    /// `scroll_offset` is lines scrolled back from the bottom (0 = latest).
+    /// Returns rows in display order. Colors are palette-resolved.
+    fn read_screen_cells(&self, scroll_offset: usize) -> Vec<ScreenRow>;
 
     // --- Terminal control ---
 
