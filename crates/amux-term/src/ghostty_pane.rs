@@ -164,9 +164,10 @@ where
                 };
             }
 
-            // Cache cursor shape
+            // Cache cursor shape (combining visual style + blink flag)
             if let Ok(style) = snapshot.cursor_visual_style() {
-                self.cached_cursor_shape = cursor_style_to_shape(style);
+                let blinking = snapshot.cursor_blinking().unwrap_or(false);
+                self.cached_cursor_shape = cursor_style_to_shape(style, blinking);
             }
         }
 
@@ -658,12 +659,15 @@ fn resolve_style_color(sc: &libghostty_vt::style::StyleColor, palette: &[Color])
     }
 }
 
-fn cursor_style_to_shape(style: CursorVisualStyle) -> CursorShape {
-    match style {
-        CursorVisualStyle::Bar => CursorShape::SteadyBar,
-        CursorVisualStyle::Block => CursorShape::SteadyBlock,
-        CursorVisualStyle::Underline => CursorShape::SteadyUnderline,
-        CursorVisualStyle::BlockHollow => CursorShape::SteadyBlock,
+fn cursor_style_to_shape(style: CursorVisualStyle, blinking: bool) -> CursorShape {
+    match (style, blinking) {
+        (CursorVisualStyle::Bar, true) => CursorShape::BlinkingBar,
+        (CursorVisualStyle::Bar, false) => CursorShape::SteadyBar,
+        (CursorVisualStyle::Block, true) => CursorShape::BlinkingBlock,
+        (CursorVisualStyle::Block, false) => CursorShape::SteadyBlock,
+        (CursorVisualStyle::Underline, true) => CursorShape::BlinkingUnderline,
+        (CursorVisualStyle::Underline, false) => CursorShape::SteadyUnderline,
+        (CursorVisualStyle::BlockHollow, _) => CursorShape::SteadyBlock,
         _ => CursorShape::Default,
     }
 }
