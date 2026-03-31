@@ -402,9 +402,16 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
     }
 
     fn read_scrollback_text(&self, max_lines: usize) -> String {
-        // Currently limited to viewport via render state.
-        // Full scrollback would require grid_ref iteration.
+        // libghostty-vt 0.1.x only exposes viewport via render state.
+        // PointCoordinate fields are private, so grid_ref can't reach scrollback.
         let lines = self.snapshot_lines();
+        if max_lines > lines.len() {
+            tracing::warn!(
+                "read_scrollback_text({max_lines}) requested but only {} viewport lines available \
+                 (ghostty backend cannot read scrollback history)",
+                lines.len()
+            );
+        }
         let total = lines.len();
         let start = total.saturating_sub(max_lines);
         let mut selected: Vec<&str> = lines[start..].iter().map(|s| s.as_str()).collect();
@@ -415,10 +422,23 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
     }
 
     fn read_scrollback_text_range(&self, start: usize, end: usize) -> String {
-        // Currently limited to viewport via render state.
+        // libghostty-vt 0.1.x only exposes viewport via render state.
         let lines = self.snapshot_lines();
-        let s = start.min(lines.len());
-        let e = end.min(lines.len());
+        let viewport_total = self.terminal.total_rows().unwrap_or(0);
+        let viewport_rows = lines.len();
+        let viewport_start = viewport_total.saturating_sub(viewport_rows);
+
+        if start < viewport_start || end > viewport_total {
+            tracing::warn!(
+                "read_scrollback_text_range({start}..{end}) extends beyond viewport \
+                 ({viewport_start}..{viewport_total}), results may be incomplete \
+                 (ghostty backend cannot read scrollback history)"
+            );
+        }
+
+        // Map physical row range to viewport-relative indices.
+        let s = start.saturating_sub(viewport_start).min(viewport_rows);
+        let e = end.saturating_sub(viewport_start).min(viewport_rows);
         if s >= e {
             return String::new();
         }
@@ -436,17 +456,25 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
         let query_lower = query.to_lowercase();
         let lines = self.snapshot_lines();
 
+        // Map physical row indices to account for viewport offset.
+        let total = self.terminal.total_rows().unwrap_or(0);
+        let viewport_rows = lines.len();
+        let viewport_start = total.saturating_sub(viewport_rows);
+
         let mut matches = Vec::new();
-        for (phys_row, line) in lines.iter().enumerate() {
+        for (viewport_idx, line) in lines.iter().enumerate() {
             let line_lower = line.to_lowercase();
             let mut search_start = 0;
             while let Some(byte_pos) = line_lower[search_start..].find(&query_lower) {
-                let abs_pos = search_start + byte_pos;
-                let end_pos = abs_pos + query_lower.len();
-                // For ASCII text, byte offset ≈ column. For multi-byte,
-                // this is approximate but correct for the common case.
-                matches.push((phys_row, abs_pos, end_pos));
-                search_start = abs_pos + 1;
+                let abs_byte = search_start + byte_pos;
+                let end_byte = abs_byte + query_lower.len();
+                // Convert byte offsets to character (column) offsets for
+                // correct highlighting with multi-byte UTF-8 content.
+                let start_col = line_lower[..abs_byte].chars().count();
+                let match_chars = line_lower[abs_byte..end_byte].chars().count();
+                let phys_row = viewport_start + viewport_idx;
+                matches.push((phys_row, start_col, start_col + match_chars));
+                search_start = abs_byte + 1;
             }
         }
         matches
@@ -531,15 +559,40 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
         rows
     }
 
-    fn read_cells_range(&self, _start_row: usize, _end_row: usize) -> Vec<ScreenRow> {
-        // libghostty render state only exposes the viewport.
-        // For arbitrary row ranges, we'd need grid_ref iteration.
-        // Return viewport cells as a best-effort approximation.
-        self.read_screen_cells(0)
+    fn read_cells_range(&self, start_row: usize, end_row: usize) -> Vec<ScreenRow> {
+        // libghostty-vt's render state only exposes the viewport. grid_ref
+        // supports arbitrary Screen coordinates but PointCoordinate fields
+        // are private in 0.1.x, so we can't use it.
+        // Return the viewport rows that overlap the requested range.
+        let total = self.terminal.total_rows().unwrap_or(0);
+        let viewport_rows = self.terminal.rows().unwrap_or(24) as usize;
+        let viewport_start = total.saturating_sub(viewport_rows);
+        let viewport_end = total;
+
+        // No overlap — requested range is entirely in scrollback history.
+        if end_row <= viewport_start || start_row >= viewport_end {
+            tracing::debug!(
+                "read_cells_range({start_row}..{end_row}) outside viewport \
+                 ({viewport_start}..{viewport_end}), returning empty"
+            );
+            return Vec::new();
+        }
+
+        let all_rows = self.read_screen_cells(0);
+
+        // Map physical row range to viewport-relative indices.
+        let rel_start = start_row.saturating_sub(viewport_start);
+        let rel_end = (end_row - viewport_start).min(all_rows.len());
+        if rel_start >= rel_end {
+            return Vec::new();
+        }
+        all_rows[rel_start..rel_end].to_vec()
     }
 
     fn erase_scrollback(&mut self) {
-        self.terminal.reset();
+        // Send CSI 3 J (Erase Scrollback) to clear scrollback without
+        // resetting the terminal. terminal.reset() would wipe screen too.
+        self.terminal.vt_write(b"\x1b[3J");
     }
 
     fn focus_changed(&mut self, focused: bool) {

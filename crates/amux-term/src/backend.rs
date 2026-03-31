@@ -300,6 +300,11 @@ pub trait TerminalBackend {
     /// Read an arbitrary range of physical rows as structured cells.
     /// `start_row` and `end_row` are 0-based physical row indices (end exclusive).
     /// Used for selection text extraction, hyperlink detection, etc.
+    ///
+    /// **Note:** Not all backends can access scrollback history. The ghostty
+    /// backend returns only viewport rows that overlap the requested range,
+    /// and returns empty for rows in scrollback history. Callers should
+    /// handle receiving fewer rows than requested.
     fn read_cells_range(&self, start_row: usize, end_row: usize) -> Vec<ScreenRow>;
 
     // --- Terminal control ---
