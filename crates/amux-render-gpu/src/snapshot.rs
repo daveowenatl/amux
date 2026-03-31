@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use amux_term::backend::{Color, CursorPos, CursorShape, TerminalBackend};
+use amux_term::backend::{Color, CursorPos, CursorShape, TerminalBackend, UnderlineStyle};
 use amux_term::color::{resolve_color, srgba_to_f32};
 use wezterm_term::color::{ColorPalette, SrgbaTuple};
 use wezterm_term::image::{ImageData, ImageDataType};
@@ -51,6 +51,12 @@ pub struct CellData {
     pub bg: [f32; 4],
     pub bold: bool,
     pub italic: bool,
+    pub underline: UnderlineStyle,
+    /// Underline color override (None = use fg color).
+    pub underline_color: Option<[f32; 4]>,
+    pub strikethrough: bool,
+    /// Faint/dim text (SGR 2) — renderer halves fg alpha.
+    pub faint: bool,
     pub hyperlink_url: Option<String>,
 }
 
@@ -193,6 +199,10 @@ impl TerminalSnapshot {
                     bg,
                     bold: cell.bold,
                     italic: cell.italic,
+                    underline: cell.underline,
+                    underline_color: cell.underline_color.map(color_to_f32),
+                    strikethrough: cell.strikethrough,
+                    faint: cell.faint,
                     hyperlink_url: cell.hyperlink_url.clone(),
                 });
             }
@@ -343,6 +353,22 @@ impl TerminalSnapshot {
                     }
                 }
 
+                let underline = match attrs.underline() {
+                    wezterm_term::Underline::None => UnderlineStyle::None,
+                    wezterm_term::Underline::Single => UnderlineStyle::Single,
+                    wezterm_term::Underline::Double => UnderlineStyle::Double,
+                    wezterm_term::Underline::Curly => UnderlineStyle::Curly,
+                    wezterm_term::Underline::Dotted => UnderlineStyle::Dotted,
+                    wezterm_term::Underline::Dashed => UnderlineStyle::Dashed,
+                };
+                let underline_color = {
+                    let uc = attrs.underline_color();
+                    if uc == wezterm_term::color::ColorAttribute::Default {
+                        None
+                    } else {
+                        Some(srgba_to_f32(palette.resolve_fg(uc)))
+                    }
+                };
                 cells.push(CellData {
                     col: col_idx,
                     row: row_idx,
@@ -351,6 +377,10 @@ impl TerminalSnapshot {
                     bg: srgba_to_f32(bg),
                     bold: attrs.intensity() == wezterm_term::Intensity::Bold,
                     italic: attrs.italic(),
+                    underline,
+                    underline_color,
+                    strikethrough: attrs.strikethrough(),
+                    faint: attrs.intensity() == wezterm_term::Intensity::Half,
                     hyperlink_url,
                 });
             }

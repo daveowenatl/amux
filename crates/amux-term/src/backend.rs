@@ -103,6 +103,18 @@ pub type StableRow = i64;
 
 // --- Screen cell types for rendering ---
 
+/// Underline decoration style.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UnderlineStyle {
+    #[default]
+    None,
+    Single,
+    Double,
+    Dotted,
+    Dashed,
+    Curly,
+}
+
 /// A single cell's data, backend-agnostic.
 #[derive(Clone, Debug)]
 pub struct ScreenCell {
@@ -114,8 +126,12 @@ pub struct ScreenCell {
     pub bg: Color,
     pub bold: bool,
     pub italic: bool,
-    pub underline: bool,
+    pub underline: UnderlineStyle,
+    /// Underline color override (None = use foreground color).
+    pub underline_color: Option<Color>,
     pub strikethrough: bool,
+    /// Faint/dim text (SGR 2).
+    pub faint: bool,
     pub reverse: bool,
     pub hyperlink_url: Option<String>,
 }

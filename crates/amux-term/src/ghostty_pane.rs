@@ -17,7 +17,7 @@ use url::Url;
 
 use crate::backend::{
     Color, CursorPos, CursorShape, Palette, ProcessExit, ScreenCell, ScreenRow, StableRow,
-    TerminalBackend,
+    TerminalBackend, UnderlineStyle,
 };
 use crate::osc::NotificationEvent;
 use crate::pane::{AdvanceResult, SequenceNo, TermError};
@@ -545,9 +545,13 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
                     let italic = style.as_ref().map(|s| s.italic).unwrap_or(false);
                     let underline = style
                         .as_ref()
-                        .map(|s| !matches!(s.underline, libghostty_vt::style::Underline::None))
-                        .unwrap_or(false);
+                        .map(|s| match s.underline {
+                            libghostty_vt::style::Underline::None => UnderlineStyle::None,
+                            _ => UnderlineStyle::Single,
+                        })
+                        .unwrap_or(UnderlineStyle::None);
                     let strikethrough = style.as_ref().map(|s| s.strikethrough).unwrap_or(false);
+                    let faint = style.as_ref().map(|s| s.faint).unwrap_or(false);
                     let inverse = style.as_ref().map(|s| s.inverse).unwrap_or(false);
 
                     cells.push(ScreenCell {
@@ -557,7 +561,9 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
                         bold,
                         italic,
                         underline,
+                        underline_color: None,
                         strikethrough,
+                        faint,
                         reverse: inverse,
                         hyperlink_url: None,
                     });

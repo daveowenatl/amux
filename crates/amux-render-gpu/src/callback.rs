@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use amux_term::backend::CursorShape;
+use amux_term::backend::{CursorShape, UnderlineStyle};
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};
 use egui_wgpu::wgpu;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
@@ -586,6 +586,148 @@ impl CallbackTrait for TerminalPaintCallback {
             }
             fg
         };
+
+        // --- Text decorations (underlines, strikethrough) ---
+        // Emitted as background-pipeline rects (colored quads).
+        {
+            let line_thickness = (self.cell_height / 14.0).max(1.0);
+            // Baseline is roughly 80% down the cell; underline sits just below it.
+            let underline_y_offset = self.cell_height * 0.85;
+            let strikethrough_y_offset = self.cell_height * 0.5 - line_thickness / 2.0;
+
+            for cell in &snap.cells {
+                let mut fg_color = maybe_linearize(cell.fg, linearize);
+                if cell.faint {
+                    fg_color[3] *= 0.5;
+                }
+
+                let px = self.phys_rect.x + cell.col as f32 * self.cell_width;
+                let py = self.phys_rect.y + cell.row as f32 * self.cell_height;
+
+                // Strikethrough
+                if cell.strikethrough {
+                    bg_instances.push(CellBgInstance {
+                        pos: [px, py + strikethrough_y_offset],
+                        size: [self.cell_width, line_thickness],
+                        color: fg_color,
+                    });
+                }
+
+                // Underline
+                match cell.underline {
+                    UnderlineStyle::None => {}
+                    UnderlineStyle::Single => {
+                        let color = cell
+                            .underline_color
+                            .map(|c| maybe_linearize(c, linearize))
+                            .unwrap_or(fg_color);
+                        bg_instances.push(CellBgInstance {
+                            pos: [px, py + underline_y_offset],
+                            size: [self.cell_width, line_thickness],
+                            color,
+                        });
+                    }
+                    UnderlineStyle::Double => {
+                        let color = cell
+                            .underline_color
+                            .map(|c| maybe_linearize(c, linearize))
+                            .unwrap_or(fg_color);
+                        let gap = (line_thickness * 1.5).max(2.0);
+                        bg_instances.push(CellBgInstance {
+                            pos: [px, py + underline_y_offset],
+                            size: [self.cell_width, line_thickness],
+                            color,
+                        });
+                        bg_instances.push(CellBgInstance {
+                            pos: [px, py + underline_y_offset + gap],
+                            size: [self.cell_width, line_thickness],
+                            color,
+                        });
+                    }
+                    UnderlineStyle::Dotted => {
+                        let color = cell
+                            .underline_color
+                            .map(|c| maybe_linearize(c, linearize))
+                            .unwrap_or(fg_color);
+                        let dot_w = (line_thickness * 1.5).max(2.0);
+                        let mut x = px;
+                        let x_end = px + self.cell_width;
+                        while x < x_end {
+                            let w = dot_w.min(x_end - x);
+                            bg_instances.push(CellBgInstance {
+                                pos: [x, py + underline_y_offset],
+                                size: [w, line_thickness],
+                                color,
+                            });
+                            x += dot_w * 2.0;
+                        }
+                    }
+                    UnderlineStyle::Dashed => {
+                        let color = cell
+                            .underline_color
+                            .map(|c| maybe_linearize(c, linearize))
+                            .unwrap_or(fg_color);
+                        let dash_w = self.cell_width * 0.6;
+                        bg_instances.push(CellBgInstance {
+                            pos: [px, py + underline_y_offset],
+                            size: [dash_w, line_thickness],
+                            color,
+                        });
+                    }
+                    UnderlineStyle::Curly => {
+                        let color = cell
+                            .underline_color
+                            .map(|c| maybe_linearize(c, linearize))
+                            .unwrap_or(fg_color);
+                        // Approximate curly underline with 3 small rects forming a wave.
+                        let seg_w = self.cell_width / 3.0;
+                        let amplitude = line_thickness * 1.5;
+                        let y_base = py + underline_y_offset;
+                        // Up segment
+                        bg_instances.push(CellBgInstance {
+                            pos: [px, y_base - amplitude],
+                            size: [seg_w, line_thickness],
+                            color,
+                        });
+                        // Middle segment
+                        bg_instances.push(CellBgInstance {
+                            pos: [px + seg_w, y_base],
+                            size: [seg_w, line_thickness],
+                            color,
+                        });
+                        // Down segment
+                        bg_instances.push(CellBgInstance {
+                            pos: [px + seg_w * 2.0, y_base + amplitude],
+                            size: [seg_w, line_thickness],
+                            color,
+                        });
+                    }
+                }
+            }
+        }
+
+        // --- Faint text: already applied via fg alpha above; also need to dim
+        //     glyph colors in fg_instances for faint cells. ---
+        // Build a set of faint cell positions for adjusting fg instances.
+        {
+            let faint_cells: HashSet<(usize, usize)> = snap
+                .cells
+                .iter()
+                .filter(|c| c.faint)
+                .map(|c| (c.col, c.row))
+                .collect();
+            if !faint_cells.is_empty() {
+                for inst in &mut fg_instances {
+                    // Map pixel position back to cell coordinates.
+                    let col = ((inst.pos[0] - self.phys_rect.x) / self.cell_width).round() as usize;
+                    let row =
+                        ((inst.pos[1] - self.phys_rect.y) / self.cell_height).round() as usize;
+                    if faint_cells.contains(&(col, row)) {
+                        inst.color[3] *= 0.5;
+                    }
+                }
+            }
+        }
 
         // --- Cursor ---
         if snap.is_focused
