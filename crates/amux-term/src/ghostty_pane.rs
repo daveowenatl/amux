@@ -547,6 +547,11 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
                         .as_ref()
                         .map(|s| match s.underline {
                             libghostty_vt::style::Underline::None => UnderlineStyle::None,
+                            libghostty_vt::style::Underline::Single => UnderlineStyle::Single,
+                            libghostty_vt::style::Underline::Double => UnderlineStyle::Double,
+                            libghostty_vt::style::Underline::Curly => UnderlineStyle::Curly,
+                            libghostty_vt::style::Underline::Dotted => UnderlineStyle::Dotted,
+                            libghostty_vt::style::Underline::Dashed => UnderlineStyle::Dashed,
                             _ => UnderlineStyle::Single,
                         })
                         .unwrap_or(UnderlineStyle::None);
