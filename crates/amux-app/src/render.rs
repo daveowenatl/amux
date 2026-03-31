@@ -2,10 +2,8 @@
 
 use std::time::Duration;
 
-use amux_term::color::resolve_color;
+use amux_term::backend::{Color, CursorShape, TerminalBackend};
 use amux_term::pane::TerminalPane;
-use wezterm_surface::{CursorShape, CursorVisibility};
-use wezterm_term::color::SrgbaTuple;
 
 use crate::managed_pane::SelectionState;
 
@@ -35,14 +33,16 @@ pub(crate) fn render_pane(
         if actual_cols == 0 || actual_rows == 0 {
             return;
         }
-        let palette = pane.color_palette();
-        let cursor = pane.cursor_pos();
-        let screen = pane.screen();
         let gpu_selection = selection.map(|sel| {
             let (start, end) = sel.normalized();
             amux_render_gpu::snapshot::SelectionRange { start, end }
         });
         let seqno = pane.current_seqno();
+
+        // Build snapshot via the wezterm-specific path (with Kitty image support).
+        let palette = pane.color_palette();
+        let cursor = pane.cursor();
+        let screen = pane.screen();
         let snapshot = amux_render_gpu::TerminalSnapshot::from_screen(
             screen,
             &palette,
@@ -63,6 +63,8 @@ pub(crate) fn render_pane(
         return;
     }
 
+    // --- Software renderer path (uses TerminalBackend trait) ---
+
     let font_id = egui::FontId::monospace(font_size);
     let cell_width = ui.fonts(|f| f.glyph_width(&font_id, 'M'));
     let cell_height = ui.fonts(|f| f.row_height(&font_id));
@@ -72,13 +74,12 @@ pub(crate) fn render_pane(
         return;
     }
 
-    let palette = pane.color_palette();
-    let cursor = pane.cursor_pos();
-    let screen = pane.screen();
+    let palette = pane.palette();
+    let cursor = pane.cursor();
+    let bg_default = color_to_egui(palette.background);
 
     let painter = ui.painter();
     let origin = rect.min;
-    let bg_default = srgba_to_egui(palette.background);
 
     // Fill the full allocated rect first to avoid artifacts when terminal is smaller
     painter.rect_filled(rect, 0.0, bg_default);
@@ -89,19 +90,18 @@ pub(crate) fn render_pane(
         painter.rect_filled(rect, 0.0, dim_overlay);
     }
 
-    let total = screen.scrollback_rows();
+    let total = pane.scrollback_rows();
     let end = total.saturating_sub(scroll_offset);
     let start = end.saturating_sub(actual_rows);
-    let lines = screen.lines_in_phys_range(start..end);
+    let screen_rows = pane.read_cells_range(start, end);
 
-    for (row_idx, line) in lines.iter().enumerate() {
+    for (row_idx, screen_row) in screen_rows.iter().enumerate() {
         let y = origin.y + row_idx as f32 * cell_height;
         if y + cell_height < rect.min.y || y > rect.max.y {
             continue;
         }
 
-        for cell_ref in line.visible_cells() {
-            let col_idx = cell_ref.cell_index();
+        for (col_idx, cell) in screen_row.cells.iter().enumerate() {
             if col_idx >= actual_cols {
                 break;
             }
@@ -111,11 +111,8 @@ pub(crate) fn render_pane(
                 continue;
             }
 
-            let attrs = cell_ref.attrs();
-            let reverse = attrs.reverse();
-            let mut bg =
-                srgba_to_egui(resolve_color(&attrs.background(), &palette, false, reverse));
-            let mut fg = srgba_to_egui(resolve_color(&attrs.foreground(), &palette, true, reverse));
+            let mut fg = color_to_egui(cell.fg);
+            let mut bg = color_to_egui(cell.bg);
 
             // Selection: swap fg/bg for selected cells (reverse video)
             let stable_row = start + row_idx;
@@ -124,7 +121,7 @@ pub(crate) fn render_pane(
                     std::mem::swap(&mut fg, &mut bg);
                     // Ensure selected empty cells have visible bg
                     if bg == bg_default {
-                        bg = srgba_to_egui(palette.foreground);
+                        bg = color_to_egui(palette.foreground);
                         fg = bg_default;
                     }
                 }
@@ -155,7 +152,7 @@ pub(crate) fn render_pane(
                 );
             }
 
-            let text = cell_ref.str();
+            let text = &cell.text;
             if !text.is_empty() && text != " " {
                 painter.text(
                     egui::pos2(x, y),
@@ -171,14 +168,14 @@ pub(crate) fn render_pane(
     // Draw cursor
     if is_focused
         && scroll_offset == 0
-        && cursor.visibility == CursorVisibility::Visible
+        && cursor.visible
         && cursor.y >= 0
         && (cursor.y as usize) < actual_rows
         && cursor.x < actual_cols
     {
         let cx = origin.x + cursor.x as f32 * cell_width;
         let cy = origin.y + cursor.y as f32 * cell_height;
-        let cursor_color = srgba_to_egui(palette.cursor_bg);
+        let cursor_color = color_to_egui(palette.cursor_bg);
 
         match cursor.shape {
             CursorShape::BlinkingBar | CursorShape::SteadyBar => {
@@ -198,25 +195,22 @@ pub(crate) fn render_pane(
                     egui::pos2(cx, cy),
                     egui::vec2(cell_width, cell_height),
                 );
-                let cursor_fg = srgba_to_egui(palette.cursor_fg);
+                let cursor_fg = color_to_egui(palette.cursor_fg);
                 painter.rect_filled(cursor_rect, 0.0, cursor_color);
 
+                // Draw text under the block cursor
                 let cursor_line_idx = cursor.y as usize;
-                if cursor_line_idx < lines.len() {
-                    let line = &lines[cursor_line_idx];
-                    for cell_ref in line.visible_cells() {
-                        if cell_ref.cell_index() == cursor.x {
-                            let text = cell_ref.str();
-                            if !text.is_empty() && text != " " {
-                                painter.text(
-                                    egui::pos2(cx, cy),
-                                    egui::Align2::LEFT_TOP,
-                                    text,
-                                    font_id.clone(),
-                                    cursor_fg,
-                                );
-                            }
-                            break;
+                if cursor_line_idx < screen_rows.len() {
+                    if let Some(cell) = screen_rows[cursor_line_idx].cells.get(cursor.x) {
+                        let text = &cell.text;
+                        if !text.is_empty() && text != " " {
+                            painter.text(
+                                egui::pos2(cx, cy),
+                                egui::Align2::LEFT_TOP,
+                                text,
+                                font_id.clone(),
+                                cursor_fg,
+                            );
                         }
                     }
                 }
@@ -312,12 +306,13 @@ pub(crate) fn render_exit_overlay(
     painter.galley(egui::pos2(x2, y2), g2, egui::Color32::from_gray(160));
 }
 
-pub(crate) fn srgba_to_egui(color: SrgbaTuple) -> egui::Color32 {
+/// Convert an amux-native Color to egui Color32.
+pub(crate) fn color_to_egui(c: Color) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(
-        (color.0 * 255.0).round() as u8,
-        (color.1 * 255.0).round() as u8,
-        (color.2 * 255.0).round() as u8,
-        (color.3 * 255.0).round() as u8,
+        (c.0 * 255.0).round() as u8,
+        (c.1 * 255.0).round() as u8,
+        (c.2 * 255.0).round() as u8,
+        (c.3 * 255.0).round() as u8,
     )
 }
 

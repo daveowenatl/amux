@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
+use amux_term::backend::CursorShape;
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};
 use egui_wgpu::wgpu;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
-use wezterm_surface::{CursorShape, CursorVisibility};
 
 use crate::atlas::GlyphAtlas;
 use crate::pipeline::{
@@ -81,7 +81,7 @@ pub struct PaneRenderState {
     seqno: usize,
     cursor_x: usize,
     cursor_y: i64,
-    cursor_visibility: CursorVisibility,
+    cursor_visible: bool,
     cursor_shape: CursorShape,
     scroll_offset: usize,
     is_focused: bool,
@@ -133,7 +133,7 @@ impl PaneRenderState {
             seqno: 0,
             cursor_x: 0,
             cursor_y: 0,
-            cursor_visibility: CursorVisibility::Visible,
+            cursor_visible: true,
             cursor_shape: CursorShape::Default,
             scroll_offset: 0,
             is_focused: false,
@@ -167,10 +167,10 @@ impl PaneRenderState {
     ) -> bool {
         !self.initialized
             || self.seqno != snap.seqno
-            || self.cursor_x != snap.cursor.x
-            || self.cursor_y != snap.cursor.y
-            || self.cursor_visibility != snap.cursor.visibility
-            || self.cursor_shape != snap.cursor.shape
+            || self.cursor_x != snap.cursor_x
+            || self.cursor_y != snap.cursor_y
+            || self.cursor_visible != snap.cursor_visible
+            || self.cursor_shape != snap.cursor_shape
             || self.scroll_offset != snap.scroll_offset
             || self.is_focused != snap.is_focused
             || self.rect_x != rect.x
@@ -198,10 +198,10 @@ impl PaneRenderState {
     ) {
         self.initialized = true;
         self.seqno = snap.seqno;
-        self.cursor_x = snap.cursor.x;
-        self.cursor_y = snap.cursor.y;
-        self.cursor_visibility = snap.cursor.visibility;
-        self.cursor_shape = snap.cursor.shape;
+        self.cursor_x = snap.cursor_x;
+        self.cursor_y = snap.cursor_y;
+        self.cursor_visible = snap.cursor_visible;
+        self.cursor_shape = snap.cursor_shape;
         self.scroll_offset = snap.scroll_offset;
         self.is_focused = snap.is_focused;
         self.selection_range = snap.selection_range;
@@ -588,19 +588,18 @@ impl CallbackTrait for TerminalPaintCallback {
         };
 
         // --- Cursor ---
-        let cursor = &snap.cursor;
         if snap.is_focused
             && snap.scroll_offset == 0
-            && cursor.visibility == CursorVisibility::Visible
-            && cursor.y >= 0
-            && (cursor.y as usize) < snap.rows
-            && cursor.x < snap.cols
+            && snap.cursor_visible
+            && snap.cursor_y >= 0
+            && (snap.cursor_y as usize) < snap.rows
+            && snap.cursor_x < snap.cols
         {
-            let cx = self.phys_rect.x + cursor.x as f32 * self.cell_width;
-            let cy = self.phys_rect.y + cursor.y as f32 * self.cell_height;
+            let cx = self.phys_rect.x + snap.cursor_x as f32 * self.cell_width;
+            let cy = self.phys_rect.y + snap.cursor_y as f32 * self.cell_height;
             let cursor_bg = maybe_linearize(snap.cursor_bg, linearize);
 
-            match cursor.shape {
+            match snap.cursor_shape {
                 CursorShape::BlinkingBar | CursorShape::SteadyBar => {
                     bg_instances.push(CellBgInstance {
                         pos: [cx, cy],
