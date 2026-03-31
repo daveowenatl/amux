@@ -22,5 +22,9 @@ anyhow = "1"
 thiserror = { workspace = true }
 libghostty-vt = { workspace = true, optional = true }
 
+[[example]]
+name = "ghostty_smoke"
+required-features = ["libghostty"]
+
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

@@ -5,10 +5,11 @@
 //!
 //! Enabled with `--features libghostty`.
 
+use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::sync::{mpsc, Arc, Mutex};
 
-use libghostty_vt::render::{Dirty, RenderState};
+use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator};
 use libghostty_vt::style::RgbColor;
 use libghostty_vt::terminal::{Mode, Options as TerminalOptions, Terminal};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -23,9 +24,11 @@ use crate::pane::{AdvanceResult, SequenceNo, TermError};
 /// A terminal pane backed by libghostty-vt + portable-pty.
 ///
 /// libghostty-vt is !Send + !Sync, so this must stay on one thread.
+/// `RenderState` is behind `RefCell` for interior mutability — the trait's
+/// `&self` methods need to take snapshots for screen reading.
 pub struct GhosttyPane<'alloc, 'cb> {
     terminal: Terminal<'alloc, 'cb>,
-    render_state: RenderState<'alloc>,
+    render_state: RefCell<RenderState<'alloc>>,
     #[allow(dead_code)]
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
@@ -36,8 +39,10 @@ pub struct GhosttyPane<'alloc, 'cb> {
     notification_rx: mpsc::Receiver<NotificationEvent>,
     /// Cached palette from last render state update.
     cached_palette: Palette,
-    /// Cached cursor from last render state update.
+    /// Cached cursor shape from last render state update.
     cached_cursor_shape: CursorShape,
+    /// Cached working directory URL (from OSC 7 via pwd()).
+    cached_working_dir: Option<Url>,
 }
 
 impl<'alloc, 'cb> GhosttyPane<'alloc, 'cb>
@@ -96,7 +101,7 @@ where
 
         Ok(Self {
             terminal,
-            render_state,
+            render_state: RefCell::new(render_state),
             master: pair.master,
             child,
             reader: Some(reader),
@@ -106,13 +111,15 @@ where
             notification_rx: rx,
             cached_palette: Palette::default(),
             cached_cursor_shape: CursorShape::Default,
+            cached_working_dir: None,
         })
     }
 
-    /// Refresh cached render state (palette, cursor shape).
+    /// Refresh cached render state (palette, cursor shape, working dir).
     /// Called after vt_write to keep caches warm.
     fn refresh_render_cache(&mut self) {
-        if let Ok(snapshot) = self.render_state.update(&self.terminal) {
+        let mut rs = self.render_state.borrow_mut();
+        if let Ok(snapshot) = rs.update(&self.terminal) {
             // Cache palette
             if let Ok(colors) = snapshot.colors() {
                 let fg = rgb_to_color(colors.foreground);
@@ -132,16 +139,62 @@ where
 
             // Cache cursor shape
             if let Ok(style) = snapshot.cursor_visual_style() {
-                use libghostty_vt::render::CursorVisualStyle;
-                self.cached_cursor_shape = match style {
-                    CursorVisualStyle::Bar => CursorShape::SteadyBar,
-                    CursorVisualStyle::Block => CursorShape::SteadyBlock,
-                    CursorVisualStyle::Underline => CursorShape::SteadyUnderline,
-                    CursorVisualStyle::BlockHollow => CursorShape::SteadyBlock,
-                    _ => CursorShape::Default,
-                };
+                self.cached_cursor_shape = cursor_style_to_shape(style);
             }
         }
+
+        // Cache working directory from OSC 7
+        if let Ok(pwd) = self.terminal.pwd() {
+            if !pwd.is_empty() {
+                self.cached_working_dir = Url::parse(pwd)
+                    .ok()
+                    .or_else(|| Url::parse(&format!("file://{pwd}")).ok());
+            }
+        }
+    }
+
+    /// Read screen text using the render state snapshot iterators.
+    /// Takes &self via RefCell interior mutability.
+    fn read_text_from_snapshot(&self) -> String {
+        let mut rs = self.render_state.borrow_mut();
+        let snapshot = match rs.update(&self.terminal) {
+            Ok(s) => s,
+            Err(_) => return String::new(),
+        };
+
+        let mut row_iter = match RowIterator::new() {
+            Ok(r) => r,
+            Err(_) => return String::new(),
+        };
+        let mut cell_iter = match CellIterator::new() {
+            Ok(c) => c,
+            Err(_) => return String::new(),
+        };
+        let mut row_iteration = match row_iter.update(&snapshot) {
+            Ok(r) => r,
+            Err(_) => return String::new(),
+        };
+
+        let mut lines = Vec::new();
+        while let Some(row) = row_iteration.next() {
+            let mut line = String::new();
+            if let Ok(mut cell_iteration) = cell_iter.update(row) {
+                while let Some(cell) = cell_iteration.next() {
+                    if let Ok(chars) = cell.graphemes() {
+                        for ch in chars {
+                            line.push(ch);
+                        }
+                    }
+                }
+            }
+            lines.push(line.trim_end().to_string());
+        }
+
+        // Trim trailing empty lines
+        while lines.last().is_some_and(|l| l.is_empty()) {
+            lines.pop();
+        }
+        lines.join("\n")
     }
 }
 
@@ -203,9 +256,7 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
     }
 
     fn working_dir(&self) -> Option<&Url> {
-        // libghostty returns &str from pwd(). We'd need a cached Url field
-        // updated via an on_osc7 callback. For the POC, return None.
-        None
+        self.cached_working_dir.as_ref()
     }
 
     fn dimensions(&self) -> (usize, usize) {
@@ -255,8 +306,6 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
     }
 
     fn changed_lines(&self) -> Vec<StableRow> {
-        // libghostty tracks dirty rows via RenderState. For the POC,
-        // report all visible rows when seqno has advanced.
         if self.seqno > self.rendered_seqno {
             let rows = self.terminal.rows().unwrap_or(24) as i64;
             (0..rows).collect()
@@ -267,8 +316,8 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
 
     fn mark_rendered(&mut self) {
         self.rendered_seqno = self.seqno;
-        // Reset dirty tracking
-        if let Ok(snapshot) = self.render_state.update(&self.terminal) {
+        let mut rs = self.render_state.borrow_mut();
+        if let Ok(snapshot) = rs.update(&self.terminal) {
             let _ = snapshot.set_dirty(Dirty::Clean);
         }
     }
@@ -286,20 +335,19 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
     }
 
     fn read_screen_lines(&self, _line_spec: &str, _ansi: bool) -> String {
-        // POC: full implementation would parse line_spec and iterate scrollback.
-        // For now, return empty — the IPC layer will get basic functionality.
-        String::new()
+        // TODO: parse line_spec and handle ANSI formatting.
+        // For now, return visible screen text.
+        self.read_text_from_snapshot()
     }
 
     fn read_screen_text(&self) -> String {
-        // This needs &mut self for render_state.update(), but the trait requires &self.
-        // POC limitation: return empty. A full implementation would maintain a cached
-        // screen text updated in advance()/feed_bytes().
-        String::new()
+        self.read_text_from_snapshot()
     }
 
     fn read_scrollback_text(&self, _max_lines: usize) -> String {
-        String::new()
+        // libghostty's RenderState iterates the viewport, not full scrollback.
+        // For scrollback, we'd use terminal.grid_ref() point-by-point.
+        self.read_text_from_snapshot()
     }
 
     fn read_scrollback_text_range(&self, _start: usize, _end: usize) -> String {
@@ -342,4 +390,14 @@ fn rgb_to_color(rgb: RgbColor) -> Color {
         rgb.b as f32 / 255.0,
         1.0,
     )
+}
+
+fn cursor_style_to_shape(style: CursorVisualStyle) -> CursorShape {
+    match style {
+        CursorVisualStyle::Bar => CursorShape::SteadyBar,
+        CursorVisualStyle::Block => CursorShape::SteadyBlock,
+        CursorVisualStyle::Underline => CursorShape::SteadyUnderline,
+        CursorVisualStyle::BlockHollow => CursorShape::SteadyBlock,
+        _ => CursorShape::Default,
+    }
 }
