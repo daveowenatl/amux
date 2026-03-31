@@ -1,0 +1,10 @@
+[package]
+name = "amux-ghostty-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Ghostty config file parser for amux theme/font loading"
+
+[dependencies]
+dirs = { workspace = true }
+tracing = { workspace = true }

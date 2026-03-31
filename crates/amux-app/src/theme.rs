@@ -95,6 +95,78 @@ impl Theme {
     }
 }
 
+impl Theme {
+    /// Create a theme from a loaded Ghostty config.
+    ///
+    /// Colors present in the Ghostty config override the defaults; missing
+    /// colors fall back to the built-in Tokyo Night theme.
+    pub(crate) fn from_ghostty(cfg: &amux_ghostty_config::GhosttyConfig) -> Self {
+        let default = Self::default();
+        let mut terminal = default.terminal.clone();
+
+        if let Some(c) = cfg.background() {
+            terminal.background = c;
+        }
+        if let Some(c) = cfg.foreground() {
+            terminal.foreground = c;
+        }
+        if let Some(c) = cfg.cursor_color() {
+            terminal.cursor_bg = c;
+        }
+        if let Some(c) = cfg.cursor_text() {
+            terminal.cursor_fg = c;
+        }
+        if let Some(c) = cfg.selection_background() {
+            terminal.selection_bg = c;
+        }
+        if let Some(c) = cfg.selection_foreground() {
+            terminal.selection_fg = c;
+        }
+
+        // Apply ANSI palette overrides (0-15).
+        for i in 0..16u8 {
+            if let Some(c) = cfg.ansi_color(i) {
+                terminal.ansi[i as usize] = c;
+            }
+        }
+
+        // Derive chrome colors from terminal background for a cohesive look.
+        let [br, bg, bb] = terminal.background;
+        let chrome = ChromeColors {
+            sidebar_bg: darken_rgb(br, bg, bb, 0.15),
+            sidebar_active_bg: lighten_rgb(br, bg, bb, 0.25),
+            tab_bar_bg: None, // falls back to terminal background
+            titlebar_bg: None,
+            tab_active_bg: lighten_rgb(br, bg, bb, 0.08),
+            tab_bar_border: lighten_rgb(br, bg, bb, 0.15),
+            tab_border: lighten_rgb(br, bg, bb, 0.15),
+            divider: lighten_rgb(br, bg, bb, 0.18),
+            accent: default.chrome.accent, // keep accent color
+        };
+
+        Self { terminal, chrome }
+    }
+}
+
+/// Darken an RGB color by a fraction (0.0 = no change, 1.0 = black).
+fn darken_rgb(r: u8, g: u8, b: u8, amount: f32) -> Color32 {
+    let f = 1.0 - amount;
+    Color32::from_rgb(
+        (r as f32 * f) as u8,
+        (g as f32 * f) as u8,
+        (b as f32 * f) as u8,
+    )
+}
+
+/// Lighten an RGB color by a fraction (0.0 = no change, 1.0 = white).
+fn lighten_rgb(r: u8, g: u8, b: u8, amount: f32) -> Color32 {
+    Color32::from_rgb(
+        (r as f32 + (255.0 - r as f32) * amount) as u8,
+        (g as f32 + (255.0 - g as f32) * amount) as u8,
+        (b as f32 + (255.0 - b as f32) * amount) as u8,
+    )
+}
+
 impl Default for Theme {
     fn default() -> Self {
         Self {
