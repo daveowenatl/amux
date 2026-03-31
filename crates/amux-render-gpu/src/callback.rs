@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use amux_term::backend::{CursorShape, UnderlineStyle};
+use amux_term::font::DecorationMetrics;
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};
 use egui_wgpu::wgpu;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
@@ -249,6 +250,7 @@ pub struct TerminalGpuResources {
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
     pub metrics: Metrics,
+    pub decoration_metrics: DecorationMetrics,
     pub atlas_bind_group_dirty: bool,
     /// Whether the render target uses an sRGB format. When true, colors must
     /// be converted to linear space because the hardware applies linear→sRGB
@@ -264,6 +266,10 @@ pub struct TerminalGpuResources {
     pub shape_cache: HashMap<ShapeCacheKey, Vec<ShapedGlyphEntry>>,
     /// Shared sampler for image textures.
     pub image_sampler: wgpu::Sampler,
+    /// Cached curly underline atlas tile (one cell-width sine wave).
+    pub curly_tile: Option<crate::atlas::AtlasEntry>,
+    /// Cached dotted underline atlas tile (row of circles).
+    pub dotted_tile: Option<crate::atlas::AtlasEntry>,
 }
 
 impl TerminalGpuResources {
@@ -588,12 +594,38 @@ impl CallbackTrait for TerminalPaintCallback {
         };
 
         // --- Text decorations (underlines, strikethrough) ---
-        // Emitted as background-pipeline rects (colored quads).
+        // Uses font metrics from OpenType tables for accurate positioning.
+        // Curly and dotted underlines are rendered as anti-aliased atlas tiles.
         {
-            let line_thickness = (self.cell_height / 14.0).max(1.0);
-            // Baseline is roughly 80% down the cell; underline sits just below it.
-            let underline_y_offset = self.cell_height * 0.85;
-            let strikethrough_y_offset = self.cell_height * 0.5 - line_thickness / 2.0;
+            let dm = &resources.decoration_metrics;
+            let line_thickness = (dm.stroke_size * pixels_per_point).max(1.0);
+            // Underline: below baseline. The font's underline_offset is distance
+            // from baseline (positive = below). Baseline is at ~line_top + ascent.
+            // For a terminal cell: baseline is approximately at line_y from cosmic-text.
+            // We use the font's own metric scaled by ppem.
+            let baseline_y = self.cell_height * 0.78; // approximate baseline
+            let underline_y_offset = (baseline_y + dm.underline_offset * pixels_per_point).max(0.0);
+            let strikethrough_y_offset =
+                (baseline_y - dm.strikeout_offset * pixels_per_point - line_thickness / 2.0)
+                    .max(0.0);
+
+            // Lazily rasterize curly/dotted tiles into the atlas on first use.
+            if resources.curly_tile.is_none() {
+                let (w, h, data) = rasterize_curly_tile(self.cell_width, line_thickness);
+                if let Some(entry) = resources.atlas.insert_raw_mono(queue, w, h, &data) {
+                    resources.curly_tile = Some(entry);
+                    resources.atlas_bind_group_dirty = true;
+                }
+            }
+            if resources.dotted_tile.is_none() {
+                let (w, h, data) = rasterize_dotted_tile(self.cell_width, line_thickness);
+                if let Some(entry) = resources.atlas.insert_raw_mono(queue, w, h, &data) {
+                    resources.dotted_tile = Some(entry);
+                    resources.atlas_bind_group_dirty = true;
+                }
+            }
+            let curly_tile = resources.curly_tile;
+            let dotted_tile = resources.dotted_tile;
 
             for cell in &snap.cells {
                 let mut fg_color = maybe_linearize(cell.fg, linearize);
@@ -632,14 +664,14 @@ impl CallbackTrait for TerminalPaintCallback {
                             .underline_color
                             .map(|c| maybe_linearize(c, linearize))
                             .unwrap_or(fg_color);
-                        let gap = (line_thickness * 1.5).max(2.0);
+                        // Ghostty: gap = thickness (1:1 ratio)
                         bg_instances.push(CellBgInstance {
-                            pos: [px, py + underline_y_offset],
+                            pos: [px, py + underline_y_offset - line_thickness],
                             size: [self.cell_width, line_thickness],
                             color,
                         });
                         bg_instances.push(CellBgInstance {
-                            pos: [px, py + underline_y_offset + gap],
+                            pos: [px, py + underline_y_offset + line_thickness],
                             size: [self.cell_width, line_thickness],
                             color,
                         });
@@ -649,17 +681,32 @@ impl CallbackTrait for TerminalPaintCallback {
                             .underline_color
                             .map(|c| maybe_linearize(c, linearize))
                             .unwrap_or(fg_color);
-                        let dot_w = (line_thickness * 1.5).max(2.0);
-                        let mut x = px;
-                        let x_end = px + self.cell_width;
-                        while x < x_end {
-                            let w = dot_w.min(x_end - x);
-                            bg_instances.push(CellBgInstance {
-                                pos: [x, py + underline_y_offset],
-                                size: [w, line_thickness],
+                        // Use atlas tile for anti-aliased circles
+                        if let Some(tile) = dotted_tile {
+                            let tile_h = tile.height as f32;
+                            fg_instances.push(CellFgInstance {
+                                pos: [px, py + underline_y_offset - tile_h / 2.0],
+                                size: [tile.width as f32, tile_h],
+                                uv_min: [tile.uv[0], tile.uv[1]],
+                                uv_max: [tile.uv[2], tile.uv[3]],
                                 color,
+                                is_color: 0.0,
+                                _pad: [0.0; 3],
                             });
-                            x += dot_w * 2.0;
+                        } else {
+                            // Fallback: rect-based dots
+                            let dot_w = (line_thickness * 1.5).max(2.0);
+                            let mut x = px;
+                            let x_end = px + self.cell_width;
+                            while x < x_end {
+                                let w = dot_w.min(x_end - x);
+                                bg_instances.push(CellBgInstance {
+                                    pos: [x, py + underline_y_offset],
+                                    size: [w, line_thickness],
+                                    color,
+                                });
+                                x += dot_w * 2.0;
+                            }
                         }
                     }
                     UnderlineStyle::Dashed => {
@@ -667,48 +714,61 @@ impl CallbackTrait for TerminalPaintCallback {
                             .underline_color
                             .map(|c| maybe_linearize(c, linearize))
                             .unwrap_or(fg_color);
-                        let dash_w = self.cell_width * 0.6;
-                        bg_instances.push(CellBgInstance {
-                            pos: [px, py + underline_y_offset],
-                            size: [dash_w, line_thickness],
-                            color,
-                        });
+                        // Ghostty: width/3 + 1px, every-other pattern
+                        let dash_w = self.cell_width / 3.0 + 1.0;
+                        let dash_count = ((self.cell_width / dash_w).ceil() as u32 + 1).max(1);
+                        for i in (0..dash_count).step_by(2) {
+                            let x = px + i as f32 * dash_w;
+                            let w = dash_w.min(px + self.cell_width - x);
+                            if w > 0.0 {
+                                bg_instances.push(CellBgInstance {
+                                    pos: [x, py + underline_y_offset],
+                                    size: [w, line_thickness],
+                                    color,
+                                });
+                            }
+                        }
                     }
                     UnderlineStyle::Curly => {
                         let color = cell
                             .underline_color
                             .map(|c| maybe_linearize(c, linearize))
                             .unwrap_or(fg_color);
-                        // Approximate curly underline with 3 small rects forming a wave.
-                        let seg_w = self.cell_width / 3.0;
-                        let amplitude = line_thickness * 1.5;
-                        let y_base = py + underline_y_offset;
-                        // Up segment
-                        bg_instances.push(CellBgInstance {
-                            pos: [px, y_base - amplitude],
-                            size: [seg_w, line_thickness],
-                            color,
-                        });
-                        // Middle segment
-                        bg_instances.push(CellBgInstance {
-                            pos: [px + seg_w, y_base],
-                            size: [seg_w, line_thickness],
-                            color,
-                        });
-                        // Down segment
-                        bg_instances.push(CellBgInstance {
-                            pos: [px + seg_w * 2.0, y_base + amplitude],
-                            size: [seg_w, line_thickness],
-                            color,
-                        });
+                        // Use atlas tile for anti-aliased sine wave
+                        if let Some(tile) = curly_tile {
+                            let tile_h = tile.height as f32;
+                            fg_instances.push(CellFgInstance {
+                                pos: [px, py + underline_y_offset - tile_h / 2.0],
+                                size: [tile.width as f32, tile_h],
+                                uv_min: [tile.uv[0], tile.uv[1]],
+                                uv_max: [tile.uv[2], tile.uv[3]],
+                                color,
+                                is_color: 0.0,
+                                _pad: [0.0; 3],
+                            });
+                        } else {
+                            // Fallback: rect-based wave
+                            let segments = 8u32;
+                            let seg_w = self.cell_width / segments as f32;
+                            let amplitude = line_thickness * 1.5;
+                            let y_base = py + underline_y_offset;
+                            for i in 0..segments {
+                                let t = i as f32 / segments as f32;
+                                let angle = t * std::f32::consts::TAU;
+                                let y_off = angle.sin() * amplitude;
+                                bg_instances.push(CellBgInstance {
+                                    pos: [px + i as f32 * seg_w, y_base + y_off],
+                                    size: [seg_w + 0.5, line_thickness],
+                                    color,
+                                });
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // --- Faint text: already applied via fg alpha above; also need to dim
-        //     glyph colors in fg_instances for faint cells. ---
-        // Build a set of faint cell positions for adjusting fg instances.
+        // --- Faint text: dim glyph colors in fg_instances for faint cells. ---
         {
             let faint_cells: HashSet<(usize, usize)> = snap
                 .cells
@@ -1167,4 +1227,99 @@ fn srgb_to_linear(v: f32) -> f32 {
     } else {
         ((v + 0.055) / 1.055).powf(2.4)
     }
+}
+
+/// Rasterize a curly (wavy) underline tile into a grayscale bitmap.
+/// Uses Ghostty-style approach: cubic Bézier-approximated sine wave.
+/// Returns (width, height, pixel_data).
+fn rasterize_curly_tile(cell_width: f32, thickness: f32) -> (u32, u32, Vec<u8>) {
+    let w = cell_width.ceil() as u32;
+    // Ghostty uses amplitude = width/π with Bézier curvature 0.4.
+    // Since we use a sine wave (which hits full amplitude), scale down
+    // to match the visual height of Ghostty's Bézier wave.
+    let amplitude = (cell_width / std::f32::consts::PI * 0.4).max(thickness);
+    let h = (amplitude * 2.0 + thickness * 2.0).ceil() as u32;
+    let mut pixels = vec![0u8; (w * h) as usize];
+
+    let center_y = h as f32 / 2.0;
+    let half_t = thickness / 2.0;
+
+    // Sample the sine wave densely and paint thick anti-aliased strokes.
+    let steps = w * 4; // 4 sub-pixel samples per pixel column
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let x = t * (w as f32 - 1.0);
+        let y = center_y + (t * std::f32::consts::TAU).sin() * amplitude;
+
+        // Paint a filled circle at each sample point for smooth coverage.
+        let radius = half_t + 0.5; // slight padding for AA
+        let x_min = (x - radius).floor().max(0.0) as u32;
+        let x_max = ((x + radius).ceil() as u32).min(w - 1);
+        let y_min = (y - radius).floor().max(0.0) as u32;
+        let y_max = ((y + radius).ceil() as u32).min(h - 1);
+
+        for py in y_min..=y_max {
+            for px in x_min..=x_max {
+                let dx = px as f32 - x;
+                let dy = py as f32 - y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist <= half_t + 0.5 {
+                    let alpha = if dist <= half_t {
+                        255
+                    } else {
+                        ((1.0 - (dist - half_t)) * 255.0) as u8
+                    };
+                    let idx = (py * w + px) as usize;
+                    pixels[idx] = pixels[idx].max(alpha);
+                }
+            }
+        }
+    }
+
+    (w, h, pixels)
+}
+
+/// Rasterize a dotted underline tile: a row of circles across one cell width.
+/// Returns (width, height, pixel_data).
+fn rasterize_dotted_tile(cell_width: f32, thickness: f32) -> (u32, u32, Vec<u8>) {
+    let w = cell_width.ceil() as u32;
+    let radius = (thickness * std::f32::consts::SQRT_2 / 2.0).max(1.0);
+    let h = (radius * 2.0 + 2.0).ceil() as u32;
+    let mut pixels = vec![0u8; (w * h) as usize];
+
+    let center_y = h as f32 / 2.0;
+
+    // Dynamic dot count (Ghostty approach)
+    let dot_count = ((cell_width / (4.0 * radius)).ceil() as u32)
+        .min((cell_width / (3.0 * radius)).floor() as u32)
+        .max(1);
+    let spacing = cell_width / dot_count as f32;
+
+    for d in 0..dot_count {
+        let cx = spacing * (d as f32 + 0.5);
+
+        let x_min = (cx - radius - 0.5).floor().max(0.0) as u32;
+        let x_max = ((cx + radius + 0.5).ceil() as u32).min(w - 1);
+        let y_min = (center_y - radius - 0.5).floor().max(0.0) as u32;
+        let y_max = ((center_y + radius + 0.5).ceil() as u32).min(h - 1);
+
+        for py in y_min..=y_max {
+            for px in x_min..=x_max {
+                let dx = px as f32 - cx;
+                let dy = py as f32 - center_y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist <= radius + 0.5 {
+                    let alpha = if dist <= radius {
+                        255
+                    } else {
+                        ((1.0 - (dist - radius)) * 255.0) as u8
+                    };
+                    let idx = (py * w + px) as usize;
+                    pixels[idx] = pixels[idx].max(alpha);
+                }
+            }
+        }
+    }
+
+    (w, h, pixels)
 }

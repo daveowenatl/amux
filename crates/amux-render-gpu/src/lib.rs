@@ -61,6 +61,7 @@ impl GpuRenderer {
         // adjacent cells caused by fractional coordinates accumulating rounding errors.
         let cell_width = font::measure_cell_width(&mut font_system, metrics).ceil();
         let cell_height = line_height;
+        let decoration_metrics = font::measure_decoration_metrics(&mut font_system, font_size);
 
         // Register resources in egui's callback_resources.
         render_state
@@ -75,12 +76,15 @@ impl GpuRenderer {
                 font_system,
                 swash_cache,
                 metrics,
+                decoration_metrics,
                 atlas_bind_group_dirty: true,
                 target_is_srgb,
                 pane_states: std::collections::HashMap::new(),
                 image_cache: std::collections::HashMap::new(),
                 shape_cache: std::collections::HashMap::new(),
                 image_sampler,
+                curly_tile: None,
+                dotted_tile: None,
             });
 
         Self {
@@ -144,10 +148,14 @@ impl GpuRenderer {
         {
             let cell_width = font::measure_cell_width(&mut r.font_system, metrics).ceil();
             r.metrics = metrics;
+            r.decoration_metrics = font::measure_decoration_metrics(&mut r.font_system, font_size);
             // Clear all pane render states to force full rebuild with new metrics.
             r.pane_states.clear();
             // Clear shape cache since glyph sizes change with font size.
             r.shape_cache.clear();
+            // Invalidate decoration tiles so they're re-rasterized at new size.
+            r.curly_tile = None;
+            r.dotted_tile = None;
             // Mark atlas bind group dirty since glyph sizes will change.
             r.atlas_bind_group_dirty = true;
             self.cell_width = cell_width;

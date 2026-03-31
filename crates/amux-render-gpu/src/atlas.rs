@@ -279,4 +279,32 @@ impl GlyphAtlas {
         self.cache.insert(cache_key, entry);
         (entry, newly_inserted)
     }
+
+    /// Insert a raw monochrome (R8) tile into the atlas.
+    /// Used for custom decoration sprites (curly underline, dotted underline).
+    /// Returns the atlas entry if allocation succeeds, or None if the atlas is full.
+    pub fn insert_raw_mono(
+        &mut self,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        data: &[u8],
+    ) -> Option<AtlasEntry> {
+        let (x, y) = self.mono.allocate(width, height)?;
+        self.mono.upload_region(queue, x, y, width, height, data);
+        let s = self.mono.size as f32;
+        Some(AtlasEntry {
+            uv: [
+                x as f32 / s,
+                y as f32 / s,
+                (x + width) as f32 / s,
+                (y + height) as f32 / s,
+            ],
+            placement_left: 0,
+            placement_top: 0,
+            width,
+            height,
+            is_color: false,
+        })
+    }
 }

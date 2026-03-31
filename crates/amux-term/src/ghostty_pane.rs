@@ -559,6 +559,10 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
                     let faint = style.as_ref().map(|s| s.faint).unwrap_or(false);
                     let inverse = style.as_ref().map(|s| s.inverse).unwrap_or(false);
 
+                    let underline_color = style.as_ref().and_then(|s| {
+                        resolve_style_color(&s.underline_color, &self.cached_palette.colors)
+                    });
+
                     cells.push(ScreenCell {
                         text,
                         fg,
@@ -566,7 +570,7 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
                         bold,
                         italic,
                         underline,
-                        underline_color: None,
+                        underline_color,
                         strikethrough,
                         faint,
                         reverse: inverse,
@@ -643,6 +647,15 @@ fn rgb_to_color(rgb: RgbColor) -> Color {
         rgb.b as f32 / 255.0,
         1.0,
     )
+}
+
+/// Resolve a ghostty `StyleColor` to an amux `Color`, or `None` if unset.
+fn resolve_style_color(sc: &libghostty_vt::style::StyleColor, palette: &[Color]) -> Option<Color> {
+    match sc {
+        libghostty_vt::style::StyleColor::None => None,
+        libghostty_vt::style::StyleColor::Rgb(rgb) => Some(rgb_to_color(*rgb)),
+        libghostty_vt::style::StyleColor::Palette(idx) => palette.get(idx.0 as usize).copied(),
+    }
 }
 
 fn cursor_style_to_shape(style: CursorVisualStyle) -> CursorShape {
