@@ -27,7 +27,10 @@ pub(crate) fn run() -> anyhow::Result<()> {
     tracing::info!("IPC server: {}", ipc_addr);
 
     let theme = theme::Theme::default();
-    let mut term_config = AmuxTermConfig::default();
+    let mut term_config = AmuxTermConfig {
+        backend: app_config.backend.clone(),
+        ..Default::default()
+    };
     theme.apply_to_palette(&mut term_config.color_palette);
     let config = Arc::new(term_config);
 
@@ -474,7 +477,17 @@ pub(crate) fn spawn_surface(
         None
     };
 
-    let mut pane = TerminalPane::spawn(cols, rows, cmd, config.clone())?;
+    let mut pane: amux_term::AnyBackend = match config.backend.as_str() {
+        #[cfg(feature = "libghostty")]
+        "ghostty" => {
+            let ghostty_pane = amux_term::ghostty_pane::GhosttyPane::spawn(cols, rows, cmd)?;
+            amux_term::AnyBackend::Ghostty(ghostty_pane)
+        }
+        _ => {
+            let wez_pane = TerminalPane::spawn(cols, rows, cmd, config.clone())?;
+            amux_term::AnyBackend::Wezterm(wez_pane)
+        }
+    };
 
     // Inject scrollback text before starting the reader thread.
     // feed_bytes writes directly to the terminal state machine, not through the PTY.

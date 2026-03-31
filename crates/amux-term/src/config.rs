@@ -15,6 +15,8 @@ pub struct AmuxTermConfig {
     pub scrollback_lines: usize,
     pub color_palette: ColorPalette,
     pub enable_kitty_keyboard: bool,
+    /// Terminal backend engine: "wezterm" (default) or "ghostty".
+    pub backend: String,
 }
 
 /// Build a color palette using standard xterm ANSI colors (0-15).
@@ -64,6 +66,7 @@ impl Default for AmuxTermConfig {
             scrollback_lines: 10_000,
             color_palette: default_palette(),
             enable_kitty_keyboard: true,
+            backend: "wezterm".to_owned(),
         }
     }
 }

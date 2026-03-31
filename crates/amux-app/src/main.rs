@@ -419,7 +419,7 @@ impl eframe::App for AmuxApp {
                 }
                 // Detect process exit once the channel is drained
                 if surface.exited.is_none() && !surface.pane.is_alive() {
-                    let message = match surface.pane.pty_exit_status() {
+                    let message = match surface.pane.exit_status() {
                         Some(status) => {
                             if let Some(signal) = status.signal() {
                                 format!("Process killed ({signal})")

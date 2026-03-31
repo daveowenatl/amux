@@ -1,3 +1,4 @@
+pub mod any_backend;
 pub mod backend;
 pub mod color;
 pub mod config;
@@ -9,6 +10,7 @@ pub mod mouse_encoder;
 pub mod osc;
 pub mod pane;
 
+pub use any_backend::AnyBackend;
 pub use backend::{
     Color, CursorPos, CursorShape, Palette, ProcessExit, ScreenCell, ScreenRow, StableRow,
     TerminalBackend,

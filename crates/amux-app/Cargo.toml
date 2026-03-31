@@ -8,6 +8,7 @@ description = "amux main binary: GUI + event loop"
 [features]
 default = ["gpu-renderer"]
 gpu-renderer = ["dep:amux-render-gpu"]
+libghostty = ["amux-term/libghostty"]
 
 [dependencies]
 amux-core = { workspace = true }

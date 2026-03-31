@@ -2,6 +2,7 @@
 
 use amux_layout::{PaneId, SplitDirection};
 use amux_notify::NotificationSource;
+use amux_term::TerminalBackend;
 
 use crate::managed_pane::PaneSurface;
 use crate::{startup, AmuxApp};

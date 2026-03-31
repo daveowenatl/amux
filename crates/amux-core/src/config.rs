@@ -12,6 +12,9 @@ pub struct AppConfig {
     /// Font family for terminal text (e.g. "JetBrains Mono", "Menlo").
     /// Resolved against system-installed fonts by cosmic-text.
     pub font_family: String,
+    /// Terminal backend engine: "wezterm" (default) or "ghostty".
+    /// The "ghostty" backend requires the `libghostty` feature.
+    pub backend: String,
     pub notifications: NotificationConfig,
 }
 
@@ -20,6 +23,7 @@ impl Default for AppConfig {
         Self {
             font_size: DEFAULT_FONT_SIZE,
             font_family: DEFAULT_FONT_FAMILY.to_owned(),
+            backend: "wezterm".to_owned(),
             notifications: NotificationConfig::default(),
         }
     }

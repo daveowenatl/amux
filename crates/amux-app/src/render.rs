@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use amux_term::backend::{Color, CursorShape, TerminalBackend};
-use amux_term::pane::TerminalPane;
+use amux_term::AnyBackend;
 
 use crate::managed_pane::SelectionState;
 
@@ -15,7 +15,7 @@ use amux_render_gpu::GpuRenderer;
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_pane(
     ui: &mut egui::Ui,
-    pane: &mut TerminalPane,
+    pane: &mut AnyBackend,
     rect: egui::Rect,
     is_focused: bool,
     scroll_offset: usize,
@@ -39,24 +39,40 @@ pub(crate) fn render_pane(
         });
         let seqno = pane.current_seqno();
 
-        // Build snapshot via the wezterm-specific path (with Kitty image support).
-        let palette = pane.color_palette();
-        let cursor = pane.cursor();
-        let screen = pane.screen();
-        let snapshot = amux_render_gpu::TerminalSnapshot::from_screen(
-            screen,
-            &palette,
-            &cursor,
-            actual_cols,
-            actual_rows,
-            scroll_offset,
-            is_focused,
-            gpu_selection,
-            pane_id,
-            seqno,
-            find_highlights.to_vec(),
-            current_highlight,
-        );
+        // Build snapshot: use wezterm-specific path (with Kitty image support)
+        // when available, otherwise fall back to trait-based path.
+        let snapshot = if let Some(wez) = pane.as_wezterm() {
+            let palette = wez.color_palette();
+            let cursor = pane.cursor();
+            let screen = wez.screen();
+            amux_render_gpu::TerminalSnapshot::from_screen(
+                screen,
+                &palette,
+                &cursor,
+                actual_cols,
+                actual_rows,
+                scroll_offset,
+                is_focused,
+                gpu_selection,
+                pane_id,
+                seqno,
+                find_highlights.to_vec(),
+                current_highlight,
+            )
+        } else {
+            amux_render_gpu::TerminalSnapshot::from_backend(
+                pane,
+                actual_cols,
+                actual_rows,
+                scroll_offset,
+                is_focused,
+                gpu_selection,
+                pane_id,
+                seqno,
+                find_highlights.to_vec(),
+                current_highlight,
+            )
+        };
         let pixels_per_point = ui.ctx().pixels_per_point();
         let callback = gpu.paint_callback(rect, snapshot, pixels_per_point);
         ui.painter().add(egui::Shape::Callback(callback));
