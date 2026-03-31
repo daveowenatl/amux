@@ -503,7 +503,11 @@ pub(crate) fn spawn_surface(
     let mut pane: amux_term::AnyBackend = match config.backend.as_str() {
         #[cfg(feature = "libghostty")]
         "ghostty" => {
-            let ghostty_pane = amux_term::ghostty_pane::GhosttyPane::spawn(cols, rows, cmd)?;
+            let mut ghostty_pane = amux_term::ghostty_pane::GhosttyPane::spawn(cols, rows, cmd)?;
+            // Apply amux theme colors to the ghostty backend (which otherwise
+            // uses libghostty-vt's built-in defaults).
+            let palette: amux_term::backend::Palette = config.color_palette.clone().into();
+            ghostty_pane.set_palette(palette);
             amux_term::AnyBackend::Ghostty(Box::new(ghostty_pane))
         }
         _ => {

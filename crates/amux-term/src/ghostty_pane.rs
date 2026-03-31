@@ -44,6 +44,9 @@ pub struct GhosttyPane<'alloc, 'cb> {
     notification_rx: mpsc::Receiver<NotificationEvent>,
     /// Cached palette from last render state update.
     cached_palette: Palette,
+    /// When true, an external palette was set via `set_palette()` and
+    /// `refresh_render_cache` should not overwrite it with libghostty defaults.
+    palette_overridden: bool,
     /// Cached cursor shape from last render state update.
     cached_cursor_shape: CursorShape,
     /// Cached working directory URL (from OSC 7 via pwd()).
@@ -137,9 +140,18 @@ where
             rendered_seqno: 0,
             notification_rx: rx,
             cached_palette: Palette::default(),
+            palette_overridden: false,
             cached_cursor_shape: CursorShape::Default,
             cached_working_dir: None,
         })
+    }
+
+    /// Override the cached palette with colors from amux's theme.
+    /// Called once after construction so the ghostty backend uses amux's
+    /// configured colors instead of libghostty-vt's built-in defaults.
+    pub fn set_palette(&mut self, palette: Palette) {
+        self.cached_palette = palette;
+        self.palette_overridden = true;
     }
 
     /// Refresh cached render state (palette, cursor shape, working dir).
@@ -147,21 +159,23 @@ where
     fn refresh_render_cache(&mut self) {
         let mut rs = self.render_state.borrow_mut();
         if let Ok(snapshot) = rs.update(&self.terminal) {
-            // Cache palette
-            if let Ok(colors) = snapshot.colors() {
-                let fg = rgb_to_color(colors.foreground);
-                let bg = rgb_to_color(colors.background);
-                let cursor_color = colors.cursor.map(rgb_to_color).unwrap_or(fg);
-                self.cached_palette = Palette {
-                    foreground: fg,
-                    background: bg,
-                    cursor_fg: bg,
-                    cursor_bg: cursor_color,
-                    cursor_border: cursor_color,
-                    selection_fg: Color::BLACK,
-                    selection_bg: Color(0.4, 0.6, 1.0, 1.0),
-                    colors: colors.palette.iter().map(|&c| rgb_to_color(c)).collect(),
-                };
+            // Cache palette (skip if externally overridden by amux theme).
+            if !self.palette_overridden {
+                if let Ok(colors) = snapshot.colors() {
+                    let fg = rgb_to_color(colors.foreground);
+                    let bg = rgb_to_color(colors.background);
+                    let cursor_color = colors.cursor.map(rgb_to_color).unwrap_or(fg);
+                    self.cached_palette = Palette {
+                        foreground: fg,
+                        background: bg,
+                        cursor_fg: bg,
+                        cursor_bg: cursor_color,
+                        cursor_border: cursor_color,
+                        selection_fg: Color::BLACK,
+                        selection_bg: Color(0.4, 0.6, 1.0, 1.0),
+                        colors: colors.palette.iter().map(|&c| rgb_to_color(c)).collect(),
+                    };
+                }
             }
 
             // Cache cursor shape (combining visual style + blink flag)
