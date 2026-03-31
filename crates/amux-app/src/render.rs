@@ -377,11 +377,15 @@ pub(crate) fn color_to_egui(c: Color) -> egui::Color32 {
     )
 }
 
-/// Whether a cursor shape is one of the blinking variants.
+/// Whether a cursor shape should blink.
+/// `Default` blinks because most terminals default to a blinking block cursor.
 fn is_blinking_cursor(shape: CursorShape) -> bool {
     matches!(
         shape,
-        CursorShape::BlinkingBlock | CursorShape::BlinkingBar | CursorShape::BlinkingUnderline
+        CursorShape::Default
+            | CursorShape::BlinkingBlock
+            | CursorShape::BlinkingBar
+            | CursorShape::BlinkingUnderline
     )
 }
 
