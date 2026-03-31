@@ -157,6 +157,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 app_config,
                 system_notifier: system_notify::SystemNotifier::new(),
                 last_badge_count: 0,
+                cursor_blink_since: Instant::now(),
                 sound_player,
                 menu,
                 #[cfg(target_os = "windows")]

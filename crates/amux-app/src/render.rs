@@ -23,6 +23,7 @@ pub(crate) fn render_pane(
     font_size: f32,
     find_highlights: &[(usize, usize, usize)],
     current_highlight: Option<usize>,
+    cursor_blink_on: bool,
     #[cfg(feature = "gpu-renderer")] gpu_renderer: Option<&GpuRenderer>,
     #[cfg(feature = "gpu-renderer")] pane_id: u64,
 ) {
@@ -52,6 +53,11 @@ pub(crate) fn render_pane(
             find_highlights.to_vec(),
             current_highlight,
         );
+
+        // Apply cursor blink: hide cursor during "off" phase for blinking shapes.
+        if !cursor_blink_on && is_blinking_cursor(snapshot.cursor_shape) {
+            snapshot.cursor_visible = false;
+        }
 
         // Add Kitty inline images for the wezterm backend.
         if let Some(wez) = pane.as_wezterm() {
@@ -218,10 +224,12 @@ pub(crate) fn render_pane(
         }
     }
 
-    // Draw cursor
+    // Draw cursor (skip during blink "off" phase for blinking shapes)
+    let blink_visible = cursor_blink_on || !is_blinking_cursor(cursor.shape);
     if is_focused
         && scroll_offset == 0
         && cursor.visible
+        && blink_visible
         && cursor.y >= 0
         && (cursor.y as usize) < actual_rows
         && cursor.x < actual_cols
@@ -366,6 +374,14 @@ pub(crate) fn color_to_egui(c: Color) -> egui::Color32 {
         (c.1 * 255.0).round() as u8,
         (c.2 * 255.0).round() as u8,
         (c.3 * 255.0).round() as u8,
+    )
+}
+
+/// Whether a cursor shape is one of the blinking variants.
+fn is_blinking_cursor(shape: CursorShape) -> bool {
+    matches!(
+        shape,
+        CursorShape::BlinkingBlock | CursorShape::BlinkingBar | CursorShape::BlinkingUnderline
     )
 }
 
