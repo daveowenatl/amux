@@ -39,40 +39,24 @@ pub(crate) fn render_pane(
         });
         let seqno = pane.current_seqno();
 
-        // Build snapshot: use wezterm-specific path (with Kitty image support)
-        // when available, otherwise fall back to trait-based path.
-        let snapshot = if let Some(wez) = pane.as_wezterm() {
-            let palette = wez.color_palette();
-            let cursor = pane.cursor();
-            let screen = wez.screen();
-            amux_render_gpu::TerminalSnapshot::from_screen(
-                screen,
-                &palette,
-                &cursor,
-                actual_cols,
-                actual_rows,
-                scroll_offset,
-                is_focused,
-                gpu_selection,
-                pane_id,
-                seqno,
-                find_highlights.to_vec(),
-                current_highlight,
-            )
-        } else {
-            amux_render_gpu::TerminalSnapshot::from_backend(
-                pane,
-                actual_cols,
-                actual_rows,
-                scroll_offset,
-                is_focused,
-                gpu_selection,
-                pane_id,
-                seqno,
-                find_highlights.to_vec(),
-                current_highlight,
-            )
-        };
+        // Build snapshot via the trait-based path (works for all backends).
+        let mut snapshot = amux_render_gpu::TerminalSnapshot::from_backend(
+            pane,
+            actual_cols,
+            actual_rows,
+            scroll_offset,
+            is_focused,
+            gpu_selection,
+            pane_id,
+            seqno,
+            find_highlights.to_vec(),
+            current_highlight,
+        );
+
+        // Add Kitty inline images for the wezterm backend.
+        if let Some(wez) = pane.as_wezterm() {
+            amux_render_gpu::snapshot::extract_kitty_images(&mut snapshot, wez.screen());
+        }
         let pixels_per_point = ui.ctx().pixels_per_point();
         let callback = gpu.paint_callback(rect, snapshot, pixels_per_point);
         ui.painter().add(egui::Shape::Callback(callback));

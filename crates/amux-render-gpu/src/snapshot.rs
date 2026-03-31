@@ -395,6 +395,56 @@ impl TerminalSnapshot {
     }
 }
 
+/// Extract Kitty inline images from a wezterm screen and add them to a snapshot.
+///
+/// Call this after `from_backend()` to add Kitty image support for the wezterm backend.
+/// The `from_screen()` constructor already includes image extraction inline.
+pub fn extract_kitty_images(
+    snapshot: &mut TerminalSnapshot,
+    screen: &wezterm_term::screen::Screen,
+) {
+    let total = screen.scrollback_rows();
+    let end = total.saturating_sub(snapshot.scroll_offset);
+    let start = end.saturating_sub(snapshot.rows);
+    let lines = screen.lines_in_phys_range(start..end);
+
+    let mut images = Vec::new();
+    let mut seen_images: HashMap<[u8; 32], Arc<ImageData>> = HashMap::new();
+
+    for (row_idx, line) in lines.iter().enumerate() {
+        for cell_ref in line.visible_cells() {
+            let col_idx = cell_ref.cell_index();
+            if col_idx >= snapshot.cols {
+                break;
+            }
+
+            if let Some(image_cells) = cell_ref.attrs().images() {
+                for image_cell in &image_cells {
+                    let image_data = image_cell.image_data();
+                    let hash = image_data.hash();
+                    seen_images
+                        .entry(hash)
+                        .or_insert_with(|| Arc::clone(image_data));
+
+                    let tl = image_cell.top_left();
+                    let br = image_cell.bottom_right();
+                    images.push(ImagePlacement {
+                        col: col_idx,
+                        row: row_idx,
+                        uv_min: [tl.x.into_inner(), tl.y.into_inner()],
+                        uv_max: [br.x.into_inner(), br.y.into_inner()],
+                        image_hash: hash,
+                        z_index: image_cell.z_index(),
+                    });
+                }
+            }
+        }
+    }
+
+    snapshot.images = images;
+    snapshot.decoded_images = decode_images(seen_images);
+}
+
 /// Decode image data from wezterm-term into raw RGBA.
 fn decode_images(seen: HashMap<[u8; 32], Arc<ImageData>>) -> Vec<DecodedImage> {
     let mut result = Vec::with_capacity(seen.len());
