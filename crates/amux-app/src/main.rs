@@ -1436,10 +1436,11 @@ impl AmuxApp {
                             }
                         });
                         if cmd_held && ctx.input(|i| i.pointer.primary_clicked()) {
-                            // Only open safe URL schemes.
-                            if url.starts_with("http://")
-                                || url.starts_with("https://")
-                                || url.starts_with("mailto:")
+                            // Only open safe URL schemes (case-insensitive).
+                            let lower = url.to_ascii_lowercase();
+                            if lower.starts_with("http://")
+                                || lower.starts_with("https://")
+                                || lower.starts_with("mailto:")
                             {
                                 let _ = open::that(url);
                             }

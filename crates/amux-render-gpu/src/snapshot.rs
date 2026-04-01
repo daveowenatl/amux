@@ -175,7 +175,8 @@ impl TerminalSnapshot {
                 }
 
                 // Capture text under cursor for block cursor rendering
-                if row_idx == cursor.y as usize
+                if cursor.y >= 0
+                    && row_idx == cursor.y as usize
                     && col_idx == cursor.x
                     && !cell.text.is_empty()
                     && cell.text != " "
@@ -310,7 +311,7 @@ impl TerminalSnapshot {
                 }
 
                 // Capture text under cursor for block cursor rendering
-                if row_idx == cursor.y as usize && col_idx == cursor.x {
+                if cursor.y >= 0 && row_idx == cursor.y as usize && col_idx == cursor.x {
                     let text = cell_ref.str();
                     if !text.is_empty() && text != " " {
                         cursor_text = text.to_string();

@@ -100,7 +100,9 @@ where
         terminal
             .on_pty_write(move |_term, data| {
                 let mut w = write_handle.lock().unwrap_or_else(|e| e.into_inner());
-                let _ = w.write_all(data);
+                if let Err(e) = w.write_all(data) {
+                    tracing::warn!("PTY write failed: {e}");
+                }
             })
             .map_err(|e| TermError::PtySetupFailed(anyhow::anyhow!("{e}")))?;
 
