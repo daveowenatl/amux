@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use amux_term::backend::{Color, CursorPos, CursorShape, TerminalBackend};
 use amux_term::color::{resolve_color, srgba_to_f32};
 use wezterm_term::color::{ColorPalette, SrgbaTuple};
 use wezterm_term::image::{ImageData, ImageDataType};
-use wezterm_term::CursorPosition;
 
 /// Pre-extracted terminal state for GPU rendering.
 ///
@@ -16,7 +16,11 @@ pub struct TerminalSnapshot {
     pub cols: usize,
     pub rows: usize,
     pub cells: Vec<CellData>,
-    pub cursor: CursorPosition,
+    // Cursor fields (amux-native types, no wezterm dependency)
+    pub cursor_x: usize,
+    pub cursor_y: i64,
+    pub cursor_visible: bool,
+    pub cursor_shape: CursorShape,
     pub default_bg: [f32; 4],
     pub cursor_bg: [f32; 4],
     pub cursor_fg: [f32; 4],
@@ -96,16 +100,149 @@ impl SelectionRange {
     }
 }
 
+fn color_to_f32(c: Color) -> [f32; 4] {
+    [c.0, c.1, c.2, c.3]
+}
+
 impl TerminalSnapshot {
-    /// Extract a snapshot from the terminal screen.
+    /// Build a snapshot from a `TerminalBackend` using amux-native types.
     ///
-    /// `scroll_offset` is the number of lines scrolled back from the bottom.
-    /// `selection` is an optional normalized selection range for highlight rendering.
+    /// Does NOT extract Kitty images — those require wezterm-specific screen
+    /// access and must be added separately for the wezterm backend.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_backend(
+        backend: &dyn TerminalBackend,
+        cols: usize,
+        rows: usize,
+        scroll_offset: usize,
+        is_focused: bool,
+        selection: Option<SelectionRange>,
+        pane_id: u64,
+        seqno: usize,
+        highlight_ranges: Vec<(usize, usize, usize)>,
+        current_highlight: Option<usize>,
+    ) -> Self {
+        let palette = backend.palette();
+        let cursor = backend.cursor();
+        let selection_range = selection.as_ref().map(|s| (s.start, s.end));
+        let default_bg = color_to_f32(palette.background);
+        let cursor_bg = color_to_f32(palette.cursor_bg);
+        let cursor_fg = color_to_f32(palette.cursor_fg);
+
+        let total = backend.scrollback_rows();
+        let end = total.saturating_sub(scroll_offset);
+        let start = end.saturating_sub(rows);
+        let screen_rows = backend.read_cells_range(start, end);
+
+        let mut cells = Vec::with_capacity(cols * rows);
+        let mut cursor_text = String::new();
+        let mut cursor_text_bold = false;
+        let mut cursor_text_italic = false;
+
+        for (row_idx, screen_row) in screen_rows.iter().enumerate() {
+            for (col_idx, cell) in screen_row.cells.iter().enumerate() {
+                if col_idx >= cols {
+                    break;
+                }
+
+                let mut fg = color_to_f32(cell.fg);
+                let mut bg = color_to_f32(cell.bg);
+
+                // Apply selection highlighting (swap fg/bg)
+                let stable_row = start + row_idx;
+                if let Some(ref sel) = selection {
+                    if sel.contains(col_idx, stable_row) {
+                        std::mem::swap(&mut fg, &mut bg);
+                        if bg == default_bg {
+                            fg = color_to_f32(palette.background);
+                            bg = color_to_f32(palette.foreground);
+                        }
+                    }
+                }
+
+                // Apply find/search highlighting
+                for (i, &(h_row, h_start, h_end)) in highlight_ranges.iter().enumerate() {
+                    if h_row == stable_row && col_idx >= h_start && col_idx < h_end {
+                        if current_highlight == Some(i) {
+                            bg = [1.0, 0.6, 0.0, 1.0];
+                            fg = [0.0, 0.0, 0.0, 1.0];
+                        } else {
+                            bg = [1.0, 1.0, 0.0, 0.7];
+                            fg = [0.0, 0.0, 0.0, 1.0];
+                        }
+                        break;
+                    }
+                }
+
+                // Capture text under cursor for block cursor rendering
+                if cursor.y >= 0
+                    && row_idx == cursor.y as usize
+                    && col_idx == cursor.x
+                    && !cell.text.is_empty()
+                    && cell.text != " "
+                {
+                    cursor_text = cell.text.clone();
+                    cursor_text_bold = cell.bold;
+                    cursor_text_italic = cell.italic;
+                }
+
+                cells.push(CellData {
+                    col: col_idx,
+                    row: row_idx,
+                    text: cell.text.clone(),
+                    fg,
+                    bg,
+                    bold: cell.bold,
+                    italic: cell.italic,
+                    hyperlink_url: cell.hyperlink_url.clone(),
+                });
+            }
+        }
+
+        // Dim background colors for unfocused panes.
+        let dim_factor = if is_focused { 1.0 } else { 0.6 };
+        let dimmed_bg = dim_color(default_bg, dim_factor);
+        if !is_focused {
+            for cell in &mut cells {
+                cell.bg = dim_color(cell.bg, dim_factor);
+            }
+        }
+
+        Self {
+            pane_id,
+            seqno,
+            cols,
+            rows,
+            cells,
+            cursor_x: cursor.x,
+            cursor_y: cursor.y,
+            cursor_visible: cursor.visible,
+            cursor_shape: cursor.shape,
+            default_bg: dimmed_bg,
+            cursor_bg,
+            cursor_fg,
+            is_focused,
+            scroll_offset,
+            cursor_text,
+            cursor_text_bold,
+            cursor_text_italic,
+            selection_range,
+            highlight_ranges,
+            current_highlight,
+            images: Vec::new(),
+            decoded_images: Vec::new(),
+        }
+    }
+
+    /// Extract a snapshot from the wezterm terminal screen.
+    ///
+    /// This is the legacy path that uses wezterm-specific types directly.
+    /// Includes Kitty image extraction.
     #[allow(clippy::too_many_arguments)]
     pub fn from_screen(
         screen: &wezterm_term::screen::Screen,
         palette: &ColorPalette,
-        cursor: &CursorPosition,
+        cursor: &CursorPos,
         cols: usize,
         rows: usize,
         scroll_offset: usize,
@@ -163,11 +300,9 @@ impl TerminalSnapshot {
                 for (i, &(h_row, h_start, h_end)) in highlight_ranges.iter().enumerate() {
                     if h_row == stable_row && col_idx >= h_start && col_idx < h_end {
                         if current_highlight == Some(i) {
-                            // Current match: bright orange bg
                             bg = SrgbaTuple(1.0, 0.6, 0.0, 1.0);
                             fg = SrgbaTuple(0.0, 0.0, 0.0, 1.0);
                         } else {
-                            // Other matches: yellow bg
                             bg = SrgbaTuple(1.0, 1.0, 0.0, 0.7);
                             fg = SrgbaTuple(0.0, 0.0, 0.0, 1.0);
                         }
@@ -176,7 +311,7 @@ impl TerminalSnapshot {
                 }
 
                 // Capture text under cursor for block cursor rendering
-                if row_idx == cursor.y as usize && col_idx == cursor.x {
+                if cursor.y >= 0 && row_idx == cursor.y as usize && col_idx == cursor.x {
                     let text = cell_ref.str();
                     if !text.is_empty() && text != " " {
                         cursor_text = text.to_string();
@@ -240,7 +375,10 @@ impl TerminalSnapshot {
             cols,
             rows,
             cells,
-            cursor: *cursor,
+            cursor_x: cursor.x,
+            cursor_y: cursor.y,
+            cursor_visible: cursor.visible,
+            cursor_shape: cursor.shape,
             default_bg: dimmed_bg,
             cursor_bg,
             cursor_fg,
@@ -256,6 +394,56 @@ impl TerminalSnapshot {
             decoded_images,
         }
     }
+}
+
+/// Extract Kitty inline images from a wezterm screen and add them to a snapshot.
+///
+/// Call this after `from_backend()` to add Kitty image support for the wezterm backend.
+/// The `from_screen()` constructor already includes image extraction inline.
+pub fn extract_kitty_images(
+    snapshot: &mut TerminalSnapshot,
+    screen: &wezterm_term::screen::Screen,
+) {
+    let total = screen.scrollback_rows();
+    let end = total.saturating_sub(snapshot.scroll_offset);
+    let start = end.saturating_sub(snapshot.rows);
+    let lines = screen.lines_in_phys_range(start..end);
+
+    let mut images = Vec::new();
+    let mut seen_images: HashMap<[u8; 32], Arc<ImageData>> = HashMap::new();
+
+    for (row_idx, line) in lines.iter().enumerate() {
+        for cell_ref in line.visible_cells() {
+            let col_idx = cell_ref.cell_index();
+            if col_idx >= snapshot.cols {
+                break;
+            }
+
+            if let Some(image_cells) = cell_ref.attrs().images() {
+                for image_cell in &image_cells {
+                    let image_data = image_cell.image_data();
+                    let hash = image_data.hash();
+                    seen_images
+                        .entry(hash)
+                        .or_insert_with(|| Arc::clone(image_data));
+
+                    let tl = image_cell.top_left();
+                    let br = image_cell.bottom_right();
+                    images.push(ImagePlacement {
+                        col: col_idx,
+                        row: row_idx,
+                        uv_min: [tl.x.into_inner(), tl.y.into_inner()],
+                        uv_max: [br.x.into_inner(), br.y.into_inner()],
+                        image_hash: hash,
+                        z_index: image_cell.z_index(),
+                    });
+                }
+            }
+        }
+    }
+
+    snapshot.images = images;
+    snapshot.decoded_images = decode_images(seen_images);
 }
 
 /// Decode image data from wezterm-term into raw RGBA.

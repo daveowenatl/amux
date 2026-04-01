@@ -21,7 +21,8 @@
 
 use std::sync::mpsc;
 
-use amux_term::pane::TerminalPane;
+use amux_term::AnyBackend;
+use amux_term::TerminalBackend;
 
 // Re-export core model types so existing `use managed_pane::*` keeps working.
 pub(crate) use amux_core::model::{
@@ -36,7 +37,7 @@ pub(crate) use amux_core::model::{
 /// A terminal tab within a pane. Each pane can have multiple surfaces.
 pub(crate) struct PaneSurface {
     pub(crate) id: u64,
-    pub(crate) pane: TerminalPane,
+    pub(crate) pane: AnyBackend,
     pub(crate) byte_rx: mpsc::Receiver<Vec<u8>>,
     pub(crate) scroll_offset: usize,
     pub(crate) scroll_accum: f32,

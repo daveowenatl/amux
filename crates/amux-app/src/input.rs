@@ -1,5 +1,7 @@
 //! Keyboard, mouse, clipboard, copy-mode, and selection input handling.
 
+use amux_term::TerminalBackend;
+
 use crate::*;
 
 impl AmuxApp {
@@ -390,9 +392,8 @@ impl AmuxApp {
         if let Some(managed) = self.panes.get(&pane_id) {
             let surface = managed.active_surface();
             let cursor = surface.pane.cursor();
-            let screen = surface.pane.screen();
             let (_, rows) = surface.pane.dimensions();
-            let total = screen.scrollback_rows();
+            let total = surface.pane.scrollback_rows();
             let end = total.saturating_sub(surface.scroll_offset);
             let start = end.saturating_sub(rows);
             // Place copy mode cursor at terminal cursor position in phys coords
@@ -422,7 +423,7 @@ impl AmuxApp {
             Some(m) => {
                 let s = m.active_surface();
                 let (c, r) = s.pane.dimensions();
-                let t = s.pane.screen().scrollback_rows();
+                let t = s.pane.scrollback_rows();
                 (c, r, t)
             }
             None => {
@@ -532,14 +533,12 @@ impl AmuxApp {
         &self,
         pane_id: PaneId,
         anchor: (usize, usize),
-        cols: usize,
+        _cols: usize,
         line_visual: bool,
     ) -> Option<String> {
         let cm = self.copy_mode.as_ref()?;
         let managed = self.panes.get(&pane_id)?;
         let surface = managed.active_surface();
-        let screen = surface.pane.screen();
-
         let (start, end) =
             if anchor.1 < cm.cursor.1 || (anchor.1 == cm.cursor.1 && anchor.0 <= cm.cursor.0) {
                 (anchor, cm.cursor)
@@ -547,21 +546,17 @@ impl AmuxApp {
                 (cm.cursor, anchor)
             };
 
-        let lines = screen.lines_in_phys_range(start.1..end.1 + 1);
+        let rows = surface.pane.read_cells_range(start.1, end.1 + 1);
         let mut result = String::new();
 
-        for (i, line) in lines.iter().enumerate() {
+        for (i, screen_row) in rows.iter().enumerate() {
             if i > 0 {
                 result.push('\n');
             }
             let phys_row = start.1 + i;
-            for cell in line.visible_cells() {
-                let col = cell.cell_index();
-                if col >= cols {
-                    break;
-                }
+            for (col, cell) in screen_row.cells.iter().enumerate() {
                 if line_visual {
-                    result.push_str(cell.str());
+                    result.push_str(&cell.text);
                 } else {
                     // Character visual: clip to selection bounds
                     if phys_row == start.1 && col < start.0 {
@@ -570,7 +565,7 @@ impl AmuxApp {
                     if phys_row == end.1 && col > end.0 {
                         break;
                     }
-                    result.push_str(cell.str());
+                    result.push_str(&cell.text);
                 }
             }
         }
@@ -639,7 +634,7 @@ impl AmuxApp {
         };
         let surface = managed.active_surface();
         let (cols, visible_rows) = surface.pane.dimensions();
-        let total = surface.pane.screen().scrollback_rows();
+        let total = surface.pane.scrollback_rows();
         let scroll_offset = surface.scroll_offset;
         let end_row = total.saturating_sub(scroll_offset);
         let start_row = end_row.saturating_sub(visible_rows);
@@ -675,7 +670,7 @@ impl AmuxApp {
         };
         let surface = managed.active_surface();
         let (cols, visible_rows) = surface.pane.dimensions();
-        let total_rows = surface.pane.screen().scrollback_rows();
+        let total_rows = surface.pane.scrollback_rows();
         let scroll_offset = surface.scroll_offset;
 
         let primary_pressed = ui.input(|i| i.pointer.primary_pressed());

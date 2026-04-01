@@ -1,7 +1,7 @@
 //! Terminal text selection helpers: coordinate mapping, word boundaries,
-//! and text extraction from wezterm-term screen state.
+//! and text extraction via the TerminalBackend trait.
 
-use amux_term::pane::TerminalPane;
+use amux_term::backend::TerminalBackend;
 use managed_pane::WORD_DELIMITERS;
 
 use crate::managed_pane;
@@ -58,24 +58,18 @@ pub(crate) fn word_bounds_in_line(line_text: &str, col: usize) -> (usize, usize)
 
 /// Extract text from the terminal screen within a selection range.
 pub(crate) fn extract_selection_text(
-    pane: &TerminalPane,
+    pane: &dyn TerminalBackend,
     start: (usize, usize),
     end: (usize, usize),
-    cols: usize,
+    _cols: usize,
 ) -> String {
-    let screen = pane.screen();
-    let lines = screen.lines_in_phys_range(start.1..end.1 + 1);
+    let rows = pane.read_cells_range(start.1, end.1 + 1);
     let mut result = String::new();
 
-    for (i, line) in lines.iter().enumerate() {
+    for (i, screen_row) in rows.iter().enumerate() {
         let row = start.1 + i;
         let mut line_text = String::new();
-        for cell in line.visible_cells() {
-            let ci = cell.cell_index();
-            if ci >= cols {
-                break;
-            }
-            // Determine if this cell is in the selection
+        for (ci, cell) in screen_row.cells.iter().enumerate() {
             let in_sel = if start.1 == end.1 {
                 ci >= start.0 && ci <= end.0
             } else if row == start.1 {
@@ -86,14 +80,13 @@ pub(crate) fn extract_selection_text(
                 true
             };
             if in_sel {
-                line_text.push_str(cell.str());
+                line_text.push_str(&cell.text);
             }
         }
 
         if i > 0 {
             // Check if previous line was wrapped — if so, don't add newline
-            let prev_line = &lines[i - 1];
-            if !prev_line.last_cell_was_wrapped() {
+            if !rows[i - 1].wrapped {
                 result.push('\n');
             }
         }
@@ -104,23 +97,21 @@ pub(crate) fn extract_selection_text(
 }
 
 /// Build a flat string of a line's cell text for word boundary detection.
-pub(crate) fn line_text_string(pane: &TerminalPane, stable_row: usize, cols: usize) -> String {
-    let screen = pane.screen();
-    let lines = screen.lines_in_phys_range(stable_row..stable_row + 1);
-    if lines.is_empty() {
+pub(crate) fn line_text_string(
+    pane: &dyn TerminalBackend,
+    stable_row: usize,
+    _cols: usize,
+) -> String {
+    let rows = pane.read_cells_range(stable_row, stable_row + 1);
+    if rows.is_empty() {
         return String::new();
     }
-    let line = &lines[0];
     let mut text = String::new();
-    for cell in line.visible_cells() {
-        if cell.cell_index() >= cols {
-            break;
-        }
-        let s = cell.str();
-        if s.is_empty() {
+    for cell in &rows[0].cells {
+        if cell.text.is_empty() {
             text.push(' ');
         } else {
-            text.push_str(s);
+            text.push_str(&cell.text);
         }
     }
     text

@@ -7,6 +7,10 @@ use wezterm_term::color::ColorPalette;
 use wezterm_term::terminal::Terminal;
 use wezterm_term::{CursorPosition, StableRowIndex, TerminalSize};
 
+use crate::backend::{
+    Color, CursorPos, Palette, ProcessExit, ScreenCell, ScreenRow, StableRow, TerminalBackend,
+};
+use crate::color::resolve_color;
 use crate::config::AmuxTermConfig;
 use crate::osc::{ChannelAlertHandler, NotificationEvent};
 
@@ -239,16 +243,17 @@ impl TerminalPane {
         matches!(self.child.try_wait(), Ok(None))
     }
 
-    /// Get the child exit status, if it has exited.
-    pub fn exit_status(&mut self) -> Option<portable_pty::ExitStatus> {
+    /// Get the child exit status, if it has exited (portable-pty native type).
+    pub fn pty_exit_status(&mut self) -> Option<portable_pty::ExitStatus> {
         match self.child.try_wait() {
             Ok(Some(status)) => Some(status),
             _ => None,
         }
     }
 
-    /// Get stable row indices of lines changed since the last `mark_rendered()` call.
-    pub fn changed_lines(&self) -> Vec<StableRowIndex> {
+    /// Get stable row indices of lines changed since the last `mark_rendered()` call
+    /// (wezterm-native StableRowIndex type).
+    pub fn changed_line_indices(&self) -> Vec<StableRowIndex> {
         let size = self.terminal.get_size();
         let screen = self.terminal.screen();
         // Compute the visible stable row range
@@ -262,8 +267,8 @@ impl TerminalPane {
         self.seqno = self.terminal.current_seqno();
     }
 
-    /// Get the current cursor position.
-    pub fn cursor(&self) -> CursorPosition {
+    /// Get the current cursor position (wezterm-native type).
+    pub fn cursor_pos(&self) -> CursorPosition {
         self.terminal.cursor_pos()
     }
 
@@ -273,8 +278,8 @@ impl TerminalPane {
         (size.cols, size.rows)
     }
 
-    /// Get the current color palette.
-    pub fn palette(&self) -> ColorPalette {
+    /// Get the current color palette (wezterm-native type).
+    pub fn color_palette(&self) -> ColorPalette {
         self.terminal.palette()
     }
 
@@ -305,6 +310,11 @@ impl TerminalPane {
     /// Get the last-rendered sequence number.
     pub fn rendered_seqno(&self) -> SequenceNo {
         self.seqno
+    }
+
+    /// Total rows in scrollback + visible screen.
+    pub fn scrollback_rows(&self) -> usize {
+        self.terminal.screen().scrollback_rows()
     }
 
     /// Read lines from the scrollback or visible screen, with optional ANSI formatting.
@@ -564,6 +574,174 @@ impl TerminalPane {
             }
         }
         matches
+    }
+
+    /// Convert a range of physical rows to `ScreenRow` structs.
+    fn lines_to_screen_rows(&self, start: usize, end: usize, cols: usize) -> Vec<ScreenRow> {
+        let screen = self.terminal.screen();
+        let palette = self.terminal.palette();
+        let lines = screen.lines_in_phys_range(start..end);
+
+        let mut result = Vec::with_capacity(lines.len());
+        for line in &lines {
+            let mut cells = Vec::with_capacity(cols);
+            for cell_ref in line.visible_cells() {
+                let col_idx = cell_ref.cell_index();
+                if col_idx >= cols {
+                    break;
+                }
+                let attrs = cell_ref.attrs();
+                let reverse = attrs.reverse();
+                let fg_srgba = resolve_color(&attrs.foreground(), &palette, true, reverse);
+                let bg_srgba = resolve_color(&attrs.background(), &palette, false, reverse);
+
+                cells.push(ScreenCell {
+                    text: cell_ref.str().to_string(),
+                    fg: Color::from(fg_srgba),
+                    bg: Color::from(bg_srgba),
+                    bold: attrs.intensity() == wezterm_term::Intensity::Bold,
+                    italic: attrs.italic(),
+                    underline: attrs.underline() != wezterm_term::Underline::None,
+                    strikethrough: attrs.strikethrough(),
+                    reverse,
+                    hyperlink_url: attrs.hyperlink().map(|h| h.uri().to_string()),
+                });
+            }
+            let wrapped = line.last_cell_was_wrapped();
+            result.push(ScreenRow { cells, wrapped });
+        }
+        result
+    }
+}
+
+impl TerminalBackend for TerminalPane {
+    fn advance(&mut self) -> AdvanceResult {
+        self.advance()
+    }
+
+    fn resize(&mut self, cols: u16, rows: u16) -> Result<(), TermError> {
+        self.resize(cols, rows)
+    }
+
+    fn write_bytes(&mut self, data: &[u8]) -> Result<(), TermError> {
+        self.write_bytes(data)
+    }
+
+    fn feed_bytes(&mut self, data: &[u8]) {
+        self.feed_bytes(data);
+    }
+
+    fn take_reader(&mut self) -> Option<Box<dyn Read + Send>> {
+        self.take_reader()
+    }
+
+    fn title(&self) -> &str {
+        self.title()
+    }
+
+    fn working_dir(&self) -> Option<&Url> {
+        self.working_dir()
+    }
+
+    fn dimensions(&self) -> (usize, usize) {
+        self.dimensions()
+    }
+
+    fn cursor(&self) -> CursorPos {
+        self.cursor_pos().into()
+    }
+
+    fn palette(&self) -> Palette {
+        self.color_palette().into()
+    }
+
+    fn is_alt_screen_active(&self) -> bool {
+        self.is_alt_screen_active()
+    }
+
+    fn bracketed_paste_enabled(&self) -> bool {
+        self.bracketed_paste_enabled()
+    }
+
+    fn child_pid(&self) -> Option<u32> {
+        self.child_pid()
+    }
+
+    fn is_alive(&mut self) -> bool {
+        self.is_alive()
+    }
+
+    fn exit_status(&mut self) -> Option<ProcessExit> {
+        self.pty_exit_status().map(Into::into)
+    }
+
+    fn changed_lines(&self) -> Vec<StableRow> {
+        self.changed_line_indices()
+            .into_iter()
+            .map(|r| r as StableRow)
+            .collect()
+    }
+
+    fn mark_rendered(&mut self) {
+        self.mark_rendered();
+    }
+
+    fn current_seqno(&self) -> SequenceNo {
+        self.current_seqno()
+    }
+
+    fn rendered_seqno(&self) -> SequenceNo {
+        self.rendered_seqno()
+    }
+
+    fn scrollback_rows(&self) -> usize {
+        self.scrollback_rows()
+    }
+
+    fn read_screen_lines(&self, line_spec: &str, ansi: bool) -> String {
+        self.read_screen_lines(line_spec, ansi)
+    }
+
+    fn read_screen_text(&self) -> String {
+        self.read_screen_text()
+    }
+
+    fn read_scrollback_text(&self, max_lines: usize) -> String {
+        self.read_scrollback_text(max_lines)
+    }
+
+    fn read_scrollback_text_range(&self, start: usize, end: usize) -> String {
+        self.read_scrollback_text_range(start, end)
+    }
+
+    fn search_scrollback(&self, query: &str) -> Vec<(usize, usize, usize)> {
+        self.search_scrollback(query)
+    }
+
+    fn read_screen_cells(&self, scroll_offset: usize) -> Vec<ScreenRow> {
+        let (cols, rows) = self.dimensions();
+        let screen = self.terminal.screen();
+        let total = screen.scrollback_rows();
+        let end = total.saturating_sub(scroll_offset);
+        let start = end.saturating_sub(rows);
+        self.lines_to_screen_rows(start, end, cols)
+    }
+
+    fn read_cells_range(&self, start_row: usize, end_row: usize) -> Vec<ScreenRow> {
+        let (cols, _) = self.dimensions();
+        self.lines_to_screen_rows(start_row, end_row, cols)
+    }
+
+    fn erase_scrollback(&mut self) {
+        self.erase_scrollback();
+    }
+
+    fn focus_changed(&mut self, focused: bool) {
+        self.focus_changed(focused);
+    }
+
+    fn drain_notifications(&self) -> Vec<NotificationEvent> {
+        self.drain_notifications()
     }
 }
 

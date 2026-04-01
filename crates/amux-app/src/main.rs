@@ -32,6 +32,7 @@ use amux_term::config::AmuxTermConfig;
 use amux_term::font;
 use amux_term::osc::NotificationEvent;
 use amux_term::pane::TerminalPane;
+use amux_term::TerminalBackend;
 use managed_pane::*;
 use portable_pty::CommandBuilder;
 
@@ -1130,7 +1131,7 @@ impl AmuxApp {
             if let Some(managed) = self.panes.get(&pane_id) {
                 let surface = managed.active_surface();
                 let (_, rows) = surface.pane.dimensions();
-                let total = surface.pane.screen().scrollback_rows();
+                let total = surface.pane.scrollback_rows();
                 let end = total.saturating_sub(surface.scroll_offset);
                 let start = end.saturating_sub(rows);
                 if cm.cursor.1 >= start && cm.cursor.1 < end {
@@ -1410,44 +1411,40 @@ impl AmuxApp {
             if col >= cols || row >= rows {
                 return;
             }
-            let screen = surface.pane.screen();
-            let total = screen.scrollback_rows();
+            let total = surface.pane.scrollback_rows();
             let end = total.saturating_sub(surface.scroll_offset);
             let start = end.saturating_sub(rows);
             let phys_row = start + row;
-            let lines = screen.lines_in_phys_range(phys_row..phys_row + 1);
-            if let Some(line) = lines.first() {
-                for cell in line.visible_cells() {
-                    if cell.cell_index() == col {
-                        if let Some(link) = cell.attrs().hyperlink() {
-                            let url = link.uri().to_string();
-                            self.hovered_hyperlink = Some(url.clone());
+            let screen_rows = surface.pane.read_cells_range(phys_row, phys_row + 1);
+            if let Some(screen_row) = screen_rows.first() {
+                if let Some(cell) = screen_row.cells.get(col) {
+                    if let Some(ref url) = cell.hyperlink_url {
+                        self.hovered_hyperlink = Some(url.clone());
 
-                            // Set pointer cursor
-                            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                        // Set pointer cursor
+                        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
 
-                            // Cmd+click opens URL
-                            let cmd_held = ctx.input(|i| {
-                                #[cfg(target_os = "macos")]
-                                {
-                                    i.modifiers.mac_cmd || i.modifiers.command
-                                }
-                                #[cfg(not(target_os = "macos"))]
-                                {
-                                    i.modifiers.ctrl
-                                }
-                            });
-                            if cmd_held && ctx.input(|i| i.pointer.primary_clicked()) {
-                                // Only open safe URL schemes.
-                                if url.starts_with("http://")
-                                    || url.starts_with("https://")
-                                    || url.starts_with("mailto:")
-                                {
-                                    let _ = open::that(&url);
-                                }
+                        // Cmd+click opens URL
+                        let cmd_held = ctx.input(|i| {
+                            #[cfg(target_os = "macos")]
+                            {
+                                i.modifiers.mac_cmd || i.modifiers.command
+                            }
+                            #[cfg(not(target_os = "macos"))]
+                            {
+                                i.modifiers.ctrl
+                            }
+                        });
+                        if cmd_held && ctx.input(|i| i.pointer.primary_clicked()) {
+                            // Only open safe URL schemes (case-insensitive).
+                            let lower = url.to_ascii_lowercase();
+                            if lower.starts_with("http://")
+                                || lower.starts_with("https://")
+                                || lower.starts_with("mailto:")
+                            {
+                                let _ = open::that(url);
                             }
                         }
-                        break;
                     }
                 }
             }
@@ -1625,7 +1622,7 @@ impl AmuxApp {
                     if let Some(managed) = self.panes.get_mut(&pane_id) {
                         let surface = managed.active_surface_mut();
                         let (_, rows) = surface.pane.dimensions();
-                        let total_rows = surface.pane.screen().scrollback_rows();
+                        let total_rows = surface.pane.scrollback_rows();
                         // Calculate scroll offset to center the match
                         let target_end = phys_row + rows / 2;
                         let actual_end = target_end.min(total_rows);
