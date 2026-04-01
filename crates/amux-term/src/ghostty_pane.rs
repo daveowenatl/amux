@@ -220,12 +220,32 @@ where
         let mut lines = Vec::new();
         while let Some(row) = row_iteration.next() {
             let mut line = String::new();
+            let mut col: usize = 0;
             if let Ok(mut cell_iteration) = cell_iter.update(row) {
                 while let Some(cell) = cell_iteration.next() {
-                    if let Ok(chars) = cell.graphemes() {
-                        for ch in chars {
-                            line.push(ch);
+                    let has_content = if let Ok(chars) = cell.graphemes() {
+                        if chars.is_empty() {
+                            false
+                        } else {
+                            // Pad with spaces up to this column if we skipped blank cells.
+                            while line.len() < col {
+                                line.push(' ');
+                            }
+                            for ch in chars {
+                                line.push(ch);
+                            }
+                            true
                         }
+                    } else {
+                        false
+                    };
+                    // Advance column by cell width (1 for normal, but
+                    // graphemes may contribute display width > 1).
+                    if has_content {
+                        // Already pushed chars; col tracks logical position.
+                        col = line.len();
+                    } else {
+                        col += 1;
                     }
                 }
             }
