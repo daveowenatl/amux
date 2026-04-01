@@ -224,18 +224,34 @@ pub struct ImageTextureEntry {
     pub bind_group: wgpu::BindGroup,
 }
 
-/// Cached result of shaping a single cell's text through cosmic-text.
+/// Cached result of shaping a text run through cosmic-text.
 /// Avoids re-running the full shaping pipeline on every frame for unchanged glyphs.
 #[derive(Clone)]
 pub(crate) struct ShapedGlyphEntry {
-    /// Physical glyph x offset within the cell.
+    /// Physical glyph x offset within the run.
     physical_x: i32,
-    /// Physical glyph y offset within the cell.
+    /// Physical glyph y offset within the run.
     physical_y: i32,
     /// cosmic-text cache key for atlas lookup.
     cache_key: cosmic_text::CacheKey,
     /// Baseline y from layout run.
     line_y: f32,
+    /// Cell column offset within the run (0-based), for CachedGlyph mapping.
+    source_col_offset: usize,
+}
+
+/// A contiguous run of same-style cells to be shaped together for ligature support.
+struct TextRun {
+    row: usize,
+    col_start: usize,
+    col_count: usize,
+    text: String,
+    /// Byte offset where each cell's text starts within `text`.
+    cell_byte_offsets: Vec<usize>,
+    bold: bool,
+    italic: bool,
+    faint: bool,
+    fg: [f32; 4],
 }
 
 /// Key for the shape cache: (text content, bold, italic).
@@ -473,12 +489,26 @@ impl CallbackTrait for TerminalPaintCallback {
             let mut fg = Vec::with_capacity(snap.cells.len());
             let mut cached = Vec::new();
 
+            // --- Run-based shaping for ligature support ---
+            // Group adjacent same-style cells into text runs, then shape each
+            // run as a unit so cosmic-text / HarfBuzz can produce ligatures.
+            let cursor_col = snap.cursor_x;
+            let cursor_row = snap.cursor_y as usize;
+            let cursor_breaks = snap.cursor_visible && snap.scroll_offset == 0;
+
+            let mut runs: Vec<TextRun> = Vec::new();
+            let mut current_run: Option<TextRun> = None;
+
             for cell in &snap.cells {
+                // Skip empty / space cells (implicitly breaks runs).
                 if cell.text.is_empty() || cell.text == " " {
+                    if let Some(run) = current_run.take() {
+                        runs.push(run);
+                    }
                     continue;
                 }
 
-                // Check for procedurally-rendered box-drawing / block characters.
+                // Custom box-drawing / block glyphs: emit directly, break run.
                 if cell.text.len() <= 4 {
                     if let Some(ch) = cell.text.chars().next() {
                         if cell.text.chars().nth(1).is_none() {
@@ -494,42 +524,89 @@ impl CallbackTrait for TerminalPaintCallback {
                                 self.cell_height,
                                 &mut bg_instances,
                             ) {
+                                if let Some(run) = current_run.take() {
+                                    runs.push(run);
+                                }
                                 continue;
                             }
                         }
                     }
                 }
 
-                let color = maybe_linearize(cell.fg, linearize);
-                let prev_len = fg.len();
+                let cell_fg = maybe_linearize(cell.fg, linearize);
+                let is_cursor_cell =
+                    cursor_breaks && cell.col == cursor_col && cell.row == cursor_row;
 
-                shape_and_rasterize(
-                    &cell.text,
-                    cell.bold,
-                    cell.italic,
-                    color,
-                    self.phys_rect.x + cell.col as f32 * self.cell_width,
-                    self.phys_rect.y + cell.row as f32 * self.cell_height,
+                // Flush before cursor cell so it becomes its own run.
+                if is_cursor_cell {
+                    if let Some(run) = current_run.take() {
+                        runs.push(run);
+                    }
+                }
+
+                // Check if cell can extend current run.
+                let can_extend = match &current_run {
+                    Some(run) => {
+                        cell.row == run.row
+                            && cell.col == run.col_start + run.col_count
+                            && cell.bold == run.bold
+                            && cell.italic == run.italic
+                            && cell.faint == run.faint
+                            && cell_fg == run.fg
+                            && !is_cursor_cell
+                    }
+                    None => false,
+                };
+
+                if can_extend {
+                    let run = current_run.as_mut().unwrap();
+                    run.cell_byte_offsets.push(run.text.len());
+                    run.text.push_str(&cell.text);
+                    run.col_count += 1;
+                } else {
+                    if let Some(run) = current_run.take() {
+                        runs.push(run);
+                    }
+                    let mut text = String::with_capacity(cell.text.len());
+                    text.push_str(&cell.text);
+                    current_run = Some(TextRun {
+                        row: cell.row,
+                        col_start: cell.col,
+                        col_count: 1,
+                        cell_byte_offsets: vec![0],
+                        text,
+                        bold: cell.bold,
+                        italic: cell.italic,
+                        faint: cell.faint,
+                        fg: cell_fg,
+                    });
+                }
+
+                // Flush after cursor cell so it stands alone.
+                if is_cursor_cell {
+                    if let Some(run) = current_run.take() {
+                        runs.push(run);
+                    }
+                }
+            }
+            if let Some(run) = current_run.take() {
+                runs.push(run);
+            }
+
+            // Shape each run.
+            for run in &runs {
+                shape_run(
+                    run,
                     self.cell_width,
                     self.cell_height,
+                    self.phys_rect.x,
+                    self.phys_rect.y,
                     pixels_per_point,
                     resources,
                     queue,
                     &mut fg,
+                    &mut cached,
                 );
-
-                // Cache the glyph layout (position/UV) for color-only rebuilds.
-                for inst in &fg[prev_len..] {
-                    cached.push(CachedGlyph {
-                        col: cell.col,
-                        row: cell.row,
-                        pos: inst.pos,
-                        size: inst.size,
-                        uv_min: inst.uv_min,
-                        uv_max: inst.uv_max,
-                        is_color: inst.is_color,
-                    });
-                }
             }
 
             // Store cache for future appearance-only rebuilds.
@@ -1081,8 +1158,165 @@ impl CallbackTrait for TerminalPaintCallback {
     }
 }
 
-/// Shape text with cosmic-text and rasterize glyphs into the atlas,
-/// appending foreground instances for each glyph.
+/// Shape a multi-cell text run for ligature support.
+///
+/// Groups of adjacent same-style cells are shaped together through cosmic-text
+/// so HarfBuzz can produce ligature substitutions (e.g., `=>` → single glyph).
+/// Glyph positions are mapped back to cell columns via `cell_byte_offsets`.
+#[allow(clippy::too_many_arguments)]
+fn shape_run(
+    run: &TextRun,
+    cell_width: f32,
+    cell_height: f32,
+    phys_x: f32,
+    phys_y: f32,
+    pixels_per_point: f32,
+    resources: &mut TerminalGpuResources,
+    queue: &wgpu::Queue,
+    fg_instances: &mut Vec<CellFgInstance>,
+    cached_glyphs: &mut Vec<CachedGlyph>,
+) {
+    let cache_key = (run.text.clone(), run.bold, run.italic);
+    let base_x = phys_x + run.col_start as f32 * cell_width;
+    let base_y = phys_y + run.row as f32 * cell_height;
+
+    // Check shape cache first.
+    if let Some(shaped) = resources.shape_cache.get(&cache_key) {
+        let shaped = shaped.clone();
+        for sg in &shaped {
+            let (entry, newly_inserted) = resources.atlas.get_or_insert(
+                queue,
+                &mut resources.font_system,
+                &mut resources.swash_cache,
+                sg.cache_key,
+            );
+            if let Some(entry) = entry {
+                let gx = base_x + sg.physical_x as f32 + entry.placement_left as f32;
+                let gy = base_y + sg.line_y + sg.physical_y as f32 - entry.placement_top as f32;
+                fg_instances.push(CellFgInstance {
+                    pos: [gx, gy],
+                    size: [entry.width as f32, entry.height as f32],
+                    uv_min: [entry.uv[0], entry.uv[1]],
+                    uv_max: [entry.uv[2], entry.uv[3]],
+                    color: run.fg,
+                    is_color: if entry.is_color { 1.0 } else { 0.0 },
+                    _pad: [0.0; 3],
+                });
+                let glyph_col = run.col_start + sg.source_col_offset;
+                cached_glyphs.push(CachedGlyph {
+                    col: glyph_col,
+                    row: run.row,
+                    pos: [gx, gy],
+                    size: [entry.width as f32, entry.height as f32],
+                    uv_min: [entry.uv[0], entry.uv[1]],
+                    uv_max: [entry.uv[2], entry.uv[3]],
+                    is_color: if entry.is_color { 1.0 } else { 0.0 },
+                });
+                if newly_inserted {
+                    resources.atlas_bind_group_dirty = true;
+                }
+            }
+        }
+        return;
+    }
+
+    // Cache miss: run full cosmic-text shaping.
+    let weight = if run.bold {
+        cosmic_text::Weight::BOLD
+    } else {
+        cosmic_text::Weight::NORMAL
+    };
+    let style = if run.italic {
+        cosmic_text::Style::Italic
+    } else {
+        cosmic_text::Style::Normal
+    };
+    let attrs = Attrs::new()
+        .family(cosmic_text::fontdb::Family::Monospace)
+        .weight(weight)
+        .style(style);
+
+    let phys_metrics = Metrics::new(
+        resources.metrics.font_size * pixels_per_point,
+        resources.metrics.line_height * pixels_per_point,
+    );
+    let buffer_width = f32::max(run.col_count as f32 * cell_width, cell_width * 2.0);
+    let mut buffer = Buffer::new_empty(phys_metrics);
+    {
+        let mut borrowed = buffer.borrow_with(&mut resources.font_system);
+        borrowed.set_size(Some(buffer_width), Some(cell_height));
+        borrowed.set_text(&run.text, attrs, Shaping::Advanced);
+        borrowed.shape_until_scroll(true);
+    }
+
+    let mut shaped_entries = Vec::new();
+
+    for layout_run in buffer.layout_runs() {
+        for glyph in layout_run.glyphs.iter() {
+            let physical = glyph.physical((0.0, 0.0), 1.0);
+
+            // Map glyph back to source cell via byte offset.
+            let source_col_offset = byte_offset_to_col_offset(&run.cell_byte_offsets, glyph.start);
+
+            shaped_entries.push(ShapedGlyphEntry {
+                physical_x: physical.x,
+                physical_y: physical.y,
+                cache_key: physical.cache_key,
+                line_y: layout_run.line_y,
+                source_col_offset,
+            });
+
+            let (entry, newly_inserted) = resources.atlas.get_or_insert(
+                queue,
+                &mut resources.font_system,
+                &mut resources.swash_cache,
+                physical.cache_key,
+            );
+
+            if let Some(entry) = entry {
+                let gx = base_x + physical.x as f32 + entry.placement_left as f32;
+                let gy =
+                    base_y + layout_run.line_y + physical.y as f32 - entry.placement_top as f32;
+
+                fg_instances.push(CellFgInstance {
+                    pos: [gx, gy],
+                    size: [entry.width as f32, entry.height as f32],
+                    uv_min: [entry.uv[0], entry.uv[1]],
+                    uv_max: [entry.uv[2], entry.uv[3]],
+                    color: run.fg,
+                    is_color: if entry.is_color { 1.0 } else { 0.0 },
+                    _pad: [0.0; 3],
+                });
+
+                let glyph_col = run.col_start + source_col_offset;
+                cached_glyphs.push(CachedGlyph {
+                    col: glyph_col,
+                    row: run.row,
+                    pos: [gx, gy],
+                    size: [entry.width as f32, entry.height as f32],
+                    uv_min: [entry.uv[0], entry.uv[1]],
+                    uv_max: [entry.uv[2], entry.uv[3]],
+                    is_color: if entry.is_color { 1.0 } else { 0.0 },
+                });
+
+                if newly_inserted {
+                    resources.atlas_bind_group_dirty = true;
+                }
+            }
+        }
+    }
+
+    resources.shape_cache.insert(cache_key, shaped_entries);
+}
+
+/// Map a byte offset in run text to the cell column index within the run.
+fn byte_offset_to_col_offset(cell_byte_offsets: &[usize], byte_pos: usize) -> usize {
+    cell_byte_offsets
+        .partition_point(|&o| o <= byte_pos)
+        .saturating_sub(1)
+}
+
+/// Shape a single cell's text with cosmic-text (used for cursor text overlay).
 ///
 /// Uses a shape cache to avoid re-running cosmic-text shaping for
 /// previously seen (text, bold, italic) combinations. The atlas already
@@ -1174,6 +1408,7 @@ fn shape_and_rasterize(
                 physical_y: physical.y,
                 cache_key: physical.cache_key,
                 line_y: run.line_y,
+                source_col_offset: 0, // single-cell: always column 0
             });
 
             let (entry, newly_inserted) = resources.atlas.get_or_insert(
