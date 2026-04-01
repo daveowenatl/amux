@@ -14,14 +14,17 @@ pub const DEFAULT_FONT_FAMILY: &str = "IBM Plex Mono";
 pub const DEFAULT_FONT_SIZE: f32 = 14.0;
 
 /// Font decoration metrics extracted from OpenType tables (POST/OS2).
-/// All values are in physical pixels at the current font size.
+/// All values are in logical points at the current font size. Callers typically
+/// convert these to physical pixels by multiplying with `pixels_per_point`.
 #[derive(Clone, Copy, Debug)]
 pub struct DecorationMetrics {
-    /// Distance from baseline to top of underline stroke (positive = below baseline).
+    /// Distance from baseline to top of underline stroke (positive = below baseline),
+    /// in logical points.
     pub underline_offset: f32,
-    /// Distance from baseline to top of strikethrough stroke (positive = above baseline).
+    /// Distance from baseline to top of strikethrough stroke (positive = above baseline),
+    /// in logical points.
     pub strikeout_offset: f32,
-    /// Recommended stroke thickness for underline/strikethrough.
+    /// Recommended stroke thickness for underline/strikethrough, in logical points.
     pub stroke_size: f32,
 }
 
@@ -116,20 +119,21 @@ pub fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics) -> f32
 }
 
 /// Extract decoration metrics (underline/strikethrough position and thickness)
-/// from the primary monospace font via ttf_parser's OpenType table reader.
-/// Returns values in EM units (caller should scale by font_size / units_per_em).
+/// from the configured monospace font via ttf_parser's OpenType table reader.
+/// Returns values in logical points at the given font size.
 pub fn measure_decoration_metrics(
     font_system: &mut FontSystem,
     font_size: f32,
 ) -> DecorationMetrics {
     use cosmic_text::ttf_parser;
 
-    // Find the first monospace face in the font database.
-    let mono_id = font_system
-        .db()
-        .faces()
-        .find(|f| f.monospaced)
-        .map(|f| f.id);
+    // Query the monospace face that matches the configured monospace family
+    // (set via `set_monospace_family`), rather than picking an arbitrary
+    // monospaced face from the database.
+    let mono_id = font_system.db().query(&cosmic_text::fontdb::Query {
+        families: &[Family::Monospace],
+        ..Default::default()
+    });
 
     if let Some(id) = mono_id {
         let result = font_system.db().with_face_data(id, |data, index| {

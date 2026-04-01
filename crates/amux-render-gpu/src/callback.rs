@@ -855,10 +855,15 @@ impl CallbackTrait for TerminalPaintCallback {
                 .collect();
             if !faint_cells.is_empty() {
                 for inst in &mut fg_instances {
-                    // Map pixel position back to cell coordinates.
-                    let col = ((inst.pos[0] - self.phys_rect.x) / self.cell_width).round() as usize;
-                    let row =
-                        ((inst.pos[1] - self.phys_rect.y) / self.cell_height).round() as usize;
+                    // Map pixel position back to cell coordinates, clamping to valid
+                    // range to handle glyphs with negative bearings or ligature offsets.
+                    let col_f = (inst.pos[0] - self.phys_rect.x) / self.cell_width;
+                    let row_f = (inst.pos[1] - self.phys_rect.y) / self.cell_height;
+                    if col_f < 0.0 || row_f < 0.0 {
+                        continue;
+                    }
+                    let col = (col_f.round() as usize).min(snap.cols.saturating_sub(1));
+                    let row = (row_f.round() as usize).min(snap.rows.saturating_sub(1));
                     if faint_cells.contains(&(col, row)) {
                         inst.color[3] *= 0.5;
                     }
