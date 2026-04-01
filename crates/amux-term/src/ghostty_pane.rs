@@ -254,6 +254,128 @@ where
         lines
     }
 
+    /// Build lines with ANSI SGR escape sequences for color/style preservation.
+    /// Used by `read_scrollback_text` so session restore retains styling.
+    fn snapshot_lines_ansi(&self) -> Vec<String> {
+        use libghostty_vt::style::Underline as GhosttyUnderline;
+
+        let mut rs = self.render_state.borrow_mut();
+        let snapshot = match rs.update(&self.terminal) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut row_iter = match RowIterator::new() {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        let mut cell_iter = match CellIterator::new() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        let mut row_iteration = match row_iter.update(&snapshot) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+
+        let default_style = libghostty_vt::style::Style::default();
+
+        let mut lines = Vec::new();
+        while let Some(row) = row_iteration.next() {
+            let mut line = String::new();
+            let mut col: usize = 0;
+            let mut visible_col: usize = 0;
+            let mut prev_style = default_style;
+            let mut prev_fg: Option<RgbColor> = None;
+            let mut prev_bg: Option<RgbColor> = None;
+
+            if let Ok(mut cell_iteration) = cell_iter.update(row) {
+                while let Some(cell) = cell_iteration.next() {
+                    let graphemes = cell.graphemes().unwrap_or_default();
+                    if graphemes.is_empty() {
+                        col += 1;
+                        continue;
+                    }
+
+                    // Pad with spaces up to this column.
+                    while visible_col < col {
+                        line.push(' ');
+                        visible_col += 1;
+                    }
+
+                    // Check if style changed.
+                    let cur_style = cell.style().unwrap_or(default_style);
+                    let cur_fg = cell.fg_color().ok().flatten();
+                    let cur_bg = cell.bg_color().ok().flatten();
+
+                    let style_changed =
+                        cur_style != prev_style || cur_fg != prev_fg || cur_bg != prev_bg;
+
+                    if style_changed {
+                        // Reset, then emit active attributes.
+                        line.push_str("\x1b[0");
+
+                        if cur_style.bold {
+                            line.push_str(";1");
+                        }
+                        if cur_style.faint {
+                            line.push_str(";2");
+                        }
+                        if cur_style.italic {
+                            line.push_str(";3");
+                        }
+                        match cur_style.underline {
+                            GhosttyUnderline::Single => line.push_str(";4"),
+                            GhosttyUnderline::Double => line.push_str(";21"),
+                            _ => {}
+                        }
+                        if cur_style.inverse {
+                            line.push_str(";7");
+                        }
+                        if cur_style.invisible {
+                            line.push_str(";8");
+                        }
+                        if cur_style.strikethrough {
+                            line.push_str(";9");
+                        }
+
+                        // Foreground color
+                        if let Some(fg) = cur_fg {
+                            use std::fmt::Write;
+                            let _ = write!(line, ";38;2;{};{};{}", fg.r, fg.g, fg.b);
+                        }
+
+                        // Background color
+                        if let Some(bg) = cur_bg {
+                            use std::fmt::Write;
+                            let _ = write!(line, ";48;2;{};{};{}", bg.r, bg.g, bg.b);
+                        }
+
+                        line.push('m');
+
+                        prev_style = cur_style;
+                        prev_fg = cur_fg;
+                        prev_bg = cur_bg;
+                    }
+
+                    for ch in graphemes {
+                        line.push(ch);
+                    }
+                    col += 1;
+                    visible_col += 1;
+                }
+            }
+
+            // Reset at end of line if we had non-default attributes.
+            if prev_style != default_style || prev_fg.is_some() || prev_bg.is_some() {
+                line.push_str("\x1b[0m");
+            }
+
+            lines.push(line.trim_end().to_string());
+        }
+        lines
+    }
+
     /// Read screen text using the render state snapshot iterators.
     /// Takes &self via RefCell interior mutability.
     fn read_text_from_snapshot(&self) -> String {
@@ -448,7 +570,7 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
     fn read_scrollback_text(&self, max_lines: usize) -> String {
         // libghostty-vt 0.1.x only exposes viewport via render state.
         // PointCoordinate fields are private, so grid_ref can't reach scrollback.
-        let lines = self.snapshot_lines();
+        let lines = self.snapshot_lines_ansi();
         if max_lines > lines.len() {
             tracing::warn!(
                 "read_scrollback_text({max_lines}) requested but only {} viewport lines available \
@@ -467,7 +589,7 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
 
     fn read_scrollback_text_range(&self, start: usize, end: usize) -> String {
         // libghostty-vt 0.1.x only exposes viewport via render state.
-        let lines = self.snapshot_lines();
+        let lines = self.snapshot_lines_ansi();
         let viewport_total = self.terminal.total_rows().unwrap_or(0);
         let viewport_rows = lines.len();
         let viewport_start = viewport_total.saturating_sub(viewport_rows);
