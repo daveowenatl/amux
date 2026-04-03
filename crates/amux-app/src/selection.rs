@@ -1,5 +1,5 @@
 //! Terminal text selection helpers: coordinate mapping, word boundaries,
-//! and text extraction from wezterm-term screen state.
+//! and text extraction via the TerminalBackend trait.
 
 use amux_term::backend::TerminalBackend;
 use managed_pane::WORD_DELIMITERS;

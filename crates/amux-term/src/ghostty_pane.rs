@@ -103,7 +103,9 @@ where
         terminal
             .on_pty_write(move |_term, data| {
                 let mut w = write_handle.lock().unwrap_or_else(|e| e.into_inner());
-                let _ = w.write_all(data);
+                if let Err(e) = w.write_all(data) {
+                    tracing::warn!("PTY write failed: {e}");
+                }
             })
             .map_err(|e| TermError::PtySetupFailed(anyhow::anyhow!("{e}")))?;
 
@@ -720,7 +722,6 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
                     let underline_color = style.as_ref().and_then(|s| {
                         resolve_style_color(&s.underline_color, &self.cached_palette.colors)
                     });
-
                     cells.push(ScreenCell {
                         text,
                         fg,

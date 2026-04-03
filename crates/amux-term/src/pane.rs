@@ -614,6 +614,7 @@ impl TerminalPane {
                     }
                 };
 
+
                 cells.push(ScreenCell {
                     text: cell_ref.str().to_string(),
                     fg: Color::from(fg_srgba),

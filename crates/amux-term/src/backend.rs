@@ -9,7 +9,7 @@ use crate::pane::{AdvanceResult, SequenceNo, TermError};
 // These replace wezterm-term/portable-pty types in the trait so backends
 // don't need to produce wezterm-specific types.
 
-/// RGBA color as linear f32 values in [0.0, 1.0].
+/// RGBA color as sRGB f32 values in [0.0, 1.0].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Color(pub f32, pub f32, pub f32, pub f32);
 
@@ -71,14 +71,14 @@ impl Default for Palette {
 }
 
 /// Process exit status.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ProcessExit {
     code: i32,
-    signal: Option<u32>,
+    signal: Option<String>,
 }
 
 impl ProcessExit {
-    pub fn new(code: i32, signal: Option<u32>) -> Self {
+    pub fn new(code: i32, signal: Option<String>) -> Self {
         Self { code, signal }
     }
 
@@ -92,9 +92,9 @@ impl ProcessExit {
         self.code
     }
 
-    /// Signal that killed the process, if any.
-    pub fn signal(&self) -> Option<u32> {
-        self.signal
+    /// Signal name that killed the process, if any (e.g. "SIGTERM").
+    pub fn signal(&self) -> Option<&str> {
+        self.signal.as_deref()
     }
 }
 
@@ -202,7 +202,7 @@ impl From<portable_pty::ExitStatus> for ProcessExit {
     fn from(s: portable_pty::ExitStatus) -> Self {
         Self {
             code: s.exit_code() as i32,
-            signal: s.signal().map(|_| 0), // portable-pty gives signal name, not number
+            signal: s.signal().map(|name| name.to_string()),
         }
     }
 }
