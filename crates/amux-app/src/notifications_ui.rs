@@ -206,142 +206,230 @@ impl AmuxApp {
         }
     }
 
+    /// Render a bell button in the top-right of the titlebar strip.
+    /// Shows an unread-count badge when there are unread notifications.
+    /// Clicking toggles the notifications panel (cmux-style popover).
+    pub(crate) fn render_notification_bell(&mut self, ui: &mut egui::Ui, full_rect: egui::Rect) {
+        let unread = self.notifications.total_unread();
+        let btn_size = egui::vec2(26.0, 22.0);
+        let margin = egui::vec2(8.0, 3.0);
+        let btn_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                full_rect.max.x - btn_size.x - margin.x,
+                full_rect.min.y + margin.y,
+            ),
+            btn_size,
+        );
+
+        let id = ui.id().with("notif_bell_button");
+        let response = ui.interact(btn_rect, id, egui::Sense::click());
+        let painter = ui.painter();
+
+        // Hover/active background
+        let bg_color = if response.is_pointer_button_down_on() {
+            egui::Color32::from_white_alpha(24)
+        } else if response.hovered() {
+            egui::Color32::from_white_alpha(14)
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        if bg_color != egui::Color32::TRANSPARENT {
+            painter.rect_filled(btn_rect, 5.0, bg_color);
+        }
+
+        // Bell glyph.
+        let bell_color = if self.show_notification_panel {
+            self.theme.chrome.accent
+        } else if response.hovered() {
+            egui::Color32::from_gray(230)
+        } else {
+            egui::Color32::from_gray(170)
+        };
+        painter.text(
+            btn_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "\u{1F514}", // 🔔
+            egui::FontId::proportional(13.0),
+            bell_color,
+        );
+
+        // Unread badge (red dot with count).
+        if unread > 0 {
+            let badge_center = egui::pos2(btn_rect.max.x - 4.0, btn_rect.min.y + 5.0);
+            let badge_radius = 6.5;
+            painter.circle_filled(
+                badge_center,
+                badge_radius,
+                egui::Color32::from_rgb(235, 75, 75),
+            );
+            painter.circle_stroke(
+                badge_center,
+                badge_radius,
+                egui::Stroke::new(1.0, self.theme.titlebar_bg()),
+            );
+            let label = if unread > 99 {
+                "99+".to_string()
+            } else {
+                unread.to_string()
+            };
+            let size = if unread > 9 { 8.0 } else { 9.0 };
+            painter.text(
+                badge_center,
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(size),
+                egui::Color32::WHITE,
+            );
+        }
+
+        if response.clicked() {
+            self.show_notification_panel = !self.show_notification_panel;
+        }
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+    }
+
     pub(crate) fn render_notification_panel(&mut self, ctx: &egui::Context) {
         let mut close_panel = false;
         let mut mark_all = false;
         let mut jump_to: Option<(u64, u64)> = None; // (workspace_id, pane_id)
         let mut remove_id: Option<u64> = None;
 
+        // Build a pane_id → (workspace title, tab title) lookup for context lines.
+        let context_for: std::collections::HashMap<u64, (String, String)> = self
+            .workspaces
+            .iter()
+            .flat_map(|ws| {
+                ws.tree.iter_panes().into_iter().map(|pid| {
+                    let tab_title = self
+                        .panes
+                        .get(&pid)
+                        .map(|mp| {
+                            let sf = mp.active_surface();
+                            let t = sf.pane.title();
+                            if t.is_empty() {
+                                sf.metadata
+                                    .surface_title
+                                    .clone()
+                                    .unwrap_or_else(|| "Tab".to_string())
+                            } else {
+                                t.to_string()
+                            }
+                        })
+                        .unwrap_or_else(|| "Tab".to_string());
+                    (pid, (ws.title.clone(), tab_title))
+                })
+            })
+            .collect();
+
         egui::Window::new("Notifications")
+            .title_bar(false)
             .collapsible(false)
             .resizable(true)
-            .default_size([380.0, 460.0])
-            .anchor(egui::Align2::RIGHT_TOP, [-10.0, 10.0])
+            .default_size([400.0, 500.0])
+            .anchor(egui::Align2::RIGHT_TOP, [-10.0, TERMINAL_TOP_PAD + 4.0])
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .fill(self.theme.chrome.sidebar_bg)
+                    .stroke(egui::Stroke::new(1.0, self.theme.chrome.divider))
+                    .corner_radius(10.0)
+                    .inner_margin(egui::Margin::ZERO),
+            )
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.heading(
-                        egui::RichText::new("Notifications").color(egui::Color32::from_gray(220)),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("Clear All").clicked() {
-                            mark_all = true;
-                        }
-                        if ui.small_button("Jump to Latest").clicked() {
-                            jump_to = self
-                                .notifications
-                                .most_recent_unread()
-                                .map(|n| (n.workspace_id, n.pane_id));
-                            close_panel = true;
-                        }
-                    });
-                });
-                ui.separator();
+                // Header
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 36.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add_space(14.0);
+                        ui.label(
+                            egui::RichText::new("Notifications")
+                                .font(fonts::bold_font(14.0))
+                                .color(egui::Color32::from_gray(230)),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(10.0);
+                            if ui
+                                .add(egui::Button::new(
+                                    egui::RichText::new("\u{2715}")
+                                        .size(13.0)
+                                        .color(egui::Color32::from_gray(160)),
+                                ))
+                                .on_hover_text("Close")
+                                .clicked()
+                            {
+                                close_panel = true;
+                            }
+                            if ui
+                                .add(egui::Button::new(
+                                    egui::RichText::new("Clear all")
+                                        .size(11.0)
+                                        .color(egui::Color32::from_gray(170)),
+                                ))
+                                .clicked()
+                            {
+                                mark_all = true;
+                            }
+                        });
+                    },
+                );
+                // Divider under header
+                let sep_y = ui.cursor().min.y;
+                ui.painter().hline(
+                    ui.min_rect().left()..=ui.min_rect().right(),
+                    sep_y,
+                    egui::Stroke::new(1.0, self.theme.chrome.divider),
+                );
+                ui.add_space(1.0);
 
                 let notifications = self.notifications.all_notifications();
                 if notifications.is_empty() {
                     ui.vertical_centered(|ui| {
-                        ui.add_space(40.0);
+                        ui.add_space(60.0);
                         ui.label(
-                            egui::RichText::new("\u{1f515}") // 🔕
-                                .size(32.0),
+                            egui::RichText::new("\u{1F515}") // 🔕
+                                .size(34.0)
+                                .color(egui::Color32::from_gray(90)),
                         );
-                        ui.add_space(8.0);
+                        ui.add_space(10.0);
                         ui.label(
                             egui::RichText::new("No notifications")
-                                .color(egui::Color32::from_gray(140))
-                                .size(14.0),
+                                .font(fonts::bold_font(13.0))
+                                .color(egui::Color32::from_gray(180)),
                         );
+                        ui.add_space(4.0);
                         ui.label(
                             egui::RichText::new("Agent notifications will appear here")
-                                .color(egui::Color32::from_gray(80))
-                                .size(11.0),
+                                .size(11.0)
+                                .color(egui::Color32::from_gray(110)),
                         );
+                        ui.add_space(60.0);
                     });
                 } else {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        // Group by workspace, most recent notifications first within each
-                        let mut grouped: Vec<_> = notifications.iter().rev().collect();
-                        grouped.sort_by_key(|n| n.workspace_id);
-                        let mut last_ws_id: Option<u64> = None;
-                        for notif in &grouped {
-                            // Workspace section header
-                            if last_ws_id != Some(notif.workspace_id) {
-                                last_ws_id = Some(notif.workspace_id);
-                                if let Some(ws) =
-                                    self.workspaces.iter().find(|w| w.id == notif.workspace_id)
-                                {
-                                    ui.add_space(4.0);
-                                    ui.label(
-                                        egui::RichText::new(&ws.title)
-                                            .font(fonts::bold_font(11.0))
-                                            .color(egui::Color32::from_gray(120)),
-                                    );
-                                    ui.add_space(2.0);
-                                }
-                            }
-
-                            let response = ui.horizontal(|ui| {
-                                // Source icon + unread dot
-                                let source_icon = match notif.source {
-                                    NotificationSource::Bell => "\u{1f514}",  // 🔔
-                                    NotificationSource::Toast => "\u{1f4ac}", // 💬
-                                    NotificationSource::Cli => "\u{2328}",    // ⌨
-                                };
-                                let dot_color = if notif.read {
-                                    egui::Color32::from_gray(60)
-                                } else {
-                                    self.theme.chrome.accent
-                                };
-                                ui.label(
-                                    egui::RichText::new(source_icon).size(10.0).color(dot_color),
-                                );
-
-                                ui.vertical(|ui| {
-                                    let title = if notif.title.is_empty() {
-                                        &notif.body
-                                    } else {
-                                        &notif.title
-                                    };
-                                    ui.label(
-                                        egui::RichText::new(title)
-                                            .color(egui::Color32::from_gray(200)),
-                                    );
-                                    if !notif.title.is_empty() && !notif.body.is_empty() {
-                                        let body_display = if notif.body.len() > 100 {
-                                            format!("{}...", &notif.body[..97])
-                                        } else {
-                                            notif.body.clone()
-                                        };
-                                        ui.label(
-                                            egui::RichText::new(body_display)
-                                                .small()
-                                                .color(egui::Color32::from_gray(140)),
-                                        );
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.add_space(6.0);
+                            // Flat chronological list (newest first), matching cmux.
+                            let ordered: Vec<_> = notifications.iter().rev().collect();
+                            for notif in &ordered {
+                                let context = context_for.get(&notif.pane_id);
+                                let row_action =
+                                    render_notification_row(ui, notif, &self.theme, context);
+                                match row_action {
+                                    RowAction::Jump => {
+                                        jump_to = Some((notif.workspace_id, notif.pane_id));
+                                        close_panel = true;
                                     }
-                                    let age = render::format_duration(notif.created_at.elapsed());
-                                    ui.label(
-                                        egui::RichText::new(age)
-                                            .small()
-                                            .color(egui::Color32::from_gray(80)),
-                                    );
-                                });
-
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if ui.small_button("×").clicked() {
-                                            remove_id = Some(notif.id);
-                                        }
-                                    },
-                                );
-                            });
-                            if response.response.interact(egui::Sense::click()).clicked() {
-                                jump_to = Some((notif.workspace_id, notif.pane_id));
-                                close_panel = true;
+                                    RowAction::Dismiss => {
+                                        remove_id = Some(notif.id);
+                                    }
+                                    RowAction::None => {}
+                                }
+                                ui.add_space(6.0);
                             }
-                            ui.separator();
-                        }
-                    });
+                        });
                 }
             });
 
@@ -360,5 +448,201 @@ impl AmuxApp {
         if close_panel {
             self.show_notification_panel = false;
         }
+    }
+}
+
+enum RowAction {
+    None,
+    Jump,
+    Dismiss,
+}
+
+/// Render a single cmux-style card row for a notification.
+fn render_notification_row(
+    ui: &mut egui::Ui,
+    notif: &amux_notify::Notification,
+    theme: &theme::Theme,
+    context: Option<&(String, String)>,
+) -> RowAction {
+    let row_padding = egui::Margin {
+        left: 12,
+        right: 10,
+        top: 10,
+        bottom: 10,
+    };
+    let outer_margin = egui::Margin::symmetric(8, 0);
+
+    let frame = egui::Frame::new()
+        .outer_margin(outer_margin)
+        .inner_margin(row_padding)
+        .fill(egui::Color32::from_gray(40))
+        .corner_radius(8.0);
+
+    let mut action = RowAction::None;
+    let response = frame
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_top(|ui| {
+                // Unread dot (circle) on the left
+                let dot_diam = 8.0;
+                let (dot_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(dot_diam, 18.0), egui::Sense::hover());
+                let dot_center = egui::pos2(dot_rect.left() + dot_diam / 2.0, dot_rect.top() + 7.0);
+                if !notif.read {
+                    ui.painter()
+                        .circle_filled(dot_center, dot_diam / 2.0, theme.chrome.accent);
+                } else {
+                    ui.painter().circle_stroke(
+                        dot_center,
+                        dot_diam / 2.0,
+                        egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
+                    );
+                }
+
+                ui.add_space(8.0);
+
+                ui.vertical(|ui| {
+                    let avail = ui.available_width();
+                    // Title + timestamp row
+                    ui.horizontal(|ui| {
+                        let title_text = if notif.title.is_empty() {
+                            first_line(&notif.body)
+                        } else {
+                            notif.title.clone()
+                        };
+                        let age = render::format_duration(notif.created_at.elapsed());
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(avail - 48.0, 18.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(title_text)
+                                            .font(fonts::bold_font(13.0))
+                                            .color(egui::Color32::from_gray(232)),
+                                    )
+                                    .truncate(),
+                                );
+                            },
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(age)
+                                    .size(10.0)
+                                    .color(egui::Color32::from_gray(120)),
+                            );
+                        });
+                    });
+
+                    // Subtitle (optional)
+                    if !notif.subtitle.is_empty() {
+                        ui.add_space(2.0);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&notif.subtitle)
+                                    .size(11.5)
+                                    .color(egui::Color32::from_gray(190)),
+                            )
+                            .truncate(),
+                        );
+                    }
+
+                    // Body (3-line soft limit)
+                    if !notif.body.is_empty()
+                        && (!notif.title.is_empty() || !notif.subtitle.is_empty())
+                    {
+                        ui.add_space(3.0);
+                        let body_display = clamp_lines(&notif.body, 3, 220);
+                        ui.label(
+                            egui::RichText::new(body_display)
+                                .size(11.5)
+                                .color(egui::Color32::from_gray(170)),
+                        );
+                    }
+
+                    // Context caption (Workspace · Tab)
+                    if let Some((ws_title, tab_title)) = context {
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(format!("{ws_title} · {tab_title}"))
+                                .size(10.5)
+                                .color(egui::Color32::from_gray(115)),
+                        );
+                    }
+                });
+            });
+        })
+        .response;
+
+    // Whole-card click to jump.
+    let click_response = response.interact(egui::Sense::click());
+    if click_response.clicked() {
+        action = RowAction::Jump;
+    }
+    if click_response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        // Hover tint
+        ui.painter().rect_stroke(
+            response.rect.shrink(0.5),
+            8.0,
+            egui::Stroke::new(1.0, egui::Color32::from_white_alpha(18)),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    // Dismiss (×) button in the top-right corner of the card.
+    let close_size = 18.0;
+    let close_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            response.rect.max.x - close_size - 6.0,
+            response.rect.min.y + 6.0,
+        ),
+        egui::vec2(close_size, close_size),
+    );
+    let close_id = ui.id().with(("notif_close", notif.id));
+    let close_resp = ui.interact(close_rect, close_id, egui::Sense::click());
+    if close_resp.hovered() {
+        ui.painter()
+            .rect_filled(close_rect, 4.0, egui::Color32::from_white_alpha(22));
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let close_color = if close_resp.hovered() {
+        egui::Color32::from_gray(220)
+    } else {
+        egui::Color32::from_gray(130)
+    };
+    ui.painter().text(
+        close_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "\u{2715}",
+        egui::FontId::proportional(11.0),
+        close_color,
+    );
+    if close_resp.clicked() {
+        action = RowAction::Dismiss;
+    }
+
+    action
+}
+
+fn first_line(s: &str) -> String {
+    s.lines().next().unwrap_or("").to_string()
+}
+
+/// Return at most `max_lines` lines from `s`, collapsing further content
+/// with a trailing "…". Also hard-caps total character count.
+fn clamp_lines(s: &str, max_lines: usize, max_chars: usize) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+    let truncated_lines = if lines.len() > max_lines {
+        let joined: String = lines[..max_lines].join("\n");
+        format!("{joined}\u{2026}")
+    } else {
+        s.to_string()
+    };
+    if truncated_lines.chars().count() > max_chars {
+        let clipped: String = truncated_lines.chars().take(max_chars - 1).collect();
+        format!("{clipped}\u{2026}")
+    } else {
+        truncated_lines
     }
 }
