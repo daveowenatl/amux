@@ -394,7 +394,7 @@ pub(crate) fn restore_session(
             "bell" => NotificationSource::Bell,
             _ => NotificationSource::Cli,
         };
-        store.push_restored(
+        store.push_read(
             saved_n.workspace_id,
             saved_n.pane_id,
             saved_n.surface_id,
