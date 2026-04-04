@@ -357,7 +357,6 @@ impl AmuxApp {
                                         .size(13.0)
                                         .color(egui::Color32::from_gray(160)),
                                 ))
-                                .on_hover_text("Close")
                                 .clicked()
                             {
                                 close_panel = true;
@@ -435,7 +434,7 @@ impl AmuxApp {
             });
 
         if mark_all {
-            self.notifications.mark_all_read();
+            self.notifications.clear_all();
         }
         if let Some(id) = remove_id {
             self.notifications.remove_notification(id);
