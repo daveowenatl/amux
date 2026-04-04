@@ -57,9 +57,10 @@ impl GpuRenderer {
         let font_size = font_config.size;
         let line_height = (font_size * 1.3).ceil();
         let metrics = Metrics::new(font_size, line_height);
-        // Ceil cell width to an integer pixel to prevent hairline gaps between
-        // adjacent cells caused by fractional coordinates accumulating rounding errors.
-        let cell_width = font::measure_cell_width(&mut font_system, metrics).ceil();
+        // Use raw fractional advance width — no logical-pixel rounding.
+        // Ghostty rounds only after DPI scaling; rounding at logical size
+        // either inflates (ceil) or clips (round) the grid.
+        let cell_width = font::measure_cell_width(&mut font_system, metrics);
         let cell_height = line_height;
         let decoration_metrics = font::measure_decoration_metrics(&mut font_system, font_size);
 
@@ -147,7 +148,7 @@ impl GpuRenderer {
             .callback_resources
             .get_mut::<TerminalGpuResources>()
         {
-            let cell_width = font::measure_cell_width(&mut r.font_system, metrics).ceil();
+            let cell_width = font::measure_cell_width(&mut r.font_system, metrics);
             r.metrics = metrics;
             r.decoration_metrics = font::measure_decoration_metrics(&mut r.font_system, font_size);
             // Clear all pane render states to force full rebuild with new metrics.

@@ -93,29 +93,36 @@ pub fn create_font_system(config: &FontConfig) -> FontSystem {
     font_system
 }
 
-/// Measure the width of a single monospace cell by laying out "M" with
-/// cosmic-text and reading the glyph advance. Falls back to `font_size * 0.6`.
+/// Measure the width of a single monospace cell by finding the maximum advance
+/// width across all printable ASCII glyphs (0x20..=0x7E), matching Ghostty's
+/// approach. Falls back to `font_size * 0.6`.
 pub fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics) -> f32 {
-    let mut buffer = Buffer::new_empty(metrics);
+    let attrs = Attrs::new().family(Family::Monospace);
+    let mut max_width: f32 = 0.0;
+
+    // Shape all printable ASCII at once and find the widest laid-out glyph.
+    // Preserves the "max advance" behavior without per-character allocations.
+    const PRINTABLE_ASCII: &str =
+        " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+    let mut buf = Buffer::new_empty(metrics);
     {
-        let mut borrowed = buffer.borrow_with(font_system);
-        borrowed.set_size(Some(200.0), Some(metrics.line_height));
-        borrowed.set_text(
-            "M",
-            Attrs::new().family(Family::Monospace),
-            Shaping::Advanced,
-        );
+        let mut borrowed = buf.borrow_with(font_system);
+        borrowed.set_size(Some(f32::INFINITY), Some(metrics.line_height));
+        borrowed.set_text(PRINTABLE_ASCII, attrs, Shaping::Advanced);
         borrowed.shape_until_scroll(true);
     }
-
-    for run in buffer.layout_runs() {
-        if let Some(glyph) = run.glyphs.iter().next() {
-            return glyph.w;
+    for run in buf.layout_runs() {
+        for glyph in run.glyphs.iter() {
+            max_width = max_width.max(glyph.w);
         }
     }
 
-    // Fallback: estimate from font size
-    metrics.font_size * 0.6
+    if max_width > 0.0 {
+        max_width
+    } else {
+        // Fallback: estimate from font size
+        metrics.font_size * 0.6
+    }
 }
 
 /// Extract decoration metrics (underline/strikethrough position and thickness)
