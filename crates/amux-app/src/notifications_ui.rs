@@ -206,56 +206,55 @@ impl AmuxApp {
         }
     }
 
-    /// Render a bell button in the top-right of the titlebar strip.
-    /// Shows an unread-count badge when there are unread notifications.
-    /// Clicking toggles the notifications panel (cmux-style popover).
-    pub(crate) fn render_notification_bell(&mut self, ui: &mut egui::Ui, full_rect: egui::Rect) {
-        let unread = self.notifications.total_unread();
-        let btn_size = egui::vec2(26.0, 22.0);
-        let margin = egui::vec2(8.0, 3.0);
-        let btn_rect = egui::Rect::from_min_size(
-            egui::pos2(
-                full_rect.max.x - btn_size.x - margin.x,
-                full_rect.min.y + margin.y,
-            ),
-            btn_size,
+    /// Render the top-left titlebar icon row: sidebar toggle, notifications bell,
+    /// and new workspace — mirroring cmux's titlebar layout.
+    pub(crate) fn render_titlebar_icons(&mut self, ui: &mut egui::Ui, full_rect: egui::Rect) {
+        let icon_size = egui::vec2(28.0, 22.0);
+        let gap = 2.0;
+        // On macOS the traffic-light buttons live in the leftmost ~76px. On
+        // Windows/Linux there are no traffic lights so the icon row starts
+        // at the left edge.
+        #[cfg(target_os = "macos")]
+        let left_inset = 78.0;
+        #[cfg(not(target_os = "macos"))]
+        let left_inset = 8.0;
+        let top_y = full_rect.min.y + 3.0;
+        let mut x = full_rect.min.x + left_inset;
+
+        // --- Sidebar toggle ---
+        let r_sidebar = egui::Rect::from_min_size(egui::pos2(x, top_y), icon_size);
+        let sidebar_on = self.sidebar.visible;
+        let resp_sidebar = draw_icon_button(
+            ui,
+            r_sidebar,
+            ui.id().with("titlebar_sidebar_btn"),
+            sidebar_on,
+            &self.theme,
+            "Toggle sidebar",
+            draw_sidebar_glyph,
         );
-
-        let id = ui.id().with("notif_bell_button");
-        let response = ui.interact(btn_rect, id, egui::Sense::click());
-        let painter = ui.painter();
-
-        // Hover/active background
-        let bg_color = if response.is_pointer_button_down_on() {
-            egui::Color32::from_white_alpha(24)
-        } else if response.hovered() {
-            egui::Color32::from_white_alpha(14)
-        } else {
-            egui::Color32::TRANSPARENT
-        };
-        if bg_color != egui::Color32::TRANSPARENT {
-            painter.rect_filled(btn_rect, 5.0, bg_color);
+        if resp_sidebar.clicked() {
+            self.sidebar.visible = !self.sidebar.visible;
         }
+        x += icon_size.x + gap;
 
-        // Bell glyph.
-        let bell_color = if self.show_notification_panel {
-            self.theme.chrome.accent
-        } else if response.hovered() {
-            egui::Color32::from_gray(230)
-        } else {
-            egui::Color32::from_gray(170)
-        };
-        painter.text(
-            btn_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "\u{1F514}", // 🔔
-            egui::FontId::proportional(13.0),
-            bell_color,
+        // --- Notifications bell ---
+        let unread = self.notifications.total_unread();
+        let r_bell = egui::Rect::from_min_size(egui::pos2(x, top_y), icon_size);
+        let bell_on = self.show_notification_panel;
+        let resp_bell = draw_icon_button(
+            ui,
+            r_bell,
+            ui.id().with("titlebar_bell_btn"),
+            bell_on,
+            &self.theme,
+            "Notifications",
+            draw_bell_glyph,
         );
-
-        // Unread badge (red dot with count).
+        // Unread badge (red dot + count).
         if unread > 0 {
-            let badge_center = egui::pos2(btn_rect.max.x - 4.0, btn_rect.min.y + 5.0);
+            let painter = ui.painter();
+            let badge_center = egui::pos2(r_bell.max.x - 5.0, r_bell.min.y + 5.0);
             let badge_radius = 6.5;
             painter.circle_filled(
                 badge_center,
@@ -281,12 +280,24 @@ impl AmuxApp {
                 egui::Color32::WHITE,
             );
         }
-
-        if response.clicked() {
+        if resp_bell.clicked() {
             self.show_notification_panel = !self.show_notification_panel;
         }
-        if response.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        x += icon_size.x + gap;
+
+        // --- New workspace (+) ---
+        let r_new = egui::Rect::from_min_size(egui::pos2(x, top_y), icon_size);
+        let resp_new = draw_icon_button(
+            ui,
+            r_new,
+            ui.id().with("titlebar_new_ws_btn"),
+            false,
+            &self.theme,
+            "New workspace",
+            draw_plus_glyph,
+        );
+        if resp_new.clicked() {
+            self.create_workspace(None);
         }
     }
 
@@ -448,6 +459,128 @@ impl AmuxApp {
             self.show_notification_panel = false;
         }
     }
+}
+
+/// Shared chrome for a titlebar icon button: hover/active background tint,
+/// cursor, tooltip, and a caller-supplied glyph drawer.
+fn draw_icon_button<F>(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    id: egui::Id,
+    active: bool,
+    theme: &theme::Theme,
+    tooltip: &str,
+    draw_glyph: F,
+) -> egui::Response
+where
+    F: FnOnce(&egui::Painter, egui::Rect, egui::Color32),
+{
+    let response = ui
+        .interact(rect, id, egui::Sense::click())
+        .on_hover_text(tooltip);
+    let painter = ui.painter();
+
+    // Background tint.
+    let bg = if response.is_pointer_button_down_on() {
+        egui::Color32::from_white_alpha(28)
+    } else if active {
+        egui::Color32::from_white_alpha(22)
+    } else if response.hovered() {
+        egui::Color32::from_white_alpha(14)
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    if bg != egui::Color32::TRANSPARENT {
+        painter.rect_filled(rect, 5.0, bg);
+    }
+
+    let color = if active {
+        theme.chrome.accent
+    } else if response.hovered() {
+        egui::Color32::from_gray(232)
+    } else {
+        egui::Color32::from_gray(170)
+    };
+    draw_glyph(painter, rect, color);
+
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
+/// Monochrome sidebar-toggle glyph: rounded rect with a filled left column.
+fn draw_sidebar_glyph(p: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let gw = 14.0;
+    let gh = 11.0;
+    let origin = egui::pos2(rect.center().x - gw / 2.0, rect.center().y - gh / 2.0);
+    let outer = egui::Rect::from_min_size(origin, egui::vec2(gw, gh));
+    p.rect_stroke(
+        outer,
+        1.5,
+        egui::Stroke::new(1.4, color),
+        egui::StrokeKind::Inside,
+    );
+    // Left column separator + fill.
+    let split_x = origin.x + 4.5;
+    p.line_segment(
+        [
+            egui::pos2(split_x, origin.y),
+            egui::pos2(split_x, origin.y + gh),
+        ],
+        egui::Stroke::new(1.2, color),
+    );
+    // Two tiny dots in the left column to mimic cmux's sidebar glyph.
+    for dy in [3.0, 7.0] {
+        p.circle_filled(egui::pos2(origin.x + 2.2, origin.y + dy), 0.6, color);
+    }
+}
+
+/// Monochrome bell glyph approximating SF Symbol "bell".
+fn draw_bell_glyph(p: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let c = rect.center();
+    let stroke = egui::Stroke::new(1.3, color);
+    // Bell body: a rounded trapezoid, represented as an open path.
+    let top_y = c.y - 5.0;
+    let bot_y = c.y + 4.0;
+    let half_top = 3.0;
+    let half_bot = 5.5;
+    let path = vec![
+        egui::pos2(c.x - half_bot, bot_y),
+        egui::pos2(c.x - half_top, top_y + 1.0),
+        egui::pos2(c.x - half_top + 0.5, top_y - 0.5),
+        egui::pos2(c.x + half_top - 0.5, top_y - 0.5),
+        egui::pos2(c.x + half_top, top_y + 1.0),
+        egui::pos2(c.x + half_bot, bot_y),
+    ];
+    p.add(egui::Shape::line(path, stroke));
+    // Bottom rim.
+    p.line_segment(
+        [
+            egui::pos2(c.x - half_bot - 0.5, bot_y),
+            egui::pos2(c.x + half_bot + 0.5, bot_y),
+        ],
+        stroke,
+    );
+    // Clapper.
+    p.circle_filled(egui::pos2(c.x, bot_y + 2.2), 1.1, color);
+    // Top cap.
+    p.circle_filled(egui::pos2(c.x, top_y - 1.0), 0.9, color);
+}
+
+/// Monochrome plus glyph.
+fn draw_plus_glyph(p: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let c = rect.center();
+    let arm = 6.0;
+    let stroke = egui::Stroke::new(1.5, color);
+    p.line_segment(
+        [egui::pos2(c.x - arm, c.y), egui::pos2(c.x + arm, c.y)],
+        stroke,
+    );
+    p.line_segment(
+        [egui::pos2(c.x, c.y - arm), egui::pos2(c.x, c.y + arm)],
+        stroke,
+    );
 }
 
 enum RowAction {

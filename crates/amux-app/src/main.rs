@@ -590,8 +590,8 @@ impl eframe::App for AmuxApp {
                     0.0,
                     self.theme.titlebar_bg(),
                 );
-                // Notification bell button in the top-right of the titlebar strip.
-                self.render_notification_bell(ui, full_rect);
+                // Top-left titlebar icons: sidebar toggle, notifications, new workspace.
+                self.render_titlebar_icons(ui, full_rect);
                 // Shift content area down by the top padding.
                 let panel_rect = egui::Rect::from_min_max(
                     egui::pos2(full_rect.min.x, full_rect.min.y + TERMINAL_TOP_PAD),
