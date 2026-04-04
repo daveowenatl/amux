@@ -1196,8 +1196,16 @@ impl AmuxApp {
         let pane_u64 = pane_id;
         let ring_rect = rect.shrink(2.0);
 
-        // 1. Persistent unread ring (NOT on focused pane)
-        if !is_focused && self.notifications.pane_unread(pane_u64) > 0 {
+        // Is a flash animation currently running? (used to suppress the
+        // persistent ring so the two don't double-stroke the same path)
+        let flash_active = self
+            .notifications
+            .pane_state(pane_u64)
+            .and_then(|s| s.flash_started_at)
+            .is_some_and(|started| started.elapsed().as_secs_f32() < FLASH_DURATION);
+
+        // 1. Persistent unread ring (NOT on focused pane, NOT during flash)
+        if !is_focused && !flash_active && self.notifications.pane_unread(pane_u64) > 0 {
             // Steady blue ring with glow
             let ring_color = egui::Color32::from_rgba_unmultiplied(40, 120, 255, 89); // 0.35 * 255
             ui.painter().rect_stroke(
@@ -1221,9 +1229,12 @@ impl AmuxApp {
                     };
                     let glow_alpha = (alpha * 0.6 * 255.0) as u8;
                     let ring_alpha = (alpha * 255.0) as u8;
-                    // Glow (wider, more transparent)
+                    // Glow (wider, more transparent). Anchor on ring_rect with
+                    // Outside kind so it butts up directly against the inner ring
+                    // at the ring_rect boundary — any gap or expansion leaves a
+                    // visible 1px dark line where the terminal bg shows through.
                     ui.painter().rect_stroke(
-                        ring_rect.expand(1.0),
+                        ring_rect,
                         6.0,
                         egui::Stroke::new(
                             4.0,
