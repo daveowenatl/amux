@@ -325,6 +325,7 @@ impl AmuxApp {
 
         egui::Window::new("Notifications")
             .title_bar(false)
+            .movable(false)
             .collapsible(false)
             .resizable(true)
             .default_size([400.0, 500.0])
@@ -575,7 +576,8 @@ fn render_notification_row(
         .response;
 
     // Whole-card click to jump.
-    let click_response = response.interact(egui::Sense::click());
+    let row_id = ui.id().with(("notif_row", notif.id));
+    let click_response = ui.interact(response.rect, row_id, egui::Sense::click());
     if click_response.clicked() {
         action = RowAction::Jump;
     }
