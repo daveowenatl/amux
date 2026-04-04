@@ -292,7 +292,7 @@ impl AmuxApp {
 
     pub(crate) fn render_notification_panel(&mut self, ctx: &egui::Context) {
         let mut close_panel = false;
-        let mut mark_all = false;
+        let mut clear_all = false;
         let mut jump_to: Option<(u64, u64)> = None; // (workspace_id, pane_id)
         let mut remove_id: Option<u64> = None;
 
@@ -369,7 +369,7 @@ impl AmuxApp {
                                 ))
                                 .clicked()
                             {
-                                mark_all = true;
+                                clear_all = true;
                             }
                         });
                     },
@@ -412,8 +412,7 @@ impl AmuxApp {
                         .show(ui, |ui| {
                             ui.add_space(6.0);
                             // Flat chronological list (newest first), matching cmux.
-                            let ordered: Vec<_> = notifications.iter().rev().collect();
-                            for notif in &ordered {
+                            for notif in notifications.iter().rev() {
                                 let context = context_for.get(&notif.pane_id);
                                 let row_action =
                                     render_notification_row(ui, notif, &self.theme, context);
@@ -433,7 +432,7 @@ impl AmuxApp {
                 }
             });
 
-        if mark_all {
+        if clear_all {
             self.notifications.clear_all();
         }
         if let Some(id) = remove_id {
@@ -512,7 +511,7 @@ fn render_notification_row(
                         };
                         let age = render::format_duration(notif.created_at.elapsed());
                         ui.allocate_ui_with_layout(
-                            egui::vec2(avail - 48.0, 18.0),
+                            egui::vec2((avail - 48.0).max(0.0), 18.0),
                             egui::Layout::left_to_right(egui::Align::Center),
                             |ui| {
                                 ui.add(
