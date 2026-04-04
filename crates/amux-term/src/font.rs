@@ -100,20 +100,20 @@ pub fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics) -> f32
     let attrs = Attrs::new().family(Family::Monospace);
     let mut max_width: f32 = 0.0;
 
-    // Measure each printable ASCII character individually to find the widest.
-    for ch in ' '..='~' {
-        let mut buf = Buffer::new_empty(metrics);
-        {
-            let mut borrowed = buf.borrow_with(font_system);
-            borrowed.set_size(Some(200.0), Some(metrics.line_height));
-            let s: String = ch.to_string();
-            borrowed.set_text(&s, attrs, Shaping::Advanced);
-            borrowed.shape_until_scroll(true);
-        }
-        for run in buf.layout_runs() {
-            if let Some(glyph) = run.glyphs.first() {
-                max_width = max_width.max(glyph.w);
-            }
+    // Shape all printable ASCII at once and find the widest laid-out glyph.
+    // Preserves the "max advance" behavior without per-character allocations.
+    const PRINTABLE_ASCII: &str =
+        " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+    let mut buf = Buffer::new_empty(metrics);
+    {
+        let mut borrowed = buf.borrow_with(font_system);
+        borrowed.set_size(Some(f32::INFINITY), Some(metrics.line_height));
+        borrowed.set_text(PRINTABLE_ASCII, attrs, Shaping::Advanced);
+        borrowed.shape_until_scroll(true);
+    }
+    for run in buf.layout_runs() {
+        for glyph in run.glyphs.iter() {
+            max_width = max_width.max(glyph.w);
         }
     }
 

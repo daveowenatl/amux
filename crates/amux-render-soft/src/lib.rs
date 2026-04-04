@@ -44,7 +44,10 @@ impl SoftRenderer {
         let line_height = (font_size * 1.3).ceil();
         let metrics = Metrics::new(font_size, line_height);
 
-        let cell_width = font::measure_cell_width(&mut font_system, metrics);
+        // Soft renderer does integer pixel math (i32 casts per column), so
+        // accumulation of fractional widths would cause gaps/overlaps. Round
+        // up to whole pixels here; the GPU path keeps the fractional value.
+        let cell_width = font::measure_cell_width(&mut font_system, metrics).ceil();
         let cell_height = line_height;
 
         Self {

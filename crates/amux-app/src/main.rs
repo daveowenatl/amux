@@ -810,10 +810,16 @@ impl AmuxApp {
                         .cwd
                         .as_deref()
                         .map(|p| {
-                            // Replace home dir prefix with ~
+                            // Replace home-dir prefix with ~ using path semantics
+                            // (string strip_prefix would match partial components
+                            // like "/home/dave" vs "/home/dave2").
                             if let Some(home) = dirs::home_dir() {
-                                if let Some(rest) = p.strip_prefix(home.to_str().unwrap_or("")) {
-                                    return format!("~{rest}");
+                                let path = std::path::Path::new(p);
+                                if let Ok(rest) = path.strip_prefix(&home) {
+                                    if rest.as_os_str().is_empty() {
+                                        return "~".to_string();
+                                    }
+                                    return format!("~/{}", rest.to_string_lossy());
                                 }
                             }
                             p.to_string()
