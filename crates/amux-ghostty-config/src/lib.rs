@@ -201,9 +201,12 @@ fn config_search_paths() -> Vec<PathBuf> {
         paths.push(config_dir.join("ghostty").join("config"));
     }
 
-    // macOS: ~/Library/Application Support/com.mitchellh.ghostty/config
+    // macOS: Ghostty also reads ~/.config/ghostty/config (XDG path), and most
+    // users put their config there — but on macOS `dirs::config_dir()` returns
+    // `~/Library/Application Support`, so the XDG path isn't covered above.
     #[cfg(target_os = "macos")]
     if let Some(home) = dirs::home_dir() {
+        paths.push(home.join(".config").join("ghostty").join("config"));
         paths.push(
             home.join("Library")
                 .join("Application Support")
@@ -243,6 +246,12 @@ fn load_theme(name: &str, config_dir: Option<&Path>) -> Option<GhosttyConfig> {
     // macOS themes directory
     #[cfg(target_os = "macos")]
     if let Some(home) = dirs::home_dir() {
+        search.push(
+            home.join(".config")
+                .join("ghostty")
+                .join("themes")
+                .join(name),
+        );
         search.push(
             home.join("Library")
                 .join("Application Support")
