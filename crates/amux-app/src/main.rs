@@ -1208,11 +1208,11 @@ impl AmuxApp {
         let pane_u64 = pane_id;
         let ring_rect = rect.shrink(2.0);
 
+        // Fetch pane state once; used for both flash detection and animation.
+        let pane_state = self.notifications.pane_state(pane_u64);
         // Is a flash animation currently running? (used to suppress the
         // persistent ring so the two don't double-stroke the same path)
-        let flash_active = self
-            .notifications
-            .pane_state(pane_u64)
+        let flash_active = pane_state
             .and_then(|s| s.flash_started_at)
             .is_some_and(|started| started.elapsed().as_secs_f32() < FLASH_DURATION);
 
@@ -1230,7 +1230,7 @@ impl AmuxApp {
         }
 
         // 2. Flash animation (on ANY pane including focused)
-        if let Some(state) = self.notifications.pane_state(pane_u64) {
+        if let Some(state) = pane_state {
             if let Some(started) = state.flash_started_at {
                 let elapsed = started.elapsed().as_secs_f32();
                 if elapsed < FLASH_DURATION {
