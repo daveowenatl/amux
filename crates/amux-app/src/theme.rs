@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use egui::Color32;
 use wezterm_term::color::SrgbaTuple;
 
@@ -9,6 +11,8 @@ pub(crate) struct TerminalColors {
     pub foreground: [u8; 3],
     /// 16 ANSI colors: 0-7 normal, 8-15 bright.
     pub ansi: [[u8; 3]; 16],
+    /// Extended palette overrides (indices 16-255) from Ghostty config.
+    pub palette_overrides: HashMap<u8, [u8; 3]>,
     pub cursor_fg: [u8; 3],
     pub cursor_bg: [u8; 3],
     pub selection_fg: [u8; 3],
@@ -69,6 +73,13 @@ impl Theme {
             palette.colors.0[i] =
                 SrgbaTuple(*r as f32 / 255.0, *g as f32 / 255.0, *b as f32 / 255.0, 1.0);
         }
+        // Apply extended palette overrides (16-255).
+        for (&idx, &[r, g, b]) in &self.terminal.palette_overrides {
+            if (idx as usize) < palette.colors.0.len() {
+                palette.colors.0[idx as usize] =
+                    SrgbaTuple(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0);
+            }
+        }
         let to_srgba = |c: [u8; 3]| {
             SrgbaTuple(
                 c[0] as f32 / 255.0,
@@ -123,10 +134,12 @@ impl Theme {
             terminal.selection_fg = c;
         }
 
-        // Apply ANSI palette overrides (0-15).
-        for i in 0..16u8 {
-            if let Some(c) = cfg.ansi_color(i) {
-                terminal.ansi[i as usize] = c;
+        // Apply ANSI palette overrides (0-15) and extended palette (16-255).
+        for (&idx, &color) in cfg.palette_overrides() {
+            if (idx as usize) < 16 {
+                terminal.ansi[idx as usize] = color;
+            } else {
+                terminal.palette_overrides.insert(idx, color);
             }
         }
 
@@ -192,6 +205,7 @@ impl Default for Theme {
                     [0x7d, 0xcf, 0xff], // 14 bright cyan
                     [0xc0, 0xca, 0xf5], // 15 bright white
                 ],
+                palette_overrides: HashMap::new(),
                 cursor_fg: [0x15, 0x16, 0x1e],
                 cursor_bg: [0xc0, 0xca, 0xf5],
                 selection_fg: [0xc0, 0xca, 0xf5],

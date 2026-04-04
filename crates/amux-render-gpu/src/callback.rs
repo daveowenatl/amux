@@ -83,6 +83,7 @@ pub struct PaneRenderState {
     cursor_x: usize,
     cursor_y: i64,
     cursor_visible: bool,
+    cursor_blink_hidden: bool,
     cursor_shape: CursorShape,
     scroll_offset: usize,
     is_focused: bool,
@@ -135,6 +136,7 @@ impl PaneRenderState {
             cursor_x: 0,
             cursor_y: 0,
             cursor_visible: true,
+            cursor_blink_hidden: false,
             cursor_shape: CursorShape::Default,
             scroll_offset: 0,
             is_focused: false,
@@ -187,6 +189,7 @@ impl PaneRenderState {
         self.selection_range != snap.selection_range
             || self.highlight_hash != hash_highlight_ranges(&snap.highlight_ranges)
             || self.current_highlight != snap.current_highlight
+            || self.cursor_blink_hidden != snap.cursor_blink_hidden
     }
 
     /// Update the fingerprint to match the current state.
@@ -202,6 +205,7 @@ impl PaneRenderState {
         self.cursor_x = snap.cursor_x;
         self.cursor_y = snap.cursor_y;
         self.cursor_visible = snap.cursor_visible;
+        self.cursor_blink_hidden = snap.cursor_blink_hidden;
         self.cursor_shape = snap.cursor_shape;
         self.scroll_offset = snap.scroll_offset;
         self.is_focused = snap.is_focused;
@@ -286,6 +290,9 @@ pub struct TerminalGpuResources {
     pub curly_tile: Option<crate::atlas::AtlasEntry>,
     /// Cached dotted underline atlas tile (row of circles).
     pub dotted_tile: Option<crate::atlas::AtlasEntry>,
+    /// Last pixels_per_point used for shape cache and decoration tiles.
+    /// When DPI changes, these caches are invalidated.
+    pub last_pixels_per_point: f32,
 }
 
 impl TerminalGpuResources {
@@ -338,6 +345,16 @@ impl CallbackTrait for TerminalPaintCallback {
             .expect("TerminalGpuResources not initialized");
 
         let pixels_per_point = screen_descriptor.pixels_per_point;
+
+        // Invalidate caches when DPI/scale factor changes.
+        if (resources.last_pixels_per_point - pixels_per_point).abs() > f32::EPSILON {
+            resources.shape_cache.clear();
+            resources.curly_tile = None;
+            resources.dotted_tile = None;
+            resources.atlas_bind_group_dirty = true;
+            resources.last_pixels_per_point = pixels_per_point;
+        }
+
         let viewport_width = screen_descriptor.size_in_pixels[0] as f32;
         let viewport_height = screen_descriptor.size_in_pixels[1] as f32;
         let target_is_srgb = resources.target_is_srgb;
@@ -875,6 +892,7 @@ impl CallbackTrait for TerminalPaintCallback {
         if snap.is_focused
             && snap.scroll_offset == 0
             && snap.cursor_visible
+            && !snap.cursor_blink_hidden
             && snap.cursor_y >= 0
             && (snap.cursor_y as usize) < snap.rows
             && snap.cursor_x < snap.cols

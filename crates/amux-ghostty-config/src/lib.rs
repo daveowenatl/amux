@@ -81,6 +81,14 @@ impl GhosttyConfig {
             };
             let key = key.trim();
             let value = value.trim();
+            // Strip surrounding quotes (single or double).
+            let value = if (value.starts_with('"') && value.ends_with('"'))
+                || (value.starts_with('\'') && value.ends_with('\''))
+            {
+                &value[1..value.len() - 1]
+            } else {
+                value
+            };
 
             if key == "palette" {
                 // palette = INDEX=COLOR  (e.g., "palette = 0=#1a1b26")
@@ -188,9 +196,9 @@ fn parse_hex_color(s: &str) -> Option<[u8; 3]> {
 fn config_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    // XDG / Linux / cross-platform: ~/.config/ghostty/config
-    if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".config").join("ghostty").join("config"));
+    // XDG_CONFIG_HOME / Linux / cross-platform (respects $XDG_CONFIG_HOME).
+    if let Some(config_dir) = dirs::config_dir() {
+        paths.push(config_dir.join("ghostty").join("config"));
     }
 
     // macOS: ~/Library/Application Support/com.mitchellh.ghostty/config
@@ -225,13 +233,8 @@ fn load_theme(name: &str, config_dir: Option<&Path>) -> Option<GhosttyConfig> {
 
     let mut search = Vec::new();
 
-    if let Some(home) = dirs::home_dir() {
-        search.push(
-            home.join(".config")
-                .join("ghostty")
-                .join("themes")
-                .join(name),
-        );
+    if let Some(config_dir) = dirs::config_dir() {
+        search.push(config_dir.join("ghostty").join("themes").join(name));
     }
     if let Some(dir) = config_dir {
         search.push(dir.join("themes").join(name));

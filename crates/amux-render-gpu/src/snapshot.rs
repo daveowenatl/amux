@@ -20,6 +20,9 @@ pub struct TerminalSnapshot {
     pub cursor_x: usize,
     pub cursor_y: i64,
     pub cursor_visible: bool,
+    /// Cursor hidden by blink animation (separate from cursor_visible to keep
+    /// ligature run-breaking stable across blink cycles).
+    pub cursor_blink_hidden: bool,
     pub cursor_shape: CursorShape,
     pub default_bg: [f32; 4],
     pub cursor_bg: [f32; 4],
@@ -227,6 +230,7 @@ impl TerminalSnapshot {
             cursor_x: cursor.x,
             cursor_y: cursor.y,
             cursor_visible: cursor.visible,
+            cursor_blink_hidden: false,
             cursor_shape: cursor.shape,
             default_bg: dimmed_bg,
             cursor_bg,
@@ -408,6 +412,7 @@ impl TerminalSnapshot {
             cursor_x: cursor.x,
             cursor_y: cursor.y,
             cursor_visible: cursor.visible,
+            cursor_blink_hidden: false,
             cursor_shape: cursor.shape,
             default_bg: dimmed_bg,
             cursor_bg,

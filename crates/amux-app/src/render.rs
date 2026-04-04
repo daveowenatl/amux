@@ -55,8 +55,10 @@ pub(crate) fn render_pane(
         );
 
         // Apply cursor blink: hide cursor during "off" phase for blinking shapes.
+        // Use a separate flag so ligature run-breaking (which keys on cursor_visible)
+        // stays stable across blink cycles, preventing text flicker.
         if !cursor_blink_on && is_blinking_cursor(snapshot.cursor_shape) {
-            snapshot.cursor_visible = false;
+            snapshot.cursor_blink_hidden = true;
         }
 
         // Add Kitty inline images for the wezterm backend.

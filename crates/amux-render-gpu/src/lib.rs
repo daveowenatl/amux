@@ -85,6 +85,7 @@ impl GpuRenderer {
                 image_sampler,
                 curly_tile: None,
                 dotted_tile: None,
+                last_pixels_per_point: 0.0,
             });
 
         Self {

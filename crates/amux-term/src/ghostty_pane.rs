@@ -222,34 +222,24 @@ where
         let mut lines = Vec::new();
         while let Some(row) = row_iteration.next() {
             let mut line = String::new();
-            let mut col: usize = 0; // logical column (cell index), NOT byte offset
-            let mut char_count: usize = 0; // chars written so far
+            let mut col: usize = 0; // cell index (always +1 per cell)
+            let mut visible_col: usize = 0; // cells actually written
             if let Ok(mut cell_iteration) = cell_iter.update(row) {
                 while let Some(cell) = cell_iteration.next() {
-                    let has_content = if let Ok(chars) = cell.graphemes() {
-                        if chars.is_empty() {
-                            false
-                        } else {
+                    if let Ok(chars) = cell.graphemes() {
+                        if !chars.is_empty() {
                             // Pad with spaces up to this column if we skipped blank cells.
-                            while char_count < col {
+                            while visible_col < col {
                                 line.push(' ');
-                                char_count += 1;
+                                visible_col += 1;
                             }
                             for ch in chars {
                                 line.push(ch);
-                                char_count += 1;
                             }
-                            true
+                            visible_col += 1;
                         }
-                    } else {
-                        false
-                    };
-                    // Advance column by 1 per cell.
-                    if has_content {
-                        col = char_count;
-                    } else {
-                        col += 1;
                     }
+                    col += 1;
                 }
             }
             lines.push(line.trim_end().to_string());
@@ -330,6 +320,9 @@ where
                         match cur_style.underline {
                             GhosttyUnderline::Single => line.push_str(";4"),
                             GhosttyUnderline::Double => line.push_str(";21"),
+                            GhosttyUnderline::Curly => line.push_str(";4:3"),
+                            GhosttyUnderline::Dotted => line.push_str(";4:4"),
+                            GhosttyUnderline::Dashed => line.push_str(";4:5"),
                             _ => {}
                         }
                         if cur_style.inverse {
@@ -343,15 +336,32 @@ where
                         }
 
                         // Foreground color
-                        if let Some(fg) = cur_fg {
+                        {
                             use std::fmt::Write;
-                            let _ = write!(line, ";38;2;{};{};{}", fg.r, fg.g, fg.b);
-                        }
+                            if let Some(fg) = cur_fg {
+                                let _ = write!(line, ";38;2;{};{};{}", fg.r, fg.g, fg.b);
+                            }
 
-                        // Background color
-                        if let Some(bg) = cur_bg {
-                            use std::fmt::Write;
-                            let _ = write!(line, ";48;2;{};{};{}", bg.r, bg.g, bg.b);
+                            // Background color
+                            if let Some(bg) = cur_bg {
+                                let _ = write!(line, ";48;2;{};{};{}", bg.r, bg.g, bg.b);
+                            }
+
+                            // Underline color (SGR 58;2;R;G;B)
+                            if !matches!(cur_style.underline, GhosttyUnderline::None) {
+                                if let Some(uc) = resolve_style_color(
+                                    &cur_style.underline_color,
+                                    &self.cached_palette.colors,
+                                ) {
+                                    let _ = write!(
+                                        line,
+                                        ";58;2;{};{};{}",
+                                        (uc.0 * 255.0) as u8,
+                                        (uc.1 * 255.0) as u8,
+                                        (uc.2 * 255.0) as u8
+                                    );
+                                }
+                            }
                         }
 
                         line.push('m');

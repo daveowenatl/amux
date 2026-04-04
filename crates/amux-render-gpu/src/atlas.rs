@@ -290,6 +290,9 @@ impl GlyphAtlas {
         height: u32,
         data: &[u8],
     ) -> Option<AtlasEntry> {
+        if width == 0 || height == 0 {
+            return None;
+        }
         let (x, y) = self.mono.allocate(width, height)?;
         self.mono.upload_region(queue, x, y, width, height, data);
         let s = self.mono.size as f32;
