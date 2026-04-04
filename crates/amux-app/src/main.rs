@@ -803,7 +803,7 @@ impl AmuxApp {
                     .user_title
                     .as_deref()
                     .unwrap_or_else(|| surface.pane.title());
-                let title = if raw_title.is_empty() || raw_title == "?" {
+                let raw = if raw_title.is_empty() || raw_title == "?" {
                     // Fall back to working directory path.
                     surface
                         .metadata
@@ -825,11 +825,17 @@ impl AmuxApp {
                             p.to_string()
                         })
                         .unwrap_or_else(|| "Tab".to_string())
-                } else if raw_title.chars().count() > 20 {
-                    let prefix: String = raw_title.chars().take(17).collect();
-                    format!("{prefix}...")
                 } else {
                     raw_title.to_string()
+                };
+                // Cap at 20 chars for any title source — long cwd paths would
+                // otherwise overflow the TAB_MAX_WIDTH-clamped tab and overlap
+                // neighbors. Ellipsize with "..." when truncated.
+                let title = if raw.chars().count() > 20 {
+                    let prefix: String = raw.chars().take(17).collect();
+                    format!("{prefix}...")
+                } else {
+                    raw
                 };
                 let label = format!("{tab_icon}{title}");
 
