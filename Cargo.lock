@@ -114,6 +114,7 @@ name = "amux-app"
 version = "0.1.0"
 dependencies = [
  "amux-core",
+ "amux-ghostty-config",
  "amux-ipc",
  "amux-layout",
  "amux-notify",
@@ -167,6 +168,14 @@ dependencies = [
  "portable-pty",
  "serde",
  "toml",
+ "tracing",
+]
+
+[[package]]
+name = "amux-ghostty-config"
+version = "0.1.0"
+dependencies = [
+ "dirs",
  "tracing",
 ]
 

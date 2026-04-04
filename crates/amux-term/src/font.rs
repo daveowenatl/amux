@@ -13,6 +13,21 @@ pub static SANS_SEMIBOLD: &[u8] = include_bytes!("../fonts/IBMPlexSans-SemiBold.
 pub const DEFAULT_FONT_FAMILY: &str = "IBM Plex Mono";
 pub const DEFAULT_FONT_SIZE: f32 = 14.0;
 
+/// Font decoration metrics extracted from OpenType tables (POST/OS2).
+/// All values are in logical points at the current font size. Callers typically
+/// convert these to physical pixels by multiplying with `pixels_per_point`.
+#[derive(Clone, Copy, Debug)]
+pub struct DecorationMetrics {
+    /// Distance from baseline to top of underline stroke (positive = below baseline),
+    /// in logical points.
+    pub underline_offset: f32,
+    /// Distance from baseline to top of strikethrough stroke (positive = above baseline),
+    /// in logical points.
+    pub strikeout_offset: f32,
+    /// Recommended stroke thickness for underline/strikethrough, in logical points.
+    pub stroke_size: f32,
+}
+
 /// Font configuration — just a name and a size (cmux/Ghostty pattern).
 /// Renderers resolve the family name against their own font database.
 #[derive(Clone, Debug)]
@@ -101,4 +116,65 @@ pub fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics) -> f32
 
     // Fallback: estimate from font size
     metrics.font_size * 0.6
+}
+
+/// Extract decoration metrics (underline/strikethrough position and thickness)
+/// from the configured monospace font via ttf_parser's OpenType table reader.
+/// Returns values in logical points at the given font size.
+pub fn measure_decoration_metrics(
+    font_system: &mut FontSystem,
+    font_size: f32,
+) -> DecorationMetrics {
+    use cosmic_text::ttf_parser;
+
+    // Query the monospace face that matches the configured monospace family
+    // (set via `set_monospace_family`), rather than picking an arbitrary
+    // monospaced face from the database.
+    let mono_id = font_system.db().query(&cosmic_text::fontdb::Query {
+        families: &[Family::Monospace],
+        ..Default::default()
+    });
+
+    if let Some(id) = mono_id {
+        let result = font_system.db().with_face_data(id, |data, index| {
+            if let Ok(face) = ttf_parser::Face::parse(data, index) {
+                let upem = face.units_per_em() as f32;
+                let scale = font_size / upem;
+
+                // Underline: from POST table (negative means below baseline)
+                let ul_pos = face.underline_metrics().map(|m| m.position as f32 * scale);
+                let ul_thick = face.underline_metrics().map(|m| m.thickness as f32 * scale);
+
+                // Strikethrough: from OS/2 table
+                let st_pos = face.strikeout_metrics().map(|m| m.position as f32 * scale);
+                let st_thick = face.strikeout_metrics().map(|m| m.thickness as f32 * scale);
+
+                let stroke = ul_thick.or(st_thick).unwrap_or(font_size * 0.07).max(1.0);
+
+                return DecorationMetrics {
+                    // Negate: font gives negative for below baseline, we want positive offset
+                    underline_offset: -(ul_pos.unwrap_or(-font_size * 0.15)),
+                    strikeout_offset: st_pos.unwrap_or(font_size * 0.3),
+                    stroke_size: stroke,
+                };
+            }
+            // Parse failed — fallback
+            DecorationMetrics {
+                underline_offset: font_size * 0.15,
+                strikeout_offset: font_size * 0.3,
+                stroke_size: (font_size / 14.0).max(1.0),
+            }
+        });
+
+        if let Some(dm) = result {
+            return dm;
+        }
+    }
+
+    // Fallback: approximate from font size
+    DecorationMetrics {
+        underline_offset: font_size * 0.15,
+        strikeout_offset: font_size * 0.3,
+        stroke_size: (font_size / 14.0).max(1.0),
+    }
 }

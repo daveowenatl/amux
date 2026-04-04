@@ -9,6 +9,7 @@ use wezterm_term::{CursorPosition, StableRowIndex, TerminalSize};
 
 use crate::backend::{
     Color, CursorPos, Palette, ProcessExit, ScreenCell, ScreenRow, StableRow, TerminalBackend,
+    UnderlineStyle,
 };
 use crate::color::resolve_color;
 use crate::config::AmuxTermConfig;
@@ -595,14 +596,34 @@ impl TerminalPane {
                 let fg_srgba = resolve_color(&attrs.foreground(), &palette, true, reverse);
                 let bg_srgba = resolve_color(&attrs.background(), &palette, false, reverse);
 
+                let underline = match attrs.underline() {
+                    wezterm_term::Underline::None => UnderlineStyle::None,
+                    wezterm_term::Underline::Single => UnderlineStyle::Single,
+                    wezterm_term::Underline::Double => UnderlineStyle::Double,
+                    wezterm_term::Underline::Curly => UnderlineStyle::Curly,
+                    wezterm_term::Underline::Dotted => UnderlineStyle::Dotted,
+                    wezterm_term::Underline::Dashed => UnderlineStyle::Dashed,
+                };
+
+                let underline_color = {
+                    let uc = attrs.underline_color();
+                    if uc == wezterm_term::color::ColorAttribute::Default {
+                        None
+                    } else {
+                        Some(Color::from(palette.resolve_fg(uc)))
+                    }
+                };
+
                 cells.push(ScreenCell {
                     text: cell_ref.str().to_string(),
                     fg: Color::from(fg_srgba),
                     bg: Color::from(bg_srgba),
                     bold: attrs.intensity() == wezterm_term::Intensity::Bold,
                     italic: attrs.italic(),
-                    underline: attrs.underline() != wezterm_term::Underline::None,
+                    underline,
+                    underline_color,
                     strikethrough: attrs.strikethrough(),
+                    faint: attrs.intensity() == wezterm_term::Intensity::Half,
                     reverse,
                     hyperlink_url: attrs.hyperlink().map(|h| h.uri().to_string()),
                 });

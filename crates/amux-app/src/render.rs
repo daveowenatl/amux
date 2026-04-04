@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use amux_term::backend::{Color, CursorShape, TerminalBackend};
+use amux_term::backend::{Color, CursorShape, TerminalBackend, UnderlineStyle};
 use amux_term::AnyBackend;
 
 use crate::managed_pane::SelectionState;
@@ -23,6 +23,7 @@ pub(crate) fn render_pane(
     font_size: f32,
     find_highlights: &[(usize, usize, usize)],
     current_highlight: Option<usize>,
+    cursor_blink_on: bool,
     #[cfg(feature = "gpu-renderer")] gpu_renderer: Option<&GpuRenderer>,
     #[cfg(feature = "gpu-renderer")] pane_id: u64,
 ) {
@@ -52,6 +53,13 @@ pub(crate) fn render_pane(
             find_highlights.to_vec(),
             current_highlight,
         );
+
+        // Apply cursor blink: hide cursor during "off" phase for blinking shapes.
+        // Use a separate flag so ligature run-breaking (which keys on cursor_visible)
+        // stays stable across blink cycles, preventing text flicker.
+        if !cursor_blink_on && is_blinking_cursor(snapshot.cursor_shape) {
+            snapshot.cursor_blink_hidden = true;
+        }
 
         // Add Kitty inline images for the wezterm backend.
         if let Some(wez) = pane.as_wezterm() {
@@ -152,6 +160,11 @@ pub(crate) fn render_pane(
                 );
             }
 
+            // Faint/dim: reduce opacity
+            if cell.faint {
+                fg = egui::Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), fg.a() / 2);
+            }
+
             let text = &cell.text;
             if !text.is_empty() && text != " " {
                 painter.text(
@@ -162,13 +175,63 @@ pub(crate) fn render_pane(
                     fg,
                 );
             }
+
+            // Strikethrough
+            if cell.strikethrough {
+                let strike_y = y + cell_height * 0.5;
+                painter.rect_filled(
+                    egui::Rect::from_min_size(egui::pos2(x, strike_y), egui::vec2(cell_width, 1.0)),
+                    0.0,
+                    fg,
+                );
+            }
+
+            // Underline
+            if cell.underline != UnderlineStyle::None {
+                let ul_color = cell.underline_color.map(color_to_egui).unwrap_or(fg);
+                let ul_y = y + cell_height * 0.85;
+                match cell.underline {
+                    UnderlineStyle::None => {}
+                    UnderlineStyle::Double => {
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(
+                                egui::pos2(x, ul_y),
+                                egui::vec2(cell_width, 1.0),
+                            ),
+                            0.0,
+                            ul_color,
+                        );
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(
+                                egui::pos2(x, ul_y + 3.0),
+                                egui::vec2(cell_width, 1.0),
+                            ),
+                            0.0,
+                            ul_color,
+                        );
+                    }
+                    _ => {
+                        // Single/dotted/dashed/curly all render as single line in software path
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(
+                                egui::pos2(x, ul_y),
+                                egui::vec2(cell_width, 1.0),
+                            ),
+                            0.0,
+                            ul_color,
+                        );
+                    }
+                }
+            }
         }
     }
 
-    // Draw cursor
+    // Draw cursor (skip during blink "off" phase for blinking shapes)
+    let blink_visible = cursor_blink_on || !is_blinking_cursor(cursor.shape);
     if is_focused
         && scroll_offset == 0
         && cursor.visible
+        && blink_visible
         && cursor.y >= 0
         && (cursor.y as usize) < actual_rows
         && cursor.x < actual_cols
@@ -313,6 +376,18 @@ pub(crate) fn color_to_egui(c: Color) -> egui::Color32 {
         (c.1 * 255.0).round() as u8,
         (c.2 * 255.0).round() as u8,
         (c.3 * 255.0).round() as u8,
+    )
+}
+
+/// Whether a cursor shape should blink.
+/// `Default` blinks because most terminals default to a blinking block cursor.
+fn is_blinking_cursor(shape: CursorShape) -> bool {
+    matches!(
+        shape,
+        CursorShape::Default
+            | CursorShape::BlinkingBlock
+            | CursorShape::BlinkingBar
+            | CursorShape::BlinkingUnderline
     )
 }
 

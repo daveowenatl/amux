@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use amux_term::backend::CursorShape;
+use amux_term::backend::{CursorShape, UnderlineStyle};
+use amux_term::font::DecorationMetrics;
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache};
 use egui_wgpu::wgpu;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
@@ -82,6 +83,7 @@ pub struct PaneRenderState {
     cursor_x: usize,
     cursor_y: i64,
     cursor_visible: bool,
+    cursor_blink_hidden: bool,
     cursor_shape: CursorShape,
     scroll_offset: usize,
     is_focused: bool,
@@ -134,6 +136,7 @@ impl PaneRenderState {
             cursor_x: 0,
             cursor_y: 0,
             cursor_visible: true,
+            cursor_blink_hidden: false,
             cursor_shape: CursorShape::Default,
             scroll_offset: 0,
             is_focused: false,
@@ -186,6 +189,7 @@ impl PaneRenderState {
         self.selection_range != snap.selection_range
             || self.highlight_hash != hash_highlight_ranges(&snap.highlight_ranges)
             || self.current_highlight != snap.current_highlight
+            || self.cursor_blink_hidden != snap.cursor_blink_hidden
     }
 
     /// Update the fingerprint to match the current state.
@@ -201,6 +205,7 @@ impl PaneRenderState {
         self.cursor_x = snap.cursor_x;
         self.cursor_y = snap.cursor_y;
         self.cursor_visible = snap.cursor_visible;
+        self.cursor_blink_hidden = snap.cursor_blink_hidden;
         self.cursor_shape = snap.cursor_shape;
         self.scroll_offset = snap.scroll_offset;
         self.is_focused = snap.is_focused;
@@ -223,18 +228,34 @@ pub struct ImageTextureEntry {
     pub bind_group: wgpu::BindGroup,
 }
 
-/// Cached result of shaping a single cell's text through cosmic-text.
+/// Cached result of shaping a text run through cosmic-text.
 /// Avoids re-running the full shaping pipeline on every frame for unchanged glyphs.
 #[derive(Clone)]
 pub(crate) struct ShapedGlyphEntry {
-    /// Physical glyph x offset within the cell.
+    /// Physical glyph x offset within the run.
     physical_x: i32,
-    /// Physical glyph y offset within the cell.
+    /// Physical glyph y offset within the run.
     physical_y: i32,
     /// cosmic-text cache key for atlas lookup.
     cache_key: cosmic_text::CacheKey,
     /// Baseline y from layout run.
     line_y: f32,
+    /// Cell column offset within the run (0-based), for CachedGlyph mapping.
+    source_col_offset: usize,
+}
+
+/// A contiguous run of same-style cells to be shaped together for ligature support.
+struct TextRun {
+    row: usize,
+    col_start: usize,
+    col_count: usize,
+    text: String,
+    /// Byte offset where each cell's text starts within `text`.
+    cell_byte_offsets: Vec<usize>,
+    bold: bool,
+    italic: bool,
+    faint: bool,
+    fg: [f32; 4],
 }
 
 /// Key for the shape cache: (text content, bold, italic).
@@ -249,6 +270,7 @@ pub struct TerminalGpuResources {
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
     pub metrics: Metrics,
+    pub decoration_metrics: DecorationMetrics,
     pub atlas_bind_group_dirty: bool,
     /// Whether the render target uses an sRGB format. When true, colors must
     /// be converted to linear space because the hardware applies linear→sRGB
@@ -264,6 +286,13 @@ pub struct TerminalGpuResources {
     pub shape_cache: HashMap<ShapeCacheKey, Vec<ShapedGlyphEntry>>,
     /// Shared sampler for image textures.
     pub image_sampler: wgpu::Sampler,
+    /// Cached curly underline atlas tile (one cell-width sine wave).
+    pub curly_tile: Option<crate::atlas::AtlasEntry>,
+    /// Cached dotted underline atlas tile (row of circles).
+    pub dotted_tile: Option<crate::atlas::AtlasEntry>,
+    /// Last pixels_per_point used for shape cache and decoration tiles.
+    /// When DPI changes, these caches are invalidated.
+    pub last_pixels_per_point: f32,
 }
 
 impl TerminalGpuResources {
@@ -316,6 +345,16 @@ impl CallbackTrait for TerminalPaintCallback {
             .expect("TerminalGpuResources not initialized");
 
         let pixels_per_point = screen_descriptor.pixels_per_point;
+
+        // Invalidate caches when DPI/scale factor changes.
+        if (resources.last_pixels_per_point - pixels_per_point).abs() > f32::EPSILON {
+            resources.shape_cache.clear();
+            resources.curly_tile = None;
+            resources.dotted_tile = None;
+            resources.atlas_bind_group_dirty = true;
+            resources.last_pixels_per_point = pixels_per_point;
+        }
+
         let viewport_width = screen_descriptor.size_in_pixels[0] as f32;
         let viewport_height = screen_descriptor.size_in_pixels[1] as f32;
         let target_is_srgb = resources.target_is_srgb;
@@ -467,12 +506,26 @@ impl CallbackTrait for TerminalPaintCallback {
             let mut fg = Vec::with_capacity(snap.cells.len());
             let mut cached = Vec::new();
 
+            // --- Run-based shaping for ligature support ---
+            // Group adjacent same-style cells into text runs, then shape each
+            // run as a unit so cosmic-text / HarfBuzz can produce ligatures.
+            let cursor_col = snap.cursor_x;
+            let cursor_row = snap.cursor_y as usize;
+            let cursor_breaks = snap.cursor_visible && snap.scroll_offset == 0;
+
+            let mut runs: Vec<TextRun> = Vec::new();
+            let mut current_run: Option<TextRun> = None;
+
             for cell in &snap.cells {
+                // Skip empty / space cells (implicitly breaks runs).
                 if cell.text.is_empty() || cell.text == " " {
+                    if let Some(run) = current_run.take() {
+                        runs.push(run);
+                    }
                     continue;
                 }
 
-                // Check for procedurally-rendered box-drawing / block characters.
+                // Custom box-drawing / block glyphs: emit directly, break run.
                 if cell.text.len() <= 4 {
                     if let Some(ch) = cell.text.chars().next() {
                         if cell.text.chars().nth(1).is_none() {
@@ -488,42 +541,89 @@ impl CallbackTrait for TerminalPaintCallback {
                                 self.cell_height,
                                 &mut bg_instances,
                             ) {
+                                if let Some(run) = current_run.take() {
+                                    runs.push(run);
+                                }
                                 continue;
                             }
                         }
                     }
                 }
 
-                let color = maybe_linearize(cell.fg, linearize);
-                let prev_len = fg.len();
+                let cell_fg = maybe_linearize(cell.fg, linearize);
+                let is_cursor_cell =
+                    cursor_breaks && cell.col == cursor_col && cell.row == cursor_row;
 
-                shape_and_rasterize(
-                    &cell.text,
-                    cell.bold,
-                    cell.italic,
-                    color,
-                    self.phys_rect.x + cell.col as f32 * self.cell_width,
-                    self.phys_rect.y + cell.row as f32 * self.cell_height,
+                // Flush before cursor cell so it becomes its own run.
+                if is_cursor_cell {
+                    if let Some(run) = current_run.take() {
+                        runs.push(run);
+                    }
+                }
+
+                // Check if cell can extend current run.
+                let can_extend = match &current_run {
+                    Some(run) => {
+                        cell.row == run.row
+                            && cell.col == run.col_start + run.col_count
+                            && cell.bold == run.bold
+                            && cell.italic == run.italic
+                            && cell.faint == run.faint
+                            && cell_fg == run.fg
+                            && !is_cursor_cell
+                    }
+                    None => false,
+                };
+
+                if can_extend {
+                    let run = current_run.as_mut().unwrap();
+                    run.cell_byte_offsets.push(run.text.len());
+                    run.text.push_str(&cell.text);
+                    run.col_count += 1;
+                } else {
+                    if let Some(run) = current_run.take() {
+                        runs.push(run);
+                    }
+                    let mut text = String::with_capacity(cell.text.len());
+                    text.push_str(&cell.text);
+                    current_run = Some(TextRun {
+                        row: cell.row,
+                        col_start: cell.col,
+                        col_count: 1,
+                        cell_byte_offsets: vec![0],
+                        text,
+                        bold: cell.bold,
+                        italic: cell.italic,
+                        faint: cell.faint,
+                        fg: cell_fg,
+                    });
+                }
+
+                // Flush after cursor cell so it stands alone.
+                if is_cursor_cell {
+                    if let Some(run) = current_run.take() {
+                        runs.push(run);
+                    }
+                }
+            }
+            if let Some(run) = current_run.take() {
+                runs.push(run);
+            }
+
+            // Shape each run.
+            for run in &runs {
+                shape_run(
+                    run,
                     self.cell_width,
                     self.cell_height,
+                    self.phys_rect.x,
+                    self.phys_rect.y,
                     pixels_per_point,
                     resources,
                     queue,
                     &mut fg,
+                    &mut cached,
                 );
-
-                // Cache the glyph layout (position/UV) for color-only rebuilds.
-                for inst in &fg[prev_len..] {
-                    cached.push(CachedGlyph {
-                        col: cell.col,
-                        row: cell.row,
-                        pos: inst.pos,
-                        size: inst.size,
-                        uv_min: inst.uv_min,
-                        uv_max: inst.uv_max,
-                        is_color: inst.is_color,
-                    });
-                }
             }
 
             // Store cache for future appearance-only rebuilds.
@@ -587,10 +687,212 @@ impl CallbackTrait for TerminalPaintCallback {
             fg
         };
 
+        // --- Text decorations (underlines, strikethrough) ---
+        // Uses font metrics from OpenType tables for accurate positioning.
+        // Curly and dotted underlines are rendered as anti-aliased atlas tiles.
+        {
+            let dm = &resources.decoration_metrics;
+            let line_thickness = (dm.stroke_size * pixels_per_point).max(1.0);
+            // Underline: below baseline. The font's underline_offset is distance
+            // from baseline (positive = below). Baseline is at ~line_top + ascent.
+            // For a terminal cell: baseline is approximately at line_y from cosmic-text.
+            // We use the font's own metric scaled by ppem.
+            let baseline_y = self.cell_height * 0.78; // approximate baseline
+            let underline_y_offset = (baseline_y + dm.underline_offset * pixels_per_point).max(0.0);
+            let strikethrough_y_offset =
+                (baseline_y - dm.strikeout_offset * pixels_per_point - line_thickness / 2.0)
+                    .max(0.0);
+
+            // Lazily rasterize curly/dotted tiles into the atlas on first use.
+            if resources.curly_tile.is_none() {
+                let (w, h, data) = rasterize_curly_tile(self.cell_width, line_thickness);
+                if let Some(entry) = resources.atlas.insert_raw_mono(queue, w, h, &data) {
+                    resources.curly_tile = Some(entry);
+                    resources.atlas_bind_group_dirty = true;
+                }
+            }
+            if resources.dotted_tile.is_none() {
+                let (w, h, data) = rasterize_dotted_tile(self.cell_width, line_thickness);
+                if let Some(entry) = resources.atlas.insert_raw_mono(queue, w, h, &data) {
+                    resources.dotted_tile = Some(entry);
+                    resources.atlas_bind_group_dirty = true;
+                }
+            }
+            let curly_tile = resources.curly_tile;
+            let dotted_tile = resources.dotted_tile;
+
+            for cell in &snap.cells {
+                let mut fg_color = maybe_linearize(cell.fg, linearize);
+                if cell.faint {
+                    fg_color[3] *= 0.5;
+                }
+
+                let px = self.phys_rect.x + cell.col as f32 * self.cell_width;
+                let py = self.phys_rect.y + cell.row as f32 * self.cell_height;
+
+                // Strikethrough
+                if cell.strikethrough {
+                    bg_instances.push(CellBgInstance {
+                        pos: [px, py + strikethrough_y_offset],
+                        size: [self.cell_width, line_thickness],
+                        color: fg_color,
+                    });
+                }
+
+                // Underline
+                match cell.underline {
+                    UnderlineStyle::None => {}
+                    UnderlineStyle::Single => {
+                        let color = cell
+                            .underline_color
+                            .map(|c| maybe_linearize(c, linearize))
+                            .unwrap_or(fg_color);
+                        bg_instances.push(CellBgInstance {
+                            pos: [px, py + underline_y_offset],
+                            size: [self.cell_width, line_thickness],
+                            color,
+                        });
+                    }
+                    UnderlineStyle::Double => {
+                        let color = cell
+                            .underline_color
+                            .map(|c| maybe_linearize(c, linearize))
+                            .unwrap_or(fg_color);
+                        // Ghostty: gap = thickness (1:1 ratio)
+                        bg_instances.push(CellBgInstance {
+                            pos: [px, py + underline_y_offset - line_thickness],
+                            size: [self.cell_width, line_thickness],
+                            color,
+                        });
+                        bg_instances.push(CellBgInstance {
+                            pos: [px, py + underline_y_offset + line_thickness],
+                            size: [self.cell_width, line_thickness],
+                            color,
+                        });
+                    }
+                    UnderlineStyle::Dotted => {
+                        let color = cell
+                            .underline_color
+                            .map(|c| maybe_linearize(c, linearize))
+                            .unwrap_or(fg_color);
+                        // Use atlas tile for anti-aliased circles
+                        if let Some(tile) = dotted_tile {
+                            let tile_h = tile.height as f32;
+                            fg_instances.push(CellFgInstance {
+                                pos: [px, py + underline_y_offset - tile_h / 2.0],
+                                size: [tile.width as f32, tile_h],
+                                uv_min: [tile.uv[0], tile.uv[1]],
+                                uv_max: [tile.uv[2], tile.uv[3]],
+                                color,
+                                is_color: 0.0,
+                                _pad: [0.0; 3],
+                            });
+                        } else {
+                            // Fallback: rect-based dots
+                            let dot_w = (line_thickness * 1.5).max(2.0);
+                            let mut x = px;
+                            let x_end = px + self.cell_width;
+                            while x < x_end {
+                                let w = dot_w.min(x_end - x);
+                                bg_instances.push(CellBgInstance {
+                                    pos: [x, py + underline_y_offset],
+                                    size: [w, line_thickness],
+                                    color,
+                                });
+                                x += dot_w * 2.0;
+                            }
+                        }
+                    }
+                    UnderlineStyle::Dashed => {
+                        let color = cell
+                            .underline_color
+                            .map(|c| maybe_linearize(c, linearize))
+                            .unwrap_or(fg_color);
+                        // Ghostty: width/3 + 1px, every-other pattern
+                        let dash_w = self.cell_width / 3.0 + 1.0;
+                        let dash_count = ((self.cell_width / dash_w).ceil() as u32 + 1).max(1);
+                        for i in (0..dash_count).step_by(2) {
+                            let x = px + i as f32 * dash_w;
+                            let w = dash_w.min(px + self.cell_width - x);
+                            if w > 0.0 {
+                                bg_instances.push(CellBgInstance {
+                                    pos: [x, py + underline_y_offset],
+                                    size: [w, line_thickness],
+                                    color,
+                                });
+                            }
+                        }
+                    }
+                    UnderlineStyle::Curly => {
+                        let color = cell
+                            .underline_color
+                            .map(|c| maybe_linearize(c, linearize))
+                            .unwrap_or(fg_color);
+                        // Use atlas tile for anti-aliased sine wave
+                        if let Some(tile) = curly_tile {
+                            let tile_h = tile.height as f32;
+                            fg_instances.push(CellFgInstance {
+                                pos: [px, py + underline_y_offset - tile_h / 2.0],
+                                size: [tile.width as f32, tile_h],
+                                uv_min: [tile.uv[0], tile.uv[1]],
+                                uv_max: [tile.uv[2], tile.uv[3]],
+                                color,
+                                is_color: 0.0,
+                                _pad: [0.0; 3],
+                            });
+                        } else {
+                            // Fallback: rect-based wave
+                            let segments = 8u32;
+                            let seg_w = self.cell_width / segments as f32;
+                            let amplitude = line_thickness * 1.5;
+                            let y_base = py + underline_y_offset;
+                            for i in 0..segments {
+                                let t = i as f32 / segments as f32;
+                                let angle = t * std::f32::consts::TAU;
+                                let y_off = angle.sin() * amplitude;
+                                bg_instances.push(CellBgInstance {
+                                    pos: [px + i as f32 * seg_w, y_base + y_off],
+                                    size: [seg_w + 0.5, line_thickness],
+                                    color,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Faint text: dim glyph colors in fg_instances for faint cells. ---
+        {
+            let faint_cells: HashSet<(usize, usize)> = snap
+                .cells
+                .iter()
+                .filter(|c| c.faint)
+                .map(|c| (c.col, c.row))
+                .collect();
+            if !faint_cells.is_empty() {
+                for inst in &mut fg_instances {
+                    // Map pixel position back to cell coordinates, clamping to valid
+                    // range to handle glyphs with negative bearings or ligature offsets.
+                    let col_f = (inst.pos[0] - self.phys_rect.x) / self.cell_width;
+                    let row_f = (inst.pos[1] - self.phys_rect.y) / self.cell_height;
+                    if col_f < 0.0 || row_f < 0.0 {
+                        continue;
+                    }
+                    let col = (col_f.round() as usize).min(snap.cols.saturating_sub(1));
+                    let row = (row_f.round() as usize).min(snap.rows.saturating_sub(1));
+                    if faint_cells.contains(&(col, row)) {
+                        inst.color[3] *= 0.5;
+                    }
+                }
+            }
+        }
+
         // --- Cursor ---
         if snap.is_focused
             && snap.scroll_offset == 0
             && snap.cursor_visible
+            && !snap.cursor_blink_hidden
             && snap.cursor_y >= 0
             && (snap.cursor_y as usize) < snap.rows
             && snap.cursor_x < snap.cols
@@ -879,8 +1181,165 @@ impl CallbackTrait for TerminalPaintCallback {
     }
 }
 
-/// Shape text with cosmic-text and rasterize glyphs into the atlas,
-/// appending foreground instances for each glyph.
+/// Shape a multi-cell text run for ligature support.
+///
+/// Groups of adjacent same-style cells are shaped together through cosmic-text
+/// so HarfBuzz can produce ligature substitutions (e.g., `=>` → single glyph).
+/// Glyph positions are mapped back to cell columns via `cell_byte_offsets`.
+#[allow(clippy::too_many_arguments)]
+fn shape_run(
+    run: &TextRun,
+    cell_width: f32,
+    cell_height: f32,
+    phys_x: f32,
+    phys_y: f32,
+    pixels_per_point: f32,
+    resources: &mut TerminalGpuResources,
+    queue: &wgpu::Queue,
+    fg_instances: &mut Vec<CellFgInstance>,
+    cached_glyphs: &mut Vec<CachedGlyph>,
+) {
+    let cache_key = (run.text.clone(), run.bold, run.italic);
+    let base_x = phys_x + run.col_start as f32 * cell_width;
+    let base_y = phys_y + run.row as f32 * cell_height;
+
+    // Check shape cache first.
+    if let Some(shaped) = resources.shape_cache.get(&cache_key) {
+        let shaped = shaped.clone();
+        for sg in &shaped {
+            let (entry, newly_inserted) = resources.atlas.get_or_insert(
+                queue,
+                &mut resources.font_system,
+                &mut resources.swash_cache,
+                sg.cache_key,
+            );
+            if let Some(entry) = entry {
+                let gx = base_x + sg.physical_x as f32 + entry.placement_left as f32;
+                let gy = base_y + sg.line_y + sg.physical_y as f32 - entry.placement_top as f32;
+                fg_instances.push(CellFgInstance {
+                    pos: [gx, gy],
+                    size: [entry.width as f32, entry.height as f32],
+                    uv_min: [entry.uv[0], entry.uv[1]],
+                    uv_max: [entry.uv[2], entry.uv[3]],
+                    color: run.fg,
+                    is_color: if entry.is_color { 1.0 } else { 0.0 },
+                    _pad: [0.0; 3],
+                });
+                let glyph_col = run.col_start + sg.source_col_offset;
+                cached_glyphs.push(CachedGlyph {
+                    col: glyph_col,
+                    row: run.row,
+                    pos: [gx, gy],
+                    size: [entry.width as f32, entry.height as f32],
+                    uv_min: [entry.uv[0], entry.uv[1]],
+                    uv_max: [entry.uv[2], entry.uv[3]],
+                    is_color: if entry.is_color { 1.0 } else { 0.0 },
+                });
+                if newly_inserted {
+                    resources.atlas_bind_group_dirty = true;
+                }
+            }
+        }
+        return;
+    }
+
+    // Cache miss: run full cosmic-text shaping.
+    let weight = if run.bold {
+        cosmic_text::Weight::BOLD
+    } else {
+        cosmic_text::Weight::NORMAL
+    };
+    let style = if run.italic {
+        cosmic_text::Style::Italic
+    } else {
+        cosmic_text::Style::Normal
+    };
+    let attrs = Attrs::new()
+        .family(cosmic_text::fontdb::Family::Monospace)
+        .weight(weight)
+        .style(style);
+
+    let phys_metrics = Metrics::new(
+        resources.metrics.font_size * pixels_per_point,
+        resources.metrics.line_height * pixels_per_point,
+    );
+    let buffer_width = f32::max(run.col_count as f32 * cell_width, cell_width * 2.0);
+    let mut buffer = Buffer::new_empty(phys_metrics);
+    {
+        let mut borrowed = buffer.borrow_with(&mut resources.font_system);
+        borrowed.set_size(Some(buffer_width), Some(cell_height));
+        borrowed.set_text(&run.text, attrs, Shaping::Advanced);
+        borrowed.shape_until_scroll(true);
+    }
+
+    let mut shaped_entries = Vec::new();
+
+    for layout_run in buffer.layout_runs() {
+        for glyph in layout_run.glyphs.iter() {
+            let physical = glyph.physical((0.0, 0.0), 1.0);
+
+            // Map glyph back to source cell via byte offset.
+            let source_col_offset = byte_offset_to_col_offset(&run.cell_byte_offsets, glyph.start);
+
+            shaped_entries.push(ShapedGlyphEntry {
+                physical_x: physical.x,
+                physical_y: physical.y,
+                cache_key: physical.cache_key,
+                line_y: layout_run.line_y,
+                source_col_offset,
+            });
+
+            let (entry, newly_inserted) = resources.atlas.get_or_insert(
+                queue,
+                &mut resources.font_system,
+                &mut resources.swash_cache,
+                physical.cache_key,
+            );
+
+            if let Some(entry) = entry {
+                let gx = base_x + physical.x as f32 + entry.placement_left as f32;
+                let gy =
+                    base_y + layout_run.line_y + physical.y as f32 - entry.placement_top as f32;
+
+                fg_instances.push(CellFgInstance {
+                    pos: [gx, gy],
+                    size: [entry.width as f32, entry.height as f32],
+                    uv_min: [entry.uv[0], entry.uv[1]],
+                    uv_max: [entry.uv[2], entry.uv[3]],
+                    color: run.fg,
+                    is_color: if entry.is_color { 1.0 } else { 0.0 },
+                    _pad: [0.0; 3],
+                });
+
+                let glyph_col = run.col_start + source_col_offset;
+                cached_glyphs.push(CachedGlyph {
+                    col: glyph_col,
+                    row: run.row,
+                    pos: [gx, gy],
+                    size: [entry.width as f32, entry.height as f32],
+                    uv_min: [entry.uv[0], entry.uv[1]],
+                    uv_max: [entry.uv[2], entry.uv[3]],
+                    is_color: if entry.is_color { 1.0 } else { 0.0 },
+                });
+
+                if newly_inserted {
+                    resources.atlas_bind_group_dirty = true;
+                }
+            }
+        }
+    }
+
+    resources.shape_cache.insert(cache_key, shaped_entries);
+}
+
+/// Map a byte offset in run text to the cell column index within the run.
+fn byte_offset_to_col_offset(cell_byte_offsets: &[usize], byte_pos: usize) -> usize {
+    cell_byte_offsets
+        .partition_point(|&o| o <= byte_pos)
+        .saturating_sub(1)
+}
+
+/// Shape a single cell's text with cosmic-text (used for cursor text overlay).
 ///
 /// Uses a shape cache to avoid re-running cosmic-text shaping for
 /// previously seen (text, bold, italic) combinations. The atlas already
@@ -972,6 +1431,7 @@ fn shape_and_rasterize(
                 physical_y: physical.y,
                 cache_key: physical.cache_key,
                 line_y: run.line_y,
+                source_col_offset: 0, // single-cell: always column 0
             });
 
             let (entry, newly_inserted) = resources.atlas.get_or_insert(
@@ -1025,4 +1485,99 @@ fn srgb_to_linear(v: f32) -> f32 {
     } else {
         ((v + 0.055) / 1.055).powf(2.4)
     }
+}
+
+/// Rasterize a curly (wavy) underline tile into a grayscale bitmap.
+/// Uses Ghostty-style approach: cubic Bézier-approximated sine wave.
+/// Returns (width, height, pixel_data).
+fn rasterize_curly_tile(cell_width: f32, thickness: f32) -> (u32, u32, Vec<u8>) {
+    let w = cell_width.ceil() as u32;
+    // Ghostty uses amplitude = width/π with Bézier curvature 0.4.
+    // Since we use a sine wave (which hits full amplitude), scale down
+    // to match the visual height of Ghostty's Bézier wave.
+    let amplitude = (cell_width / std::f32::consts::PI * 0.4).max(thickness);
+    let h = (amplitude * 2.0 + thickness * 2.0).ceil() as u32;
+    let mut pixels = vec![0u8; (w * h) as usize];
+
+    let center_y = h as f32 / 2.0;
+    let half_t = thickness / 2.0;
+
+    // Sample the sine wave densely and paint thick anti-aliased strokes.
+    let steps = w * 4; // 4 sub-pixel samples per pixel column
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let x = t * (w as f32 - 1.0);
+        let y = center_y + (t * std::f32::consts::TAU).sin() * amplitude;
+
+        // Paint a filled circle at each sample point for smooth coverage.
+        let radius = half_t + 0.5; // slight padding for AA
+        let x_min = (x - radius).floor().max(0.0) as u32;
+        let x_max = ((x + radius).ceil() as u32).min(w - 1);
+        let y_min = (y - radius).floor().max(0.0) as u32;
+        let y_max = ((y + radius).ceil() as u32).min(h - 1);
+
+        for py in y_min..=y_max {
+            for px in x_min..=x_max {
+                let dx = px as f32 - x;
+                let dy = py as f32 - y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist <= half_t + 0.5 {
+                    let alpha = if dist <= half_t {
+                        255
+                    } else {
+                        ((1.0 - (dist - half_t)) * 255.0) as u8
+                    };
+                    let idx = (py * w + px) as usize;
+                    pixels[idx] = pixels[idx].max(alpha);
+                }
+            }
+        }
+    }
+
+    (w, h, pixels)
+}
+
+/// Rasterize a dotted underline tile: a row of circles across one cell width.
+/// Returns (width, height, pixel_data).
+fn rasterize_dotted_tile(cell_width: f32, thickness: f32) -> (u32, u32, Vec<u8>) {
+    let w = cell_width.ceil() as u32;
+    let radius = (thickness * std::f32::consts::SQRT_2 / 2.0).max(1.0);
+    let h = (radius * 2.0 + 2.0).ceil() as u32;
+    let mut pixels = vec![0u8; (w * h) as usize];
+
+    let center_y = h as f32 / 2.0;
+
+    // Dynamic dot count (Ghostty approach)
+    let dot_count = ((cell_width / (4.0 * radius)).ceil() as u32)
+        .min((cell_width / (3.0 * radius)).floor() as u32)
+        .max(1);
+    let spacing = cell_width / dot_count as f32;
+
+    for d in 0..dot_count {
+        let cx = spacing * (d as f32 + 0.5);
+
+        let x_min = (cx - radius - 0.5).floor().max(0.0) as u32;
+        let x_max = ((cx + radius + 0.5).ceil() as u32).min(w - 1);
+        let y_min = (center_y - radius - 0.5).floor().max(0.0) as u32;
+        let y_max = ((center_y + radius + 0.5).ceil() as u32).min(h - 1);
+
+        for py in y_min..=y_max {
+            for px in x_min..=x_max {
+                let dx = px as f32 - cx;
+                let dy = py as f32 - center_y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist <= radius + 0.5 {
+                    let alpha = if dist <= radius {
+                        255
+                    } else {
+                        ((1.0 - (dist - radius)) * 255.0) as u8
+                    };
+                    let idx = (py * w + px) as usize;
+                    pixels[idx] = pixels[idx].max(alpha);
+                }
+            }
+        }
+    }
+
+    (w, h, pixels)
 }

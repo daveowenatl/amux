@@ -17,7 +17,7 @@ use url::Url;
 
 use crate::backend::{
     Color, CursorPos, CursorShape, Palette, ProcessExit, ScreenCell, ScreenRow, StableRow,
-    TerminalBackend,
+    TerminalBackend, UnderlineStyle,
 };
 use crate::osc::NotificationEvent;
 use crate::pane::{AdvanceResult, SequenceNo, TermError};
@@ -44,6 +44,9 @@ pub struct GhosttyPane<'alloc, 'cb> {
     notification_rx: mpsc::Receiver<NotificationEvent>,
     /// Cached palette from last render state update.
     cached_palette: Palette,
+    /// When true, an external palette was set via `set_palette()` and
+    /// `refresh_render_cache` should not overwrite it with libghostty defaults.
+    palette_overridden: bool,
     /// Cached cursor shape from last render state update.
     cached_cursor_shape: CursorShape,
     /// Cached working directory URL (from OSC 7 via pwd()).
@@ -139,9 +142,18 @@ where
             rendered_seqno: 0,
             notification_rx: rx,
             cached_palette: Palette::default(),
+            palette_overridden: false,
             cached_cursor_shape: CursorShape::Default,
             cached_working_dir: None,
         })
+    }
+
+    /// Override the cached palette with colors from amux's theme.
+    /// Called once after construction so the ghostty backend uses amux's
+    /// configured colors instead of libghostty-vt's built-in defaults.
+    pub fn set_palette(&mut self, palette: Palette) {
+        self.cached_palette = palette;
+        self.palette_overridden = true;
     }
 
     /// Refresh cached render state (palette, cursor shape, working dir).
@@ -149,26 +161,29 @@ where
     fn refresh_render_cache(&mut self) {
         let mut rs = self.render_state.borrow_mut();
         if let Ok(snapshot) = rs.update(&self.terminal) {
-            // Cache palette
-            if let Ok(colors) = snapshot.colors() {
-                let fg = rgb_to_color(colors.foreground);
-                let bg = rgb_to_color(colors.background);
-                let cursor_color = colors.cursor.map(rgb_to_color).unwrap_or(fg);
-                self.cached_palette = Palette {
-                    foreground: fg,
-                    background: bg,
-                    cursor_fg: bg,
-                    cursor_bg: cursor_color,
-                    cursor_border: cursor_color,
-                    selection_fg: Color::BLACK,
-                    selection_bg: Color(0.4, 0.6, 1.0, 1.0),
-                    colors: colors.palette.iter().map(|&c| rgb_to_color(c)).collect(),
-                };
+            // Cache palette (skip if externally overridden by amux theme).
+            if !self.palette_overridden {
+                if let Ok(colors) = snapshot.colors() {
+                    let fg = rgb_to_color(colors.foreground);
+                    let bg = rgb_to_color(colors.background);
+                    let cursor_color = colors.cursor.map(rgb_to_color).unwrap_or(fg);
+                    self.cached_palette = Palette {
+                        foreground: fg,
+                        background: bg,
+                        cursor_fg: bg,
+                        cursor_bg: cursor_color,
+                        cursor_border: cursor_color,
+                        selection_fg: Color::BLACK,
+                        selection_bg: Color(0.4, 0.6, 1.0, 1.0),
+                        colors: colors.palette.iter().map(|&c| rgb_to_color(c)).collect(),
+                    };
+                }
             }
 
-            // Cache cursor shape
+            // Cache cursor shape (combining visual style + blink flag)
             if let Ok(style) = snapshot.cursor_visual_style() {
-                self.cached_cursor_shape = cursor_style_to_shape(style);
+                let blinking = snapshot.cursor_blinking().unwrap_or(false);
+                self.cached_cursor_shape = cursor_style_to_shape(style, blinking);
             }
         }
 
@@ -207,15 +222,168 @@ where
         let mut lines = Vec::new();
         while let Some(row) = row_iteration.next() {
             let mut line = String::new();
+            let mut col: usize = 0; // cell index (always +1 per cell)
+            let mut visible_col: usize = 0; // cells actually written
             if let Ok(mut cell_iteration) = cell_iter.update(row) {
                 while let Some(cell) = cell_iteration.next() {
                     if let Ok(chars) = cell.graphemes() {
-                        for ch in chars {
-                            line.push(ch);
+                        if !chars.is_empty() {
+                            // Pad with spaces up to this column if we skipped blank cells.
+                            while visible_col < col {
+                                line.push(' ');
+                                visible_col += 1;
+                            }
+                            for ch in chars {
+                                line.push(ch);
+                            }
+                            visible_col += 1;
                         }
                     }
+                    col += 1;
                 }
             }
+            lines.push(line.trim_end().to_string());
+        }
+        lines
+    }
+
+    /// Build lines with ANSI SGR escape sequences for color/style preservation.
+    /// Used by `read_scrollback_text` so session restore retains styling.
+    fn snapshot_lines_ansi(&self) -> Vec<String> {
+        use libghostty_vt::style::Underline as GhosttyUnderline;
+
+        let mut rs = self.render_state.borrow_mut();
+        let snapshot = match rs.update(&self.terminal) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut row_iter = match RowIterator::new() {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        let mut cell_iter = match CellIterator::new() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        let mut row_iteration = match row_iter.update(&snapshot) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+
+        let default_style = libghostty_vt::style::Style::default();
+
+        let mut lines = Vec::new();
+        while let Some(row) = row_iteration.next() {
+            let mut line = String::new();
+            let mut col: usize = 0;
+            let mut visible_col: usize = 0;
+            let mut prev_style = default_style;
+            let mut prev_fg: Option<RgbColor> = None;
+            let mut prev_bg: Option<RgbColor> = None;
+
+            if let Ok(mut cell_iteration) = cell_iter.update(row) {
+                while let Some(cell) = cell_iteration.next() {
+                    let graphemes = cell.graphemes().unwrap_or_default();
+                    if graphemes.is_empty() {
+                        col += 1;
+                        continue;
+                    }
+
+                    // Pad with spaces up to this column.
+                    while visible_col < col {
+                        line.push(' ');
+                        visible_col += 1;
+                    }
+
+                    // Check if style changed.
+                    let cur_style = cell.style().unwrap_or(default_style);
+                    let cur_fg = cell.fg_color().ok().flatten();
+                    let cur_bg = cell.bg_color().ok().flatten();
+
+                    let style_changed =
+                        cur_style != prev_style || cur_fg != prev_fg || cur_bg != prev_bg;
+
+                    if style_changed {
+                        // Reset, then emit active attributes.
+                        line.push_str("\x1b[0");
+
+                        if cur_style.bold {
+                            line.push_str(";1");
+                        }
+                        if cur_style.faint {
+                            line.push_str(";2");
+                        }
+                        if cur_style.italic {
+                            line.push_str(";3");
+                        }
+                        match cur_style.underline {
+                            GhosttyUnderline::Single => line.push_str(";4"),
+                            GhosttyUnderline::Double => line.push_str(";21"),
+                            GhosttyUnderline::Curly => line.push_str(";4:3"),
+                            GhosttyUnderline::Dotted => line.push_str(";4:4"),
+                            GhosttyUnderline::Dashed => line.push_str(";4:5"),
+                            _ => {}
+                        }
+                        if cur_style.inverse {
+                            line.push_str(";7");
+                        }
+                        if cur_style.invisible {
+                            line.push_str(";8");
+                        }
+                        if cur_style.strikethrough {
+                            line.push_str(";9");
+                        }
+
+                        // Foreground color
+                        {
+                            use std::fmt::Write;
+                            if let Some(fg) = cur_fg {
+                                let _ = write!(line, ";38;2;{};{};{}", fg.r, fg.g, fg.b);
+                            }
+
+                            // Background color
+                            if let Some(bg) = cur_bg {
+                                let _ = write!(line, ";48;2;{};{};{}", bg.r, bg.g, bg.b);
+                            }
+
+                            // Underline color (SGR 58;2;R;G;B)
+                            if !matches!(cur_style.underline, GhosttyUnderline::None) {
+                                if let Some(uc) = resolve_style_color(
+                                    &cur_style.underline_color,
+                                    &self.cached_palette.colors,
+                                ) {
+                                    let _ = write!(
+                                        line,
+                                        ";58;2;{};{};{}",
+                                        (uc.0 * 255.0) as u8,
+                                        (uc.1 * 255.0) as u8,
+                                        (uc.2 * 255.0) as u8
+                                    );
+                                }
+                            }
+                        }
+
+                        line.push('m');
+
+                        prev_style = cur_style;
+                        prev_fg = cur_fg;
+                        prev_bg = cur_bg;
+                    }
+
+                    for ch in graphemes {
+                        line.push(ch);
+                    }
+                    col += 1;
+                    visible_col += 1;
+                }
+            }
+
+            // Reset at end of line if we had non-default attributes.
+            if prev_style != default_style || prev_fg.is_some() || prev_bg.is_some() {
+                line.push_str("\x1b[0m");
+            }
+
             lines.push(line.trim_end().to_string());
         }
         lines
@@ -415,7 +583,7 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
     fn read_scrollback_text(&self, max_lines: usize) -> String {
         // libghostty-vt 0.1.x only exposes viewport via render state.
         // PointCoordinate fields are private, so grid_ref can't reach scrollback.
-        let lines = self.snapshot_lines();
+        let lines = self.snapshot_lines_ansi();
         if max_lines > lines.len() {
             tracing::warn!(
                 "read_scrollback_text({max_lines}) requested but only {} viewport lines available \
@@ -434,7 +602,7 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
 
     fn read_scrollback_text_range(&self, start: usize, end: usize) -> String {
         // libghostty-vt 0.1.x only exposes viewport via render state.
-        let lines = self.snapshot_lines();
+        let lines = self.snapshot_lines_ansi();
         let viewport_total = self.terminal.total_rows().unwrap_or(0);
         let viewport_rows = lines.len();
         let viewport_start = viewport_total.saturating_sub(viewport_rows);
@@ -547,11 +715,23 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
                     let italic = style.as_ref().map(|s| s.italic).unwrap_or(false);
                     let underline = style
                         .as_ref()
-                        .map(|s| !matches!(s.underline, libghostty_vt::style::Underline::None))
-                        .unwrap_or(false);
+                        .map(|s| match s.underline {
+                            libghostty_vt::style::Underline::None => UnderlineStyle::None,
+                            libghostty_vt::style::Underline::Single => UnderlineStyle::Single,
+                            libghostty_vt::style::Underline::Double => UnderlineStyle::Double,
+                            libghostty_vt::style::Underline::Curly => UnderlineStyle::Curly,
+                            libghostty_vt::style::Underline::Dotted => UnderlineStyle::Dotted,
+                            libghostty_vt::style::Underline::Dashed => UnderlineStyle::Dashed,
+                            _ => UnderlineStyle::Single,
+                        })
+                        .unwrap_or(UnderlineStyle::None);
                     let strikethrough = style.as_ref().map(|s| s.strikethrough).unwrap_or(false);
+                    let faint = style.as_ref().map(|s| s.faint).unwrap_or(false);
                     let inverse = style.as_ref().map(|s| s.inverse).unwrap_or(false);
 
+                    let underline_color = style.as_ref().and_then(|s| {
+                        resolve_style_color(&s.underline_color, &self.cached_palette.colors)
+                    });
                     cells.push(ScreenCell {
                         text,
                         fg,
@@ -559,7 +739,9 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
                         bold,
                         italic,
                         underline,
+                        underline_color,
                         strikethrough,
+                        faint,
                         reverse: inverse,
                         hyperlink_url: None,
                     });
@@ -636,12 +818,24 @@ fn rgb_to_color(rgb: RgbColor) -> Color {
     )
 }
 
-fn cursor_style_to_shape(style: CursorVisualStyle) -> CursorShape {
-    match style {
-        CursorVisualStyle::Bar => CursorShape::SteadyBar,
-        CursorVisualStyle::Block => CursorShape::SteadyBlock,
-        CursorVisualStyle::Underline => CursorShape::SteadyUnderline,
-        CursorVisualStyle::BlockHollow => CursorShape::SteadyBlock,
+/// Resolve a ghostty `StyleColor` to an amux `Color`, or `None` if unset.
+fn resolve_style_color(sc: &libghostty_vt::style::StyleColor, palette: &[Color]) -> Option<Color> {
+    match sc {
+        libghostty_vt::style::StyleColor::None => None,
+        libghostty_vt::style::StyleColor::Rgb(rgb) => Some(rgb_to_color(*rgb)),
+        libghostty_vt::style::StyleColor::Palette(idx) => palette.get(idx.0 as usize).copied(),
+    }
+}
+
+fn cursor_style_to_shape(style: CursorVisualStyle, blinking: bool) -> CursorShape {
+    match (style, blinking) {
+        (CursorVisualStyle::Bar, true) => CursorShape::BlinkingBar,
+        (CursorVisualStyle::Bar, false) => CursorShape::SteadyBar,
+        (CursorVisualStyle::Block, true) => CursorShape::BlinkingBlock,
+        (CursorVisualStyle::Block, false) => CursorShape::SteadyBlock,
+        (CursorVisualStyle::Underline, true) => CursorShape::BlinkingUnderline,
+        (CursorVisualStyle::Underline, false) => CursorShape::SteadyUnderline,
+        (CursorVisualStyle::BlockHollow, _) => CursorShape::SteadyBlock,
         _ => CursorShape::Default,
     }
 }

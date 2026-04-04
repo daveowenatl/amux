@@ -134,6 +134,8 @@ struct AmuxApp {
     system_notifier: system_notify::SystemNotifier,
     /// Cached badge count to avoid redundant dock badge updates every frame.
     last_badge_count: usize,
+    /// Timestamp of last keystroke — cursor blink resets on input.
+    cursor_blink_since: Instant,
     /// Notification sound player (None if no audio device).
     sound_player: Option<system_notify::SoundPlayer>,
     /// Native menu bar (kept alive for the process lifetime).
@@ -486,6 +488,9 @@ impl eframe::App for AmuxApp {
             && self.find_state.is_none()
         {
             sent_input = self.handle_input(ctx);
+            if sent_input {
+                self.cursor_blink_since = Instant::now();
+            }
         }
 
         // Render sidebar
@@ -1104,6 +1109,9 @@ impl AmuxApp {
             .or(managed.selection.as_ref())
             .cloned();
         let surface = managed.active_surface_mut();
+        // Cursor blink: 500ms on, 500ms off cycle, reset on input.
+        let blink_elapsed_ms = self.cursor_blink_since.elapsed().as_millis();
+        let cursor_blink_on = (blink_elapsed_ms % 1000) < 500;
         render::render_pane(
             ui,
             &mut surface.pane,
@@ -1114,6 +1122,7 @@ impl AmuxApp {
             self.font_size,
             &find_highlights,
             current_highlight,
+            cursor_blink_on,
             #[cfg(feature = "gpu-renderer")]
             self.gpu_renderer.as_ref(),
             #[cfg(feature = "gpu-renderer")]

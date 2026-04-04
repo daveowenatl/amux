@@ -5,16 +5,8 @@ use crate::*;
 pub(crate) fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let app_config = config::load_app_config();
-    let font_size = app_config.font_size;
-    // FontConfig is only consumed by the GPU renderer; gate to avoid unused
-    // warnings in non-GPU builds. font_family is GPU-only — the egui fallback
-    // renderer uses its built-in monospace font.
-    #[cfg(feature = "gpu-renderer")]
-    let font_config = font::FontConfig {
-        family: app_config.font_family.clone(),
-        size: app_config.font_size,
-    };
+    let mut app_config = config::load_app_config();
+    let mut font_size = app_config.font_size;
 
     // Initialize sound player with configured sound setting
     let mut sound_player = system_notify::SoundPlayer::new();
@@ -26,7 +18,37 @@ pub(crate) fn run() -> anyhow::Result<()> {
     let (ipc_rx, ipc_addr, event_broadcaster) = amux_ipc::start_server(socket_token.clone())?;
     tracing::info!("IPC server: {}", ipc_addr);
 
-    let theme = theme::Theme::default();
+    let theme = match app_config.theme_source.as_str() {
+        "ghostty" => {
+            if let Some(ghostty_cfg) = amux_ghostty_config::GhosttyConfig::load() {
+                // Override font settings from Ghostty config if present.
+                if let Some(family) = ghostty_cfg.font_family() {
+                    app_config.font_family = family.to_owned();
+                }
+                if let Some(size) = ghostty_cfg.font_size() {
+                    app_config.font_size = config::validate_font_size(size);
+                    font_size = app_config.font_size;
+                }
+                theme::Theme::from_ghostty(&ghostty_cfg)
+            } else {
+                tracing::warn!(
+                    "theme_source = \"ghostty\" but no Ghostty config found, using default"
+                );
+                theme::Theme::default()
+            }
+        }
+        _ => theme::Theme::default(),
+    };
+
+    // FontConfig is only consumed by the GPU renderer; gate to avoid unused
+    // warnings in non-GPU builds. Created after theme loading so Ghostty
+    // font overrides are picked up.
+    #[cfg(feature = "gpu-renderer")]
+    let font_config = font::FontConfig {
+        family: app_config.font_family.clone(),
+        size: app_config.font_size,
+    };
+
     let mut term_config = AmuxTermConfig {
         backend: app_config.backend.clone(),
         ..Default::default()
@@ -157,6 +179,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 app_config,
                 system_notifier: system_notify::SystemNotifier::new(),
                 last_badge_count: 0,
+                cursor_blink_since: Instant::now(),
                 sound_player,
                 menu,
                 #[cfg(target_os = "windows")]
@@ -480,7 +503,11 @@ pub(crate) fn spawn_surface(
     let mut pane: amux_term::AnyBackend = match config.backend.as_str() {
         #[cfg(feature = "libghostty")]
         "ghostty" => {
-            let ghostty_pane = amux_term::ghostty_pane::GhosttyPane::spawn(cols, rows, cmd)?;
+            let mut ghostty_pane = amux_term::ghostty_pane::GhosttyPane::spawn(cols, rows, cmd)?;
+            // Apply amux theme colors to the ghostty backend (which otherwise
+            // uses libghostty-vt's built-in defaults).
+            let palette: amux_term::backend::Palette = config.color_palette.clone().into();
+            ghostty_pane.set_palette(palette);
             amux_term::AnyBackend::Ghostty(Box::new(ghostty_pane))
         }
         _ => {
