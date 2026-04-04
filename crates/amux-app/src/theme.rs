@@ -25,7 +25,7 @@ pub(crate) struct TerminalColors {
 #[derive(Debug, Clone)]
 pub(crate) struct ChromeColors {
     pub sidebar_bg: Color32,
-    /// Active/selected row background in the sidebar.
+    /// Active/selected row background in the sidebar (derived from accent).
     pub sidebar_active_bg: Color32,
     /// Tab bar background. Falls back to terminal background when `None`.
     pub tab_bar_bg: Option<Color32>,
@@ -145,16 +145,17 @@ impl Theme {
 
         // Derive chrome colors from terminal background for a cohesive look.
         let [br, bg, bb] = terminal.background;
+        let accent = default.chrome.accent;
         let chrome = ChromeColors {
             sidebar_bg: darken_rgb(br, bg, bb, 0.15),
-            sidebar_active_bg: lighten_rgb(br, bg, bb, 0.25),
+            sidebar_active_bg: accent,
             tab_bar_bg: None, // falls back to terminal background
             titlebar_bg: None,
-            tab_active_bg: lighten_rgb(br, bg, bb, 0.08),
+            tab_active_bg: Color32::from_rgb(br, bg, bb), // match terminal background
             tab_bar_border: lighten_rgb(br, bg, bb, 0.15),
             tab_border: lighten_rgb(br, bg, bb, 0.15),
             divider: lighten_rgb(br, bg, bb, 0.18),
-            accent: default.chrome.accent, // keep accent color
+            accent,
         };
 
         Self { terminal, chrome }
@@ -213,10 +214,10 @@ impl Default for Theme {
             },
             chrome: ChromeColors {
                 sidebar_bg: Color32::from_gray(35),
-                sidebar_active_bg: Color32::from_rgb(24, 64, 120),
+                sidebar_active_bg: Color32::from_rgb(0, 145, 255), // same as accent
                 tab_bar_bg: None,  // falls back to terminal background
                 titlebar_bg: None, // falls back to tab bar background
-                tab_active_bg: Color32::from_rgb(0x24, 0x28, 0x3b), // Tokyo Night Storm
+                tab_active_bg: Color32::from_rgb(0x1a, 0x1b, 0x26), // match terminal bg
                 tab_bar_border: Color32::from_gray(55),
                 tab_border: Color32::from_gray(55),
                 divider: Color32::from_gray(60),

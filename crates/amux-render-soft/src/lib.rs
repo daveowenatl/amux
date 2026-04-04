@@ -44,7 +44,7 @@ impl SoftRenderer {
         let line_height = (font_size * 1.3).ceil();
         let metrics = Metrics::new(font_size, line_height);
 
-        let cell_width = font::measure_cell_width(&mut font_system, metrics).ceil();
+        let cell_width = font::measure_cell_width(&mut font_system, metrics);
         let cell_height = line_height;
 
         Self {

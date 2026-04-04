@@ -78,7 +78,9 @@ fn get_cwd_from_pid(pid: u32) -> Option<String> {
 }
 
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
-const TAB_BAR_HEIGHT: f32 = 24.0;
+const TAB_BAR_HEIGHT: f32 = 26.0;
+const TAB_MIN_WIDTH: f32 = 100.0;
+const TAB_MAX_WIDTH: f32 = 240.0;
 /// Content top inset: tab bar height + 1px border between tab bar and content.
 const TAB_CONTENT_TOP_INSET: f32 = TAB_BAR_HEIGHT + 1.0;
 /// Visual padding above the tab bar. On macOS with fullSizeContentView,
@@ -775,8 +777,8 @@ impl AmuxApp {
             painter.hline(tab_rect.x_range(), tab_rect.max.y, bar_stroke);
 
             let active_idx = managed.active_surface_idx;
-            let tab_font = egui::FontId::proportional(11.0);
-            let tab_font_bold = fonts::bold_font(11.0);
+            let tab_font = egui::FontId::proportional(11.5);
+            let tab_icon = ">_ ";
             let mut x = tab_rect.min.x + 2.0;
 
             // Get pointer state for hover detection and drag
@@ -801,19 +803,34 @@ impl AmuxApp {
                     .user_title
                     .as_deref()
                     .unwrap_or_else(|| surface.pane.title());
-                let label = if raw_title.is_empty() {
-                    format!("tab {}", surface.id + 1)
+                let title = if raw_title.is_empty() || raw_title == "?" {
+                    // Fall back to working directory path.
+                    surface
+                        .metadata
+                        .cwd
+                        .as_deref()
+                        .map(|p| {
+                            // Replace home dir prefix with ~
+                            if let Some(home) = dirs::home_dir() {
+                                if let Some(rest) = p.strip_prefix(home.to_str().unwrap_or("")) {
+                                    return format!("~{rest}");
+                                }
+                            }
+                            p.to_string()
+                        })
+                        .unwrap_or_else(|| "Tab".to_string())
                 } else if raw_title.chars().count() > 20 {
                     let prefix: String = raw_title.chars().take(17).collect();
                     format!("{prefix}...")
                 } else {
                     raw_title.to_string()
                 };
+                let label = format!("{tab_icon}{title}");
 
                 let text_galley =
                     painter.layout_no_wrap(label.clone(), tab_font.clone(), egui::Color32::WHITE);
                 let text_width = text_galley.size().x;
-                let tab_w = (text_width + 24.0).max(120.0);
+                let tab_w = (text_width + 24.0).clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH);
 
                 let this_tab = egui::Rect::from_min_size(
                     egui::pos2(x, tab_rect.min.y),
@@ -824,9 +841,11 @@ impl AmuxApp {
                 let tab_hovered = hover_pos.is_some_and(|p| this_tab.contains(p));
 
                 let is_dead = surface.exited.is_some();
+                let is_leftmost = idx == 0;
 
                 // Tab background + border
                 let border_color = self.theme.chrome.tab_border;
+                let side_stroke = egui::Stroke::new(1.0, border_color);
                 if is_active {
                     painter.rect_filled(this_tab, 0.0, self.theme.chrome.tab_active_bg);
                     // Active highlight at the top
@@ -840,23 +859,37 @@ impl AmuxApp {
                         self.theme.chrome.accent
                     };
                     painter.rect_filled(topline, 0.0, accent);
-                }
-                // 1px border around each tab
-                painter.rect_stroke(
-                    this_tab,
-                    0.0,
-                    egui::Stroke::new(1.0, border_color),
-                    egui::StrokeKind::Outside,
-                );
-                let (text_color, text_font) = if is_dead {
-                    (egui::Color32::from_gray(80), tab_font.clone())
-                } else if is_active {
-                    (egui::Color32::WHITE, tab_font_bold.clone())
+                    // Side borders only (no bottom border — tab merges with terminal)
+                    if !is_leftmost {
+                        painter.vline(this_tab.min.x, this_tab.y_range(), side_stroke);
+                    }
+                    painter.vline(this_tab.max.x, this_tab.y_range(), side_stroke);
+                    // Paint over the tab bar bottom border so active tab merges cleanly
+                    painter.rect_filled(
+                        egui::Rect::from_min_max(
+                            egui::pos2(this_tab.min.x + 1.0, tab_rect.max.y - 1.0),
+                            egui::pos2(this_tab.max.x, tab_rect.max.y + 1.0),
+                        ),
+                        0.0,
+                        self.theme.chrome.tab_active_bg,
+                    );
                 } else {
-                    (egui::Color32::from_gray(130), tab_font.clone())
+                    // Inactive tabs: top, right, bottom borders (skip left for leftmost)
+                    painter.hline(this_tab.x_range(), this_tab.min.y, side_stroke);
+                    painter.hline(this_tab.x_range(), this_tab.max.y, side_stroke);
+                    painter.vline(this_tab.max.x, this_tab.y_range(), side_stroke);
+                    if !is_leftmost {
+                        painter.vline(this_tab.min.x, this_tab.y_range(), side_stroke);
+                    }
+                }
+                let text_color = if is_dead {
+                    egui::Color32::from_gray(80)
+                } else {
+                    egui::Color32::from_gray(180)
                 };
+                let text_font = tab_font.clone();
                 painter.text(
-                    egui::pos2(x + 6.0, tab_rect.min.y + 5.0),
+                    egui::pos2(x + 6.0, tab_rect.min.y + 6.0),
                     egui::Align2::LEFT_TOP,
                     &label,
                     text_font,
