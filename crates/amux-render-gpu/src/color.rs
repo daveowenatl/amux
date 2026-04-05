@@ -1,4 +1,4 @@
-//! sRGB colour conversion helpers used by the GPU render callback.
+//! sRGB color conversion helpers used by the GPU render callback.
 
 /// Convert an sRGB color to linear if the target is sRGB, otherwise pass through.
 pub(crate) fn maybe_linearize(color: [f32; 4], target_is_srgb: bool) -> [f32; 4] {

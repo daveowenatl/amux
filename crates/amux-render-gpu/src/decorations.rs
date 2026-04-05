@@ -4,15 +4,18 @@
 //! that is uploaded to the atlas and tiled across decorated cells.
 
 /// Rasterize a curly (wavy) underline tile into a grayscale bitmap.
-/// Uses Ghostty-style approach: cubic Bézier-approximated sine wave.
-/// Returns (width, height, pixel_data).
+/// Samples a sine wave directly, with amplitude chosen to match the visual
+/// height of Ghostty's cubic-Bézier curly underline so the two renderers
+/// look consistent. Returns (width, height, pixel_data).
 pub(crate) fn rasterize_curly_tile(cell_width: f32, thickness: f32) -> (u32, u32, Vec<u8>) {
-    let w = cell_width.ceil() as u32;
+    // Guard against a zero cell width: we index up to `w - 1`, so a zero
+    // width would underflow / produce a degenerate tile. Clamp to ≥ 1.
+    let w = (cell_width.ceil() as u32).max(1);
     // Ghostty uses amplitude = width/π with Bézier curvature 0.4.
     // Since we use a sine wave (which hits full amplitude), scale down
     // to match the visual height of Ghostty's Bézier wave.
     let amplitude = (cell_width / std::f32::consts::PI * 0.4).max(thickness);
-    let h = (amplitude * 2.0 + thickness * 2.0).ceil() as u32;
+    let h = ((amplitude * 2.0 + thickness * 2.0).ceil() as u32).max(1);
     let mut pixels = vec![0u8; (w * h) as usize];
 
     let center_y = h as f32 / 2.0;
@@ -56,9 +59,11 @@ pub(crate) fn rasterize_curly_tile(cell_width: f32, thickness: f32) -> (u32, u32
 /// Rasterize a dotted underline tile: a row of circles across one cell width.
 /// Returns (width, height, pixel_data).
 pub(crate) fn rasterize_dotted_tile(cell_width: f32, thickness: f32) -> (u32, u32, Vec<u8>) {
-    let w = cell_width.ceil() as u32;
+    // Guard against a zero cell width: we index up to `w - 1` below, so a
+    // zero width would underflow / produce a degenerate tile. Clamp to ≥ 1.
+    let w = (cell_width.ceil() as u32).max(1);
     let radius = (thickness * std::f32::consts::SQRT_2 / 2.0).max(1.0);
-    let h = (radius * 2.0 + 2.0).ceil() as u32;
+    let h = ((radius * 2.0 + 2.0).ceil() as u32).max(1);
     let mut pixels = vec![0u8; (w * h) as usize];
 
     let center_y = h as f32 / 2.0;
