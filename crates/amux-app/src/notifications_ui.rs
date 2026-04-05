@@ -2,6 +2,38 @@
 
 use crate::*;
 
+// --- Shared titlebar icon-row geometry -------------------------------------
+// These constants describe the fixed-position icon row in the titlebar and
+// are referenced by both the icon renderer and the notifications panel so
+// that the panel always anchors on the actual bell-icon center.
+
+const TITLEBAR_ICON_W: f32 = 28.0;
+const TITLEBAR_ICON_H: f32 = 22.0;
+const TITLEBAR_ICON_GAP: f32 = 2.0;
+/// Index of the bell in the icon row: sidebar(0), bell(1), plus(2).
+const TITLEBAR_BELL_INDEX: usize = 1;
+
+/// Left inset before the first icon. On macOS we reserve space for the
+/// native traffic-light buttons; on other platforms the row hugs the edge.
+fn titlebar_left_inset() -> f32 {
+    #[cfg(target_os = "macos")]
+    {
+        78.0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        8.0
+    }
+}
+
+/// Horizontal center of the bell icon in screen-local x coordinates,
+/// relative to the window's left edge.
+fn titlebar_bell_center_x() -> f32 {
+    titlebar_left_inset()
+        + (TITLEBAR_BELL_INDEX as f32) * (TITLEBAR_ICON_W + TITLEBAR_ICON_GAP)
+        + TITLEBAR_ICON_W / 2.0
+}
+
 impl AmuxApp {
     pub(crate) fn drain_notifications(&mut self) {
         // Collect events first to avoid borrow conflicts
@@ -211,18 +243,11 @@ impl AmuxApp {
     /// anchored to the window's absolute top-left so they stay put regardless
     /// of sidebar visibility.
     pub(crate) fn render_titlebar_icons(&mut self, ctx: &egui::Context) {
-        let icon_size = egui::vec2(28.0, 22.0);
-        let gap = 2.0;
-        // On macOS the traffic-light buttons live in the leftmost ~76px. On
-        // Windows/Linux there are no traffic lights so the icon row starts
-        // at the left edge.
-        #[cfg(target_os = "macos")]
-        let left_inset = 78.0;
-        #[cfg(not(target_os = "macos"))]
-        let left_inset = 8.0;
+        let icon_size = egui::vec2(TITLEBAR_ICON_W, TITLEBAR_ICON_H);
+        let gap = TITLEBAR_ICON_GAP;
         let screen = ctx.screen_rect();
         let top_y = screen.min.y + 3.0;
-        let origin_x = screen.min.x + left_inset;
+        let origin_x = screen.min.x + titlebar_left_inset();
 
         egui::Area::new(egui::Id::new("amux_titlebar_icons"))
             .order(egui::Order::Foreground)
@@ -349,15 +374,10 @@ impl AmuxApp {
             .collect();
 
         // Align the panel horizontally to the bell icon's center (with
-        // clamping to keep the panel fully on-screen).
-        #[cfg(target_os = "macos")]
-        let titlebar_left_inset: f32 = 78.0;
-        #[cfg(not(target_os = "macos"))]
-        let titlebar_left_inset: f32 = 8.0;
-        let icon_w = 28.0_f32;
-        let icon_gap = 2.0_f32;
-        // Bell is the 2nd icon: sidebar, bell, plus.
-        let bell_center_x = titlebar_left_inset + icon_w + icon_gap + icon_w / 2.0;
+        // clamping to keep the panel fully on-screen). Uses the shared
+        // titlebar geometry constants so the panel stays aligned if the
+        // icon row layout ever changes.
+        let bell_center_x = titlebar_bell_center_x();
         let panel_width = 400.0_f32;
         let screen_w = ctx.screen_rect().width();
         let max_left = (screen_w - panel_width - 10.0).max(10.0);
@@ -367,7 +387,7 @@ impl AmuxApp {
             .title_bar(false)
             .movable(false)
             .collapsible(false)
-            .resizable(true)
+            .resizable(false)
             .default_size([panel_width, 500.0])
             .anchor(egui::Align2::LEFT_TOP, [panel_left, TERMINAL_TOP_PAD + 4.0])
             .frame(
