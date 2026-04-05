@@ -157,18 +157,18 @@ impl NotificationStore {
         }
     }
 
-    /// Remove all prior notifications for the given (workspace, surface) pair
-    /// so only the newest notification for that surface remains in the list.
-    /// Unread counts for the affected panes are adjusted accordingly. Matches
-    /// cmux's "only most recent notification per tab+surface matters" model,
-    /// preventing notification pile-up during a single agent session.
+    /// Remove prior **unread** notifications for the given (workspace, surface)
+    /// pair so only the newest notification for that surface remains active.
+    /// Read notifications are preserved as historical records and are never
+    /// dropped by this helper. Unread counts for the affected panes are
+    /// adjusted accordingly. Matches cmux's "only most recent notification per
+    /// tab+surface matters" model, preventing notification pile-up during a
+    /// single agent session.
     fn supersede_prior_for_surface(&mut self, workspace_id: u64, surface_id: u64) {
         let mut removed_unread_by_pane: HashMap<u64, usize> = HashMap::new();
         self.notifications.retain(|n| {
-            if n.workspace_id == workspace_id && n.surface_id == surface_id {
-                if !n.read {
-                    *removed_unread_by_pane.entry(n.pane_id).or_insert(0) += 1;
-                }
+            if n.workspace_id == workspace_id && n.surface_id == surface_id && !n.read {
+                *removed_unread_by_pane.entry(n.pane_id).or_insert(0) += 1;
                 false
             } else {
                 true
@@ -182,7 +182,8 @@ impl NotificationStore {
     }
 
     /// Add a notification. Triggers a flash on the target pane.
-    /// Supersedes any existing notifications for the same (workspace, surface).
+    /// Supersedes any existing **unread** notifications for the same
+    /// (workspace, surface); read notifications are retained as history.
     #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
@@ -222,7 +223,8 @@ impl NotificationStore {
 
     /// Push a notification but immediately mark it as read (for focused-pane
     /// notifications — still triggers arrival flash but no persistent ring).
-    /// Supersedes any existing notifications for the same (workspace, surface).
+    /// Supersedes any existing **unread** notifications for the same
+    /// (workspace, surface); read notifications are retained as history.
     #[allow(clippy::too_many_arguments)]
     pub fn push_read(
         &mut self,
@@ -1022,7 +1024,7 @@ mod tests {
     }
 
     #[test]
-    fn push_supersedes_read_history_for_surface() {
+    fn push_preserves_read_history_for_surface() {
         let mut store = NotificationStore::new();
         store.push(
             1,
@@ -1036,7 +1038,8 @@ mod tests {
         store.mark_pane_read(10);
         assert!(store.all_notifications()[0].read);
 
-        // New notification for same surface supersedes the read entry too.
+        // A new notification for the same surface must NOT supersede a read
+        // entry — read notifications are preserved as history (issue #38).
         store.push(
             1,
             10,
@@ -1046,9 +1049,14 @@ mod tests {
             "new".into(),
             NotificationSource::Bell,
         );
-        assert_eq!(store.all_notifications().len(), 1);
-        assert_eq!(store.all_notifications()[0].title, "New");
-        assert!(!store.all_notifications()[0].read);
+        let all = store.all_notifications();
+        assert_eq!(all.len(), 2);
+        // Order is insertion order: the preserved read entry is first, the
+        // new unread entry is appended after it.
+        assert_eq!(all[0].title, "Old");
+        assert!(all[0].read);
+        assert_eq!(all[1].title, "New");
+        assert!(!all[1].read);
         assert_eq!(store.pane_unread(10), 1);
     }
 
