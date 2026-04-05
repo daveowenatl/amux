@@ -1091,4 +1091,37 @@ mod tests {
         assert!(store.all_notifications()[0].read);
         assert_eq!(store.pane_unread(10), 0);
     }
+
+    #[test]
+    fn push_restored_preserves_history_without_flash() {
+        let mut store = NotificationStore::new();
+        // Two restored entries for the same (workspace, surface) must both
+        // survive — push_restored is the session-restore path and must not
+        // collapse history the way push()/push_read() do.
+        store.push_restored(
+            1,
+            10,
+            100,
+            "First".into(),
+            String::new(),
+            "a".into(),
+            NotificationSource::Bell,
+        );
+        store.push_restored(
+            1,
+            10,
+            100,
+            "Second".into(),
+            String::new(),
+            "b".into(),
+            NotificationSource::Bell,
+        );
+        let all = store.all_notifications();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().all(|n| n.read));
+        // Restored entries are read, so unread count stays at zero and no
+        // pane_state (and thus no flash) is created by the restore path.
+        assert_eq!(store.pane_unread(10), 0);
+        assert!(store.pane_state(10).is_none());
+    }
 }
