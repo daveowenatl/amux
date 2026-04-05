@@ -4,6 +4,7 @@ mod color;
 mod custom_glyphs;
 mod decorations;
 mod pipeline;
+mod resources;
 mod shape;
 pub mod snapshot;
 mod state;
@@ -12,8 +13,9 @@ use amux_term::font::{self, FontConfig};
 use cosmic_text::{Metrics, SwashCache};
 
 use atlas::GlyphAtlas;
-use callback::{TerminalGpuResources, TerminalPaintCallback};
+use callback::TerminalPaintCallback;
 use pipeline::{BackgroundPipeline, ForegroundPipeline, ImagePipeline};
+use resources::TerminalGpuResources;
 pub use snapshot::TerminalSnapshot;
 use state::PhysRect;
 
