@@ -373,23 +373,29 @@ impl AmuxApp {
             })
             .collect();
 
-        // Align the panel horizontally to the bell icon's center (with
-        // clamping to keep the panel fully on-screen). Uses the shared
-        // titlebar geometry constants so the panel stays aligned if the
-        // icon row layout ever changes.
+        // Align the panel horizontally to the bell icon's center, clamping
+        // BOTH the panel dimensions and its anchor to the current viewport so
+        // the panel cannot overflow off-screen on small windows. Uses the
+        // shared titlebar geometry constants so the panel stays aligned if
+        // the icon row layout ever changes.
         let bell_center_x = titlebar_bell_center_x();
-        let panel_width = 400.0_f32;
-        let screen_w = ctx.screen_rect().width();
-        let max_left = (screen_w - panel_width - 10.0).max(10.0);
-        let panel_left = (bell_center_x - panel_width / 2.0).max(10.0).min(max_left);
+        let horizontal_margin = 10.0_f32;
+        let top_margin = TERMINAL_TOP_PAD + 4.0;
+        let bottom_margin = 10.0_f32;
+        let screen = ctx.screen_rect();
+        let panel_width = 400.0_f32.min((screen.width() - horizontal_margin * 2.0).max(0.0));
+        let panel_height = 500.0_f32.min((screen.height() - top_margin - bottom_margin).max(0.0));
+        let max_left = (screen.width() - panel_width - horizontal_margin).max(0.0);
+        let min_left = horizontal_margin.min(max_left);
+        let panel_left = (bell_center_x - panel_width / 2.0).clamp(min_left, max_left);
 
         egui::Window::new("Notifications")
             .title_bar(false)
             .movable(false)
             .collapsible(false)
             .resizable(false)
-            .default_size([panel_width, 500.0])
-            .anchor(egui::Align2::LEFT_TOP, [panel_left, TERMINAL_TOP_PAD + 4.0])
+            .fixed_size([panel_width, panel_height])
+            .anchor(egui::Align2::LEFT_TOP, [panel_left, top_margin])
             .frame(
                 egui::Frame::window(&ctx.style())
                     .fill(self.theme.chrome.sidebar_bg)
