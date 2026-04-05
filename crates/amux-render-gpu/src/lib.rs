@@ -5,6 +5,7 @@ mod custom_glyphs;
 mod decorations;
 mod pipeline;
 mod resources;
+mod screen_line;
 mod shape;
 pub mod snapshot;
 mod state;
