@@ -12,8 +12,9 @@
 use cosmic_text::{Attrs, Buffer, Metrics, Shaping};
 use egui_wgpu::wgpu;
 
-use crate::callback::{CachedGlyph, ShapedGlyphEntry, TerminalGpuResources, TextRun};
+use crate::callback::TerminalGpuResources;
 use crate::pipeline::CellFgInstance;
+use crate::state::{CachedGlyph, ShapedGlyphEntry, TextRun};
 
 /// Shape a multi-cell text run for ligature support.
 ///

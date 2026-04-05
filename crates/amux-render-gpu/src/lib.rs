@@ -6,14 +6,16 @@ mod decorations;
 mod pipeline;
 mod shape;
 pub mod snapshot;
+mod state;
 
 use amux_term::font::{self, FontConfig};
 use cosmic_text::{Metrics, SwashCache};
 
 use atlas::GlyphAtlas;
-use callback::{PhysRect, TerminalGpuResources, TerminalPaintCallback};
+use callback::{TerminalGpuResources, TerminalPaintCallback};
 use pipeline::{BackgroundPipeline, ForegroundPipeline, ImagePipeline};
 pub use snapshot::TerminalSnapshot;
+use state::PhysRect;
 
 /// Atlas texture size (2048×2048, ~4MB for R8).
 const ATLAS_SIZE: u32 = 2048;
