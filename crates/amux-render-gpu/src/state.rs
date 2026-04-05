@@ -7,7 +7,7 @@
 use amux_term::backend::CursorShape;
 use egui_wgpu::wgpu;
 
-use crate::pipeline::{CellBgInstance, CellFgInstance};
+use crate::quad::{CellBgInstance, CellFgInstance};
 use crate::snapshot::TerminalSnapshot;
 
 /// Physical pixel rectangle for the pane area.

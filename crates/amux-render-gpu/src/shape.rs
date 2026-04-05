@@ -12,7 +12,7 @@
 use cosmic_text::{Attrs, Buffer, Metrics, Shaping};
 use egui_wgpu::wgpu;
 
-use crate::pipeline::CellFgInstance;
+use crate::quad::CellFgInstance;
 use crate::resources::TerminalGpuResources;
 use crate::state::{CachedGlyph, ShapedGlyphEntry, TextRun};
 

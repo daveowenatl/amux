@@ -4,6 +4,7 @@ mod color;
 mod custom_glyphs;
 mod decorations;
 mod pipeline;
+mod quad;
 mod resources;
 mod screen_line;
 mod shape;

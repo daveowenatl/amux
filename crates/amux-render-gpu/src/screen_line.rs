@@ -22,7 +22,7 @@ use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use crate::callback::TerminalPaintCallback;
 use crate::color::maybe_linearize;
 use crate::decorations::{rasterize_curly_tile, rasterize_dotted_tile};
-use crate::pipeline::{ensure_instance_buffer, CellBgInstance, CellFgInstance, ImageQuadInstance};
+use crate::quad::{ensure_instance_buffer, CellBgInstance, CellFgInstance, ImageQuadInstance};
 use crate::resources::TerminalGpuResources;
 use crate::shape::{shape_and_rasterize, shape_run};
 use crate::state::{ImageTextureEntry, PaneRenderState, PhysRect, TextRun};
