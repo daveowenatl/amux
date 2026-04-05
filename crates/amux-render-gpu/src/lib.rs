@@ -1,6 +1,8 @@
 mod atlas;
 mod callback;
+mod color;
 mod custom_glyphs;
+mod decorations;
 mod pipeline;
 pub mod snapshot;
 
