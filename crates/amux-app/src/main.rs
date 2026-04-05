@@ -6,6 +6,7 @@ mod key_encode;
 mod managed_pane;
 mod menu_bar;
 mod notifications_ui;
+mod rename_modal;
 mod render;
 mod selection;
 mod sidebar;
@@ -36,6 +37,7 @@ use amux_term::pane::TerminalPane;
 use amux_term::TerminalBackend;
 use managed_pane::*;
 use portable_pty::CommandBuilder;
+use rename_modal::{RenameModal, RenameTarget};
 
 #[cfg(feature = "gpu-renderer")]
 use amux_render_gpu::GpuRenderer;
@@ -149,20 +151,6 @@ struct AmuxApp {
     menu_attached: bool,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
-}
-
-/// What is being renamed — workspace or tab (surface).
-/// Uses stable IDs rather than indices so background reorder/close can't
-/// cause the modal to rename the wrong item.
-enum RenameTarget {
-    Workspace(u64),
-    Tab { pane_id: PaneId, surface_id: u64 },
-}
-
-struct RenameModal {
-    target: RenameTarget,
-    buf: String,
-    just_opened: bool,
 }
 
 struct TabDragState {
@@ -1441,82 +1429,6 @@ impl AmuxApp {
                     }
                 }
             }
-        }
-    }
-
-    fn render_rename_modal(&mut self, ctx: &egui::Context) {
-        let mut apply: Option<String> = None;
-        let mut cancel = false;
-
-        let title = match &self.rename_modal.as_ref().unwrap().target {
-            RenameTarget::Workspace(_) => "Rename Workspace",
-            RenameTarget::Tab { .. } => "Rename Tab",
-        };
-
-        let modal = self.rename_modal.as_mut().unwrap();
-        let just_opened = modal.just_opened;
-
-        egui::Window::new(title)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .fixed_size([280.0, 0.0])
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Name:");
-                    let response = ui.text_edit_singleline(&mut modal.buf);
-                    if just_opened {
-                        response.request_focus();
-                        modal.just_opened = false;
-                    }
-                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        apply = Some(modal.buf.trim().to_string());
-                    }
-                });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui.button("OK").clicked() {
-                        apply = Some(modal.buf.trim().to_string());
-                    }
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                });
-            });
-
-        // Also close on Escape
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            cancel = true;
-        }
-
-        if let Some(new_name) = apply {
-            if !new_name.is_empty() {
-                match &self.rename_modal.as_ref().unwrap().target {
-                    RenameTarget::Workspace(ws_id) => {
-                        let ws_id = *ws_id;
-                        if let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == ws_id) {
-                            ws.title = new_name;
-                        }
-                    }
-                    RenameTarget::Tab {
-                        pane_id,
-                        surface_id,
-                    } => {
-                        let pane_id = *pane_id;
-                        let surface_id = *surface_id;
-                        if let Some(managed) = self.panes.get_mut(&pane_id) {
-                            if let Some(surface) =
-                                managed.surfaces.iter_mut().find(|s| s.id == surface_id)
-                            {
-                                surface.user_title = Some(new_name);
-                            }
-                        }
-                    }
-                }
-            }
-            self.rename_modal = None;
-        } else if cancel {
-            self.rename_modal = None;
         }
     }
 
