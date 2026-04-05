@@ -157,7 +157,33 @@ impl NotificationStore {
         }
     }
 
+    /// Remove prior **unread** notifications for the given (workspace, surface)
+    /// pair so only the newest notification for that surface remains active.
+    /// Read notifications are preserved as historical records and are never
+    /// dropped by this helper. Unread counts for the affected panes are
+    /// adjusted accordingly. Matches cmux's "only most recent notification per
+    /// tab+surface matters" model, preventing notification pile-up during a
+    /// single agent session.
+    fn supersede_prior_for_surface(&mut self, workspace_id: u64, surface_id: u64) {
+        let mut removed_unread_by_pane: HashMap<u64, usize> = HashMap::new();
+        self.notifications.retain(|n| {
+            if n.workspace_id == workspace_id && n.surface_id == surface_id && !n.read {
+                *removed_unread_by_pane.entry(n.pane_id).or_insert(0) += 1;
+                false
+            } else {
+                true
+            }
+        });
+        for (pid, count) in removed_unread_by_pane {
+            if let Some(state) = self.pane_states.get_mut(&pid) {
+                state.unread_count = state.unread_count.saturating_sub(count);
+            }
+        }
+    }
+
     /// Add a notification. Triggers a flash on the target pane.
+    /// Supersedes any existing **unread** notifications for the same
+    /// (workspace, surface); read notifications are retained as history.
     #[allow(clippy::too_many_arguments)]
     pub fn push(
         &mut self,
@@ -169,6 +195,8 @@ impl NotificationStore {
         body: String,
         source: NotificationSource,
     ) -> u64 {
+        self.supersede_prior_for_surface(workspace_id, surface_id);
+
         let id = self.next_id;
         self.next_id += 1;
 
@@ -195,8 +223,51 @@ impl NotificationStore {
 
     /// Push a notification but immediately mark it as read (for focused-pane
     /// notifications — still triggers arrival flash but no persistent ring).
+    /// Supersedes any existing **unread** notifications for the same
+    /// (workspace, surface); read notifications are retained as history.
     #[allow(clippy::too_many_arguments)]
     pub fn push_read(
+        &mut self,
+        workspace_id: u64,
+        pane_id: u64,
+        surface_id: u64,
+        title: String,
+        subtitle: String,
+        body: String,
+        source: NotificationSource,
+    ) -> u64 {
+        self.supersede_prior_for_surface(workspace_id, surface_id);
+
+        let id = self.next_id;
+        self.next_id += 1;
+
+        self.notifications.push(Notification {
+            id,
+            workspace_id,
+            pane_id,
+            surface_id,
+            title,
+            subtitle,
+            body,
+            source,
+            created_at: Instant::now(),
+            read: true,
+        });
+
+        // Flash but don't increment unread
+        let state = self.pane_states.entry(pane_id).or_default();
+        state.flash_started_at = Some(Instant::now());
+        state.flash_reason = Some(FlashReason::NotificationArrival);
+
+        id
+    }
+
+    /// Restore a historical read notification from a saved session without
+    /// triggering supersession or a flash. Used only during session restore;
+    /// preserves chronological history that would otherwise be collapsed by
+    /// the per-(workspace, surface) supersession in [`Self::push_read`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_restored(
         &mut self,
         workspace_id: u64,
         pane_id: u64,
@@ -221,11 +292,6 @@ impl NotificationStore {
             created_at: Instant::now(),
             read: true,
         });
-
-        // Flash but don't increment unread
-        let state = self.pane_states.entry(pane_id).or_default();
-        state.flash_started_at = Some(Instant::now());
-        state.flash_reason = Some(FlashReason::NotificationArrival);
 
         id
     }
@@ -890,5 +956,172 @@ mod tests {
         // set_status clears progress
         store.set_status(1, AgentState::Idle, None, None, None);
         assert!(store.workspace_status(1).unwrap().progress.is_none());
+    }
+
+    #[test]
+    fn push_supersedes_prior_same_surface() {
+        let mut store = NotificationStore::new();
+        let first = store.push(
+            1,
+            10,
+            100,
+            "First".into(),
+            String::new(),
+            "old".into(),
+            NotificationSource::Bell,
+        );
+        store.push(
+            1,
+            10,
+            100,
+            "Second".into(),
+            String::new(),
+            "new".into(),
+            NotificationSource::Bell,
+        );
+        // Only the newest notification for this surface should remain.
+        assert_eq!(store.all_notifications().len(), 1);
+        assert_eq!(store.all_notifications()[0].title, "Second");
+        // Unread count tracks surviving notification, not accumulation.
+        assert_eq!(store.pane_unread(10), 1);
+        // The superseded id should not match the surviving one.
+        assert_ne!(store.all_notifications()[0].id, first);
+    }
+
+    #[test]
+    fn push_preserves_other_surfaces() {
+        let mut store = NotificationStore::new();
+        store.push(
+            1,
+            10,
+            100,
+            "A".into(),
+            String::new(),
+            "a".into(),
+            NotificationSource::Bell,
+        );
+        store.push(
+            1,
+            10,
+            101, // different surface
+            "B".into(),
+            String::new(),
+            "b".into(),
+            NotificationSource::Bell,
+        );
+        store.push(
+            2, // different workspace
+            20,
+            100,
+            "C".into(),
+            String::new(),
+            "c".into(),
+            NotificationSource::Bell,
+        );
+        assert_eq!(store.all_notifications().len(), 3);
+        assert_eq!(store.pane_unread(10), 2);
+        assert_eq!(store.pane_unread(20), 1);
+    }
+
+    #[test]
+    fn push_preserves_read_history_for_surface() {
+        let mut store = NotificationStore::new();
+        store.push(
+            1,
+            10,
+            100,
+            "Old".into(),
+            String::new(),
+            "old".into(),
+            NotificationSource::Bell,
+        );
+        store.mark_pane_read(10);
+        assert!(store.all_notifications()[0].read);
+
+        // A new notification for the same surface must NOT supersede a read
+        // entry — read notifications are preserved as history (issue #38).
+        store.push(
+            1,
+            10,
+            100,
+            "New".into(),
+            String::new(),
+            "new".into(),
+            NotificationSource::Bell,
+        );
+        let all = store.all_notifications();
+        assert_eq!(all.len(), 2);
+        // Order is insertion order: the preserved read entry is first, the
+        // new unread entry is appended after it.
+        assert_eq!(all[0].title, "Old");
+        assert!(all[0].read);
+        assert_eq!(all[1].title, "New");
+        assert!(!all[1].read);
+        assert_eq!(store.pane_unread(10), 1);
+    }
+
+    #[test]
+    fn push_read_also_supersedes() {
+        let mut store = NotificationStore::new();
+        // Start with an unread notification for the surface.
+        store.push(
+            1,
+            10,
+            100,
+            "Unread".into(),
+            String::new(),
+            "u".into(),
+            NotificationSource::Bell,
+        );
+        assert_eq!(store.pane_unread(10), 1);
+
+        // push_read for the same surface supersedes prior unread entries
+        // and correctly decrements the unread count.
+        store.push_read(
+            1,
+            10,
+            100,
+            "Focused".into(),
+            String::new(),
+            "f".into(),
+            NotificationSource::Toast,
+        );
+        assert_eq!(store.all_notifications().len(), 1);
+        assert_eq!(store.all_notifications()[0].title, "Focused");
+        assert!(store.all_notifications()[0].read);
+        assert_eq!(store.pane_unread(10), 0);
+    }
+
+    #[test]
+    fn push_restored_preserves_history_without_flash() {
+        let mut store = NotificationStore::new();
+        // Two restored entries for the same (workspace, surface) must both
+        // survive — push_restored is the session-restore path and must not
+        // collapse history the way push()/push_read() do.
+        store.push_restored(
+            1,
+            10,
+            100,
+            "First".into(),
+            String::new(),
+            "a".into(),
+            NotificationSource::Bell,
+        );
+        store.push_restored(
+            1,
+            10,
+            100,
+            "Second".into(),
+            String::new(),
+            "b".into(),
+            NotificationSource::Bell,
+        );
+        let all = store.all_notifications();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().all(|n| n.read));
+        // Restored entries are read, so unread count stays at zero and no
+        // pane_state (and thus no flash) is created by the restore path.
+        assert_eq!(store.pane_unread(10), 0);
+        assert!(store.pane_state(10).is_none());
     }
 }
