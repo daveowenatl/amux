@@ -207,8 +207,10 @@ impl AmuxApp {
     }
 
     /// Render the top-left titlebar icon row: sidebar toggle, notifications bell,
-    /// and new workspace — mirroring cmux's titlebar layout.
-    pub(crate) fn render_titlebar_icons(&mut self, ui: &mut egui::Ui, full_rect: egui::Rect) {
+    /// and new workspace — mirroring cmux's titlebar layout. The icons are
+    /// anchored to the window's absolute top-left so they stay put regardless
+    /// of sidebar visibility.
+    pub(crate) fn render_titlebar_icons(&mut self, ctx: &egui::Context) {
         let icon_size = egui::vec2(28.0, 22.0);
         let gap = 2.0;
         // On macOS the traffic-light buttons live in the leftmost ~76px. On
@@ -218,19 +220,36 @@ impl AmuxApp {
         let left_inset = 78.0;
         #[cfg(not(target_os = "macos"))]
         let left_inset = 8.0;
-        let top_y = full_rect.min.y + 3.0;
-        let mut x = full_rect.min.x + left_inset;
+        let screen = ctx.screen_rect();
+        let top_y = screen.min.y + 3.0;
+        let origin_x = screen.min.x + left_inset;
+
+        egui::Area::new(egui::Id::new("amux_titlebar_icons"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(origin_x, top_y))
+            .show(ctx, |ui| {
+                self.render_titlebar_icons_inner(ui, icon_size, gap);
+            });
+    }
+
+    fn render_titlebar_icons_inner(&mut self, ui: &mut egui::Ui, icon_size: egui::Vec2, gap: f32) {
+        let origin = ui.min_rect().min;
+        let top_y = origin.y;
+        let mut x = origin.x;
+
+        // Platform-specific shortcut labels.
+        #[cfg(target_os = "macos")]
+        let (sc_sidebar, sc_notif, sc_new) = ("⌘B", "⌘I", "⌘N");
+        #[cfg(not(target_os = "macos"))]
+        let (sc_sidebar, sc_notif, sc_new) = ("Ctrl+B", "Ctrl+I", "Ctrl+Shift+N");
 
         // --- Sidebar toggle ---
         let r_sidebar = egui::Rect::from_min_size(egui::pos2(x, top_y), icon_size);
-        let sidebar_on = self.sidebar.visible;
         let resp_sidebar = draw_icon_button(
             ui,
             r_sidebar,
             ui.id().with("titlebar_sidebar_btn"),
-            sidebar_on,
-            &self.theme,
-            "Toggle sidebar",
+            &format!("Toggle sidebar  ({sc_sidebar})"),
             draw_sidebar_glyph,
         );
         if resp_sidebar.clicked() {
@@ -241,14 +260,11 @@ impl AmuxApp {
         // --- Notifications bell ---
         let unread = self.notifications.total_unread();
         let r_bell = egui::Rect::from_min_size(egui::pos2(x, top_y), icon_size);
-        let bell_on = self.show_notification_panel;
         let resp_bell = draw_icon_button(
             ui,
             r_bell,
             ui.id().with("titlebar_bell_btn"),
-            bell_on,
-            &self.theme,
-            "Notifications",
+            &format!("Notifications  ({sc_notif})"),
             draw_bell_glyph,
         );
         // Unread badge (red dot + count).
@@ -291,9 +307,7 @@ impl AmuxApp {
             ui,
             r_new,
             ui.id().with("titlebar_new_ws_btn"),
-            false,
-            &self.theme,
-            "New workspace",
+            &format!("New workspace  ({sc_new})"),
             draw_plus_glyph,
         );
         if resp_new.clicked() {
@@ -334,13 +348,28 @@ impl AmuxApp {
             })
             .collect();
 
+        // Align the panel horizontally to the bell icon's center (with
+        // clamping to keep the panel fully on-screen).
+        #[cfg(target_os = "macos")]
+        let titlebar_left_inset: f32 = 78.0;
+        #[cfg(not(target_os = "macos"))]
+        let titlebar_left_inset: f32 = 8.0;
+        let icon_w = 28.0_f32;
+        let icon_gap = 2.0_f32;
+        // Bell is the 2nd icon: sidebar, bell, plus.
+        let bell_center_x = titlebar_left_inset + icon_w + icon_gap + icon_w / 2.0;
+        let panel_width = 400.0_f32;
+        let screen_w = ctx.screen_rect().width();
+        let max_left = (screen_w - panel_width - 10.0).max(10.0);
+        let panel_left = (bell_center_x - panel_width / 2.0).max(10.0).min(max_left);
+
         egui::Window::new("Notifications")
             .title_bar(false)
             .movable(false)
             .collapsible(false)
             .resizable(true)
-            .default_size([400.0, 500.0])
-            .anchor(egui::Align2::RIGHT_TOP, [-10.0, TERMINAL_TOP_PAD + 4.0])
+            .default_size([panel_width, 500.0])
+            .anchor(egui::Align2::LEFT_TOP, [panel_left, TERMINAL_TOP_PAD + 4.0])
             .frame(
                 egui::Frame::window(&ctx.style())
                     .fill(self.theme.chrome.sidebar_bg)
@@ -461,46 +490,31 @@ impl AmuxApp {
     }
 }
 
-/// Shared chrome for a titlebar icon button: hover/active background tint,
-/// cursor, tooltip, and a caller-supplied glyph drawer.
+/// Shared chrome for a titlebar icon button: cursor, tooltip, and a
+/// caller-supplied glyph drawer. Intentionally flat — no hover/active tint.
 fn draw_icon_button<F>(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     id: egui::Id,
-    active: bool,
-    theme: &theme::Theme,
     tooltip: &str,
     draw_glyph: F,
 ) -> egui::Response
 where
     F: FnOnce(&egui::Painter, egui::Rect, egui::Color32),
 {
+    // Expand the ui's min_rect to include this widget so egui's tooltip
+    // system can position hover text correctly.
+    ui.expand_to_include_rect(rect);
+    // NOTE: global style sets widget fg_stroke to TRANSPARENT (to hide panel
+    // resize handles), so default tooltip text would be invisible. Use an
+    // explicit color via RichText.
+    let tooltip_text = egui::RichText::new(tooltip).color(egui::Color32::from_gray(220));
     let response = ui
         .interact(rect, id, egui::Sense::click())
-        .on_hover_text(tooltip);
+        .on_hover_text(tooltip_text);
     let painter = ui.painter();
 
-    // Background tint.
-    let bg = if response.is_pointer_button_down_on() {
-        egui::Color32::from_white_alpha(28)
-    } else if active {
-        egui::Color32::from_white_alpha(22)
-    } else if response.hovered() {
-        egui::Color32::from_white_alpha(14)
-    } else {
-        egui::Color32::TRANSPARENT
-    };
-    if bg != egui::Color32::TRANSPARENT {
-        painter.rect_filled(rect, 5.0, bg);
-    }
-
-    let color = if active {
-        theme.chrome.accent
-    } else if response.hovered() {
-        egui::Color32::from_gray(232)
-    } else {
-        egui::Color32::from_gray(170)
-    };
+    let color = egui::Color32::from_gray(170);
     draw_glyph(painter, rect, color);
 
     if response.hovered() {

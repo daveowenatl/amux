@@ -591,7 +591,7 @@ impl eframe::App for AmuxApp {
                     self.theme.titlebar_bg(),
                 );
                 // Top-left titlebar icons: sidebar toggle, notifications, new workspace.
-                self.render_titlebar_icons(ui, full_rect);
+                self.render_titlebar_icons(ui.ctx());
                 // Shift content area down by the top padding.
                 let panel_rect = egui::Rect::from_min_max(
                     egui::pos2(full_rect.min.x, full_rect.min.y + TERMINAL_TOP_PAD),

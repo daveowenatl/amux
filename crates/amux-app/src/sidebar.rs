@@ -13,8 +13,6 @@ const ROW_HOVER_BG: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
 const TEXT_ACTIVE: Color32 = Color32::WHITE;
 const TEXT_INACTIVE: Color32 = Color32::from_gray(180);
 const BADGE_ACTIVE_BG: Color32 = Color32::from_rgba_premultiplied(64, 64, 64, 64);
-const NEW_BTN_TEXT: Color32 = Color32::from_gray(140);
-const NEW_BTN_HOVER: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
 const CLOSE_BTN_COLOR: Color32 = Color32::from_rgba_premultiplied(140, 140, 140, 179);
 const PROGRESS_TRACK: Color32 = Color32::from_rgba_premultiplied(20, 20, 20, 20);
 
@@ -195,34 +193,8 @@ pub(crate) fn render_sidebar(
                             .rect_filled(indicator_rect, 1.0, theme.chrome.accent);
                     }
 
-                    ui.add_space(8.0);
-
-                    // "+ New Workspace" button
-                    let avail_w = ui.available_width();
-                    let (btn_rect, btn_response) =
-                        ui.allocate_exact_size(egui::vec2(avail_w, 28.0), egui::Sense::click());
-                    if ui.is_rect_visible(btn_rect) {
-                        if btn_response.hovered() {
-                            ui.painter()
-                                .rect_filled(btn_rect, ROW_CORNER_RADIUS, NEW_BTN_HOVER);
-                        }
-                        ui.painter().text(
-                            btn_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "+ New Workspace",
-                            egui::FontId::proportional(11.0),
-                            if btn_response.hovered() {
-                                TEXT_INACTIVE
-                            } else {
-                                NEW_BTN_TEXT
-                            },
-                        );
-                    }
-                    if btn_response.clicked() {
-                        actions.push(SidebarAction::CreateWorkspace);
-                    }
-
                     // Fill remaining space (double-click to create workspace)
+                    let avail_w = ui.available_width();
                     let remaining = ui.available_height().max(0.0);
                     if remaining > 0.0 {
                         let (_, empty_response) = ui.allocate_exact_size(
