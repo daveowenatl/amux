@@ -4,6 +4,7 @@ mod color;
 mod custom_glyphs;
 mod decorations;
 mod pipeline;
+mod shape;
 pub mod snapshot;
 
 use amux_term::font::{self, FontConfig};
