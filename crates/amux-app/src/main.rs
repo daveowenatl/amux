@@ -581,17 +581,28 @@ impl eframe::App for AmuxApp {
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 let full_rect = ui.available_rect_before_wrap();
-                // Paint top padding strip with titlebar color.
-                ui.painter().rect_filled(
+                // Paint the titlebar strip across the FULL viewport, not just
+                // the CentralPanel region. render_titlebar_icons draws in
+                // window coordinates starting at screen.min.x + left_inset,
+                // which on macOS (78px inset) lands over the sidebar when it
+                // is visible. Using a background layer painter on the full
+                // screen rect keeps the strip coherent regardless of sidebar
+                // state and decouples it from sidebar_bg's color.
+                let screen = ui.ctx().screen_rect();
+                let strip_painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Background,
+                    egui::Id::new("amux_titlebar_strip"),
+                ));
+                strip_painter.rect_filled(
                     egui::Rect::from_min_max(
-                        full_rect.min,
-                        egui::pos2(full_rect.max.x, full_rect.min.y + TERMINAL_TOP_PAD),
+                        screen.min,
+                        egui::pos2(screen.max.x, screen.min.y + TERMINAL_TOP_PAD),
                     ),
                     0.0,
                     self.theme.titlebar_bg(),
                 );
-                // Notification bell button in the top-right of the titlebar strip.
-                self.render_notification_bell(ui, full_rect);
+                // Top-left titlebar icons: sidebar toggle, notifications, new workspace.
+                self.render_titlebar_icons(ui.ctx());
                 // Shift content area down by the top padding.
                 let panel_rect = egui::Rect::from_min_max(
                     egui::pos2(full_rect.min.x, full_rect.min.y + TERMINAL_TOP_PAD),

@@ -2,6 +2,38 @@
 
 use crate::*;
 
+// --- Shared titlebar icon-row geometry -------------------------------------
+// These constants describe the fixed-position icon row in the titlebar and
+// are referenced by both the icon renderer and the notifications panel so
+// that the panel always anchors on the actual bell-icon center.
+
+const TITLEBAR_ICON_W: f32 = 28.0;
+const TITLEBAR_ICON_H: f32 = 22.0;
+const TITLEBAR_ICON_GAP: f32 = 2.0;
+/// Index of the bell in the icon row: sidebar(0), bell(1), plus(2).
+const TITLEBAR_BELL_INDEX: usize = 1;
+
+/// Left inset before the first icon. On macOS we reserve space for the
+/// native traffic-light buttons; on other platforms the row hugs the edge.
+fn titlebar_left_inset() -> f32 {
+    #[cfg(target_os = "macos")]
+    {
+        78.0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        8.0
+    }
+}
+
+/// Horizontal center of the bell icon in screen-local x coordinates,
+/// relative to the window's left edge.
+fn titlebar_bell_center_x() -> f32 {
+    titlebar_left_inset()
+        + (TITLEBAR_BELL_INDEX as f32) * (TITLEBAR_ICON_W + TITLEBAR_ICON_GAP)
+        + TITLEBAR_ICON_W / 2.0
+}
+
 impl AmuxApp {
     pub(crate) fn drain_notifications(&mut self) {
         // Collect events first to avoid borrow conflicts
@@ -206,56 +238,64 @@ impl AmuxApp {
         }
     }
 
-    /// Render a bell button in the top-right of the titlebar strip.
-    /// Shows an unread-count badge when there are unread notifications.
-    /// Clicking toggles the notifications panel (cmux-style popover).
-    pub(crate) fn render_notification_bell(&mut self, ui: &mut egui::Ui, full_rect: egui::Rect) {
-        let unread = self.notifications.total_unread();
-        let btn_size = egui::vec2(26.0, 22.0);
-        let margin = egui::vec2(8.0, 3.0);
-        let btn_rect = egui::Rect::from_min_size(
-            egui::pos2(
-                full_rect.max.x - btn_size.x - margin.x,
-                full_rect.min.y + margin.y,
-            ),
-            btn_size,
+    /// Render the top-left titlebar icon row: sidebar toggle, notifications bell,
+    /// and new workspace — mirroring cmux's titlebar layout. The icons are
+    /// anchored to the window's absolute top-left so they stay put regardless
+    /// of sidebar visibility.
+    pub(crate) fn render_titlebar_icons(&mut self, ctx: &egui::Context) {
+        let icon_size = egui::vec2(TITLEBAR_ICON_W, TITLEBAR_ICON_H);
+        let gap = TITLEBAR_ICON_GAP;
+        let screen = ctx.screen_rect();
+        let top_y = screen.min.y + 3.0;
+        let origin_x = screen.min.x + titlebar_left_inset();
+
+        egui::Area::new(egui::Id::new("amux_titlebar_icons"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(origin_x, top_y))
+            .show(ctx, |ui| {
+                self.render_titlebar_icons_inner(ui, icon_size, gap);
+            });
+    }
+
+    fn render_titlebar_icons_inner(&mut self, ui: &mut egui::Ui, icon_size: egui::Vec2, gap: f32) {
+        let origin = ui.min_rect().min;
+        let top_y = origin.y;
+        let mut x = origin.x;
+
+        // Platform-specific shortcut labels.
+        #[cfg(target_os = "macos")]
+        let (sc_sidebar, sc_notif, sc_new) = ("⌘B", "⌘I", "⌘N");
+        #[cfg(not(target_os = "macos"))]
+        let (sc_sidebar, sc_notif, sc_new) = ("Ctrl+B", "Ctrl+I", "Ctrl+Shift+N");
+
+        // --- Sidebar toggle ---
+        let r_sidebar = egui::Rect::from_min_size(egui::pos2(x, top_y), icon_size);
+        let resp_sidebar = draw_icon_button(
+            ui,
+            r_sidebar,
+            ui.id().with("titlebar_sidebar_btn"),
+            &format!("Toggle sidebar  ({sc_sidebar})"),
+            draw_sidebar_glyph,
         );
-
-        let id = ui.id().with("notif_bell_button");
-        let response = ui.interact(btn_rect, id, egui::Sense::click());
-        let painter = ui.painter();
-
-        // Hover/active background
-        let bg_color = if response.is_pointer_button_down_on() {
-            egui::Color32::from_white_alpha(24)
-        } else if response.hovered() {
-            egui::Color32::from_white_alpha(14)
-        } else {
-            egui::Color32::TRANSPARENT
-        };
-        if bg_color != egui::Color32::TRANSPARENT {
-            painter.rect_filled(btn_rect, 5.0, bg_color);
+        if resp_sidebar.clicked() {
+            self.sidebar.visible = !self.sidebar.visible;
         }
+        x += icon_size.x + gap;
 
-        // Bell glyph.
-        let bell_color = if self.show_notification_panel {
-            self.theme.chrome.accent
-        } else if response.hovered() {
-            egui::Color32::from_gray(230)
-        } else {
-            egui::Color32::from_gray(170)
-        };
-        painter.text(
-            btn_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "\u{1F514}", // 🔔
-            egui::FontId::proportional(13.0),
-            bell_color,
+        // --- Notifications bell ---
+        let unread = self.notifications.total_unread();
+        let r_bell = egui::Rect::from_min_size(egui::pos2(x, top_y), icon_size);
+        let resp_bell = draw_icon_button(
+            ui,
+            r_bell,
+            ui.id().with("titlebar_bell_btn"),
+            &format!("Notifications  ({sc_notif})"),
+            draw_bell_glyph,
         );
-
-        // Unread badge (red dot with count).
+        // Unread badge (red dot + count).
         if unread > 0 {
-            let badge_center = egui::pos2(btn_rect.max.x - 4.0, btn_rect.min.y + 5.0);
+            let painter = ui.painter();
+            let badge_center = egui::pos2(r_bell.max.x - 5.0, r_bell.min.y + 5.0);
             let badge_radius = 6.5;
             painter.circle_filled(
                 badge_center,
@@ -281,12 +321,22 @@ impl AmuxApp {
                 egui::Color32::WHITE,
             );
         }
-
-        if response.clicked() {
+        if resp_bell.clicked() {
             self.show_notification_panel = !self.show_notification_panel;
         }
-        if response.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        x += icon_size.x + gap;
+
+        // --- New workspace (+) ---
+        let r_new = egui::Rect::from_min_size(egui::pos2(x, top_y), icon_size);
+        let resp_new = draw_icon_button(
+            ui,
+            r_new,
+            ui.id().with("titlebar_new_ws_btn"),
+            &format!("New workspace  ({sc_new})"),
+            draw_plus_glyph,
+        );
+        if resp_new.clicked() {
+            self.create_workspace(None);
         }
     }
 
@@ -323,13 +373,29 @@ impl AmuxApp {
             })
             .collect();
 
+        // Align the panel horizontally to the bell icon's center, clamping
+        // BOTH the panel dimensions and its anchor to the current viewport so
+        // the panel cannot overflow off-screen on small windows. Uses the
+        // shared titlebar geometry constants so the panel stays aligned if
+        // the icon row layout ever changes.
+        let bell_center_x = titlebar_bell_center_x();
+        let horizontal_margin = 10.0_f32;
+        let top_margin = TERMINAL_TOP_PAD + 4.0;
+        let bottom_margin = 10.0_f32;
+        let screen = ctx.screen_rect();
+        let panel_width = 400.0_f32.min((screen.width() - horizontal_margin * 2.0).max(0.0));
+        let panel_height = 500.0_f32.min((screen.height() - top_margin - bottom_margin).max(0.0));
+        let max_left = (screen.width() - panel_width - horizontal_margin).max(0.0);
+        let min_left = horizontal_margin.min(max_left);
+        let panel_left = (bell_center_x - panel_width / 2.0).clamp(min_left, max_left);
+
         egui::Window::new("Notifications")
             .title_bar(false)
             .movable(false)
             .collapsible(false)
-            .resizable(true)
-            .default_size([400.0, 500.0])
-            .anchor(egui::Align2::RIGHT_TOP, [-10.0, TERMINAL_TOP_PAD + 4.0])
+            .resizable(false)
+            .fixed_size([panel_width, panel_height])
+            .anchor(egui::Align2::LEFT_TOP, [panel_left, top_margin])
             .frame(
                 egui::Frame::window(&ctx.style())
                     .fill(self.theme.chrome.sidebar_bg)
@@ -448,6 +514,113 @@ impl AmuxApp {
             self.show_notification_panel = false;
         }
     }
+}
+
+/// Shared chrome for a titlebar icon button: cursor, tooltip, and a
+/// caller-supplied glyph drawer. Intentionally flat — no hover/active tint.
+fn draw_icon_button<F>(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    id: egui::Id,
+    tooltip: &str,
+    draw_glyph: F,
+) -> egui::Response
+where
+    F: FnOnce(&egui::Painter, egui::Rect, egui::Color32),
+{
+    // Expand the ui's min_rect to include this widget so egui's tooltip
+    // system can position hover text correctly.
+    ui.expand_to_include_rect(rect);
+    // NOTE: global style sets widget fg_stroke to TRANSPARENT (to hide panel
+    // resize handles), so default tooltip text would be invisible. Use an
+    // explicit color via RichText.
+    let tooltip_text = egui::RichText::new(tooltip).color(egui::Color32::from_gray(220));
+    let response = ui
+        .interact(rect, id, egui::Sense::click())
+        .on_hover_text(tooltip_text);
+    let painter = ui.painter();
+
+    let color = egui::Color32::from_gray(170);
+    draw_glyph(painter, rect, color);
+
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
+/// Monochrome sidebar-toggle glyph: rounded rect with a filled left column.
+fn draw_sidebar_glyph(p: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let gw = 14.0;
+    let gh = 11.0;
+    let origin = egui::pos2(rect.center().x - gw / 2.0, rect.center().y - gh / 2.0);
+    let outer = egui::Rect::from_min_size(origin, egui::vec2(gw, gh));
+    p.rect_stroke(
+        outer,
+        1.5,
+        egui::Stroke::new(1.4, color),
+        egui::StrokeKind::Inside,
+    );
+    // Left column separator + fill.
+    let split_x = origin.x + 4.5;
+    p.line_segment(
+        [
+            egui::pos2(split_x, origin.y),
+            egui::pos2(split_x, origin.y + gh),
+        ],
+        egui::Stroke::new(1.2, color),
+    );
+    // Two tiny dots in the left column to mimic cmux's sidebar glyph.
+    for dy in [3.0, 7.0] {
+        p.circle_filled(egui::pos2(origin.x + 2.2, origin.y + dy), 0.6, color);
+    }
+}
+
+/// Monochrome bell glyph approximating SF Symbol "bell".
+fn draw_bell_glyph(p: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let c = rect.center();
+    let stroke = egui::Stroke::new(1.3, color);
+    // Bell body: a rounded trapezoid, represented as an open path.
+    let top_y = c.y - 5.0;
+    let bot_y = c.y + 4.0;
+    let half_top = 3.0;
+    let half_bot = 5.5;
+    let path = vec![
+        egui::pos2(c.x - half_bot, bot_y),
+        egui::pos2(c.x - half_top, top_y + 1.0),
+        egui::pos2(c.x - half_top + 0.5, top_y - 0.5),
+        egui::pos2(c.x + half_top - 0.5, top_y - 0.5),
+        egui::pos2(c.x + half_top, top_y + 1.0),
+        egui::pos2(c.x + half_bot, bot_y),
+    ];
+    p.add(egui::Shape::line(path, stroke));
+    // Bottom rim.
+    p.line_segment(
+        [
+            egui::pos2(c.x - half_bot - 0.5, bot_y),
+            egui::pos2(c.x + half_bot + 0.5, bot_y),
+        ],
+        stroke,
+    );
+    // Clapper.
+    p.circle_filled(egui::pos2(c.x, bot_y + 2.2), 1.1, color);
+    // Top cap.
+    p.circle_filled(egui::pos2(c.x, top_y - 1.0), 0.9, color);
+}
+
+/// Monochrome plus glyph.
+fn draw_plus_glyph(p: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let c = rect.center();
+    let arm = 6.0;
+    let stroke = egui::Stroke::new(1.5, color);
+    p.line_segment(
+        [egui::pos2(c.x - arm, c.y), egui::pos2(c.x + arm, c.y)],
+        stroke,
+    );
+    p.line_segment(
+        [egui::pos2(c.x, c.y - arm), egui::pos2(c.x, c.y + arm)],
+        stroke,
+    );
 }
 
 enum RowAction {
