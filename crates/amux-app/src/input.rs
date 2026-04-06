@@ -180,8 +180,14 @@ impl AmuxApp {
                             return true;
                         }
 
-                        // Select all: Cmd+A / Ctrl+A
-                        if is_cmd && !modifiers.shift && *key == egui::Key::A {
+                        // Select all: Cmd+A (macOS) / Ctrl+A (other)
+                        #[cfg(target_os = "macos")]
+                        let is_select_all = is_cmd && !modifiers.shift && *key == egui::Key::A;
+                        #[cfg(not(target_os = "macos"))]
+                        let is_select_all =
+                            modifiers.ctrl && !modifiers.shift && *key == egui::Key::A;
+
+                        if is_select_all {
                             if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
                                 b.evaluate_script("document.execCommand('selectAll')");
                             }
@@ -201,8 +207,13 @@ impl AmuxApp {
                             return true;
                         }
 
-                        // Cut: Cmd+X / Ctrl+X
-                        if is_cmd && *key == egui::Key::X {
+                        // Cut: Cmd+X (macOS) / Ctrl+X (other)
+                        #[cfg(target_os = "macos")]
+                        let is_cut = is_cmd && *key == egui::Key::X;
+                        #[cfg(not(target_os = "macos"))]
+                        let is_cut = modifiers.ctrl && *key == egui::Key::X;
+
+                        if is_cut {
                             if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
                                 b.evaluate_script("document.execCommand('cut')");
                             }

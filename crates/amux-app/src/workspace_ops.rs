@@ -230,14 +230,14 @@ impl AmuxApp {
                     }
                 }
                 menu_bar::MenuAction::Copy => {
-                    // When an egui text field is focused, the menu bar consumed
-                    // the Cmd+C before egui saw it. Nothing to do here — egui's
-                    // TextEdit handles copy internally via Event::Copy which we
-                    // can't inject. For now, copy from text fields is a no-op
-                    // (users can use the TextEdit's built-in selection copy).
                     if !self.has_focused_text_field() {
                         self.copy_selection();
                     }
+                    // When an egui text field is focused, egui handles copy
+                    // internally through its own event processing. The native
+                    // menu bar Cmd+C is consumed before egui sees it, but egui's
+                    // TextEdit widget copies the selected text on its own — no
+                    // action needed here.
                 }
                 menu_bar::MenuAction::Paste => {
                     if self.has_focused_text_field() {
@@ -262,7 +262,13 @@ impl AmuxApp {
                     }
                 }
                 menu_bar::MenuAction::SelectAll => {
-                    if !self.has_focused_text_field() {
+                    if self.has_focused_text_field() {
+                        // Signal the omnibar render pass to select all text.
+                        // The native menu bar consumes Cmd+A before egui sees
+                        // it, so we defer the selection update to the next frame
+                        // where the TextEdit state can be mutated.
+                        self.pending_text_field_select_all = true;
+                    } else {
                         self.select_all_visible();
                     }
                 }

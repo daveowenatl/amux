@@ -19,7 +19,7 @@ struct SharedState {
     /// Key: request ID, Value: JSON string result.
     eval_results: std::collections::HashMap<String, String>,
     /// Console messages captured from the page.
-    console_messages: Vec<String>,
+    console_messages: std::collections::VecDeque<String>,
     /// URLs requested via window.open() — queued for the app to handle.
     popup_requests: Vec<String>,
     /// Dialog requests from JS (alert/confirm/prompt) — queued for the app.
@@ -272,9 +272,9 @@ impl BrowserPane {
                             }
                             Some("console") => {
                                 if let Some(msg) = parsed.get("message").and_then(|v| v.as_str()) {
-                                    s.console_messages.push(msg.to_string());
+                                    s.console_messages.push_back(msg.to_string());
                                     if s.console_messages.len() > 1000 {
-                                        s.console_messages.remove(0);
+                                        s.console_messages.pop_front();
                                     }
                                 }
                             }
@@ -328,9 +328,7 @@ impl BrowserPane {
         // Use a Chrome-like user agent to avoid CAPTCHA triggers from bare
         // WebKit UA strings. Custom config value takes precedence.
         let default_ua = default_user_agent();
-        let ua = options
-            .and_then(|o| o.user_agent)
-            .unwrap_or(&default_ua);
+        let ua = options.and_then(|o| o.user_agent).unwrap_or(&default_ua);
         builder = builder.with_user_agent(ua);
 
         let webview = builder.build_as_child(parent)?;
@@ -639,7 +637,11 @@ impl BrowserPane {
         self.state
             .lock()
             .ok()
-            .map(|mut s| std::mem::take(&mut s.console_messages))
+            .map(|mut s| {
+                std::mem::take(&mut s.console_messages)
+                    .into_iter()
+                    .collect()
+            })
             .unwrap_or_default()
     }
 

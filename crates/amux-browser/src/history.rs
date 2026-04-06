@@ -91,6 +91,10 @@ impl BrowserHistory {
             return Vec::new();
         }
         let lower = query.to_lowercase();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
         let mut matches: Vec<(f64, &HistoryEntry)> = self
             .entries
             .iter()
@@ -99,12 +103,7 @@ impl BrowserHistory {
             })
             .map(|e| {
                 // Score: visit_count * recency_weight
-                let age_days = (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64)
-                    .saturating_sub(e.last_visited_ms) as f64
-                    / 86_400_000.0;
+                let age_days = now_ms.saturating_sub(e.last_visited_ms) as f64 / 86_400_000.0;
                 let recency = 1.0 / (1.0 + age_days * 0.1);
                 let score = e.visit_count as f64 * recency;
                 (score, e)

@@ -193,6 +193,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 favicon_cache: HashMap::new(),
                 favicon_pending: std::collections::HashSet::new(),
                 pending_text_field_paste: None,
+                pending_text_field_select_all: false,
             }))
         }),
     )

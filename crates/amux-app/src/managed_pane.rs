@@ -178,7 +178,14 @@ impl ManagedPane {
     /// Returns the active terminal surface.
     /// When a browser tab is active, returns the last terminal surface as a
     /// safe fallback (callers should check `active_is_browser()` first).
+    ///
+    /// # Panics
+    /// Panics if `surfaces` is empty (invariant: at least one surface must exist).
     pub(crate) fn active_surface(&self) -> &PaneSurface {
+        assert!(
+            !self.surfaces.is_empty(),
+            "active_surface() called with no terminal surfaces"
+        );
         let idx = self.active_surface_idx.min(self.surfaces.len() - 1);
         &self.surfaces[idx]
     }
@@ -186,7 +193,14 @@ impl ManagedPane {
     /// Returns the active terminal surface mutably.
     /// When a browser tab is active, returns the last terminal surface as a
     /// safe fallback (callers should check `active_is_browser()` first).
+    ///
+    /// # Panics
+    /// Panics if `surfaces` is empty (invariant: at least one surface must exist).
     pub(crate) fn active_surface_mut(&mut self) -> &mut PaneSurface {
+        assert!(
+            !self.surfaces.is_empty(),
+            "active_surface_mut() called with no terminal surfaces"
+        );
         let idx = self.active_surface_idx.min(self.surfaces.len() - 1);
         &mut self.surfaces[idx]
     }

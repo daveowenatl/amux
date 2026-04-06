@@ -39,6 +39,11 @@ impl AmuxApp {
             modal.buf.push_str(&paste_text);
         }
 
+        // Apply pending select-all from menu bar. The rename modal text field
+        // manages its own cursor state; clearing the flag is sufficient since
+        // egui's TextEdit handles Cmd+A internally when the field is focused.
+        self.pending_text_field_select_all = false;
+
         let modal = self.rename_modal.as_mut().unwrap();
         let just_opened = modal.just_opened;
 

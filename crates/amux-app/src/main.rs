@@ -174,6 +174,10 @@ struct AmuxApp {
     /// focus. The native menu bar consumes Cmd+V before egui sees it, so we
     /// stash the text here and apply it during the text field's render pass.
     pending_text_field_paste: Option<String>,
+    /// Whether a menu-bar Select All action is pending for the focused text
+    /// field. Applied during the omnibar render pass so that egui can update
+    /// the TextEdit cursor selection state.
+    pending_text_field_select_all: bool,
 }
 
 /// Editing state for a browser pane's omnibar.

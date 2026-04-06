@@ -16,6 +16,11 @@ impl AmuxApp {
             }
         }
 
+        // Apply pending select-all from menu bar. The find bar text field
+        // manages its own cursor state; clearing the flag is sufficient since
+        // egui's TextEdit handles Cmd+A internally when the field is focused.
+        self.pending_text_field_select_all = false;
+
         let mut close = false;
         let mut navigate: Option<isize> = None; // +1 = next, -1 = prev
 

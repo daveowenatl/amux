@@ -77,10 +77,14 @@ impl AmuxApp {
         if !self.favicon_pending.contains(favicon_url) {
             self.favicon_pending.insert(favicon_url.to_string());
             if let Some(PaneEntry::Browser(browser)) = self.panes.get(&browser_pane_id) {
-                let escaped_url = favicon_url.replace('\'', "\\'");
+                // Serialize the URL as a JSON string to safely embed it in JS
+                // (handles backslashes, newlines, quotes, and all other escapes).
+                let url_json =
+                    serde_json::to_string(favicon_url).unwrap_or_else(|_| "\"\"".to_string());
                 browser.evaluate_script(&format!(
                     r#"(function(){{
-                        fetch('{escaped_url}').then(function(r) {{
+                        var u={url_json};
+                        fetch(u).then(function(r) {{
                             return r.blob();
                         }}).then(function(blob) {{
                             var reader = new FileReader();
@@ -89,7 +93,7 @@ impl AmuxApp {
                                 if (b64) {{
                                     window.ipc.postMessage(JSON.stringify({{
                                         type:'favicon_data',
-                                        url:'{escaped_url}',
+                                        url:u,
                                         data:b64
                                     }}));
                                 }}

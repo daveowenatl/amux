@@ -979,6 +979,21 @@ impl AmuxApp {
             }
         }
 
+        // Apply pending select-all from menu bar (Cmd+A consumed by muda before egui).
+        if state.focused && self.pending_text_field_select_all {
+            self.pending_text_field_select_all = false;
+            if let Some(mut text_state) = egui::TextEdit::load_state(ui.ctx(), text_id) {
+                let char_count = state.text.chars().count();
+                text_state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(char_count),
+                    )));
+                text_state.store(ui.ctx(), text_id);
+            }
+        }
+
         // Apply pending paste from menu bar (Cmd+V consumed by muda before egui).
         if state.focused {
             if let Some(paste_text) = self.pending_text_field_paste.take() {
