@@ -35,7 +35,9 @@ impl eframe::App for AmuxApp {
         let mut got_data = false;
         let mut pending_data = false;
         for entry in self.panes.values_mut() {
-            let PaneEntry::Terminal(managed) = entry;
+            let PaneEntry::Terminal(managed) = entry else {
+                continue;
+            };
             for surface in &mut managed.surfaces {
                 let mut bytes_this_frame = 0;
                 while bytes_this_frame < MAX_BYTES_PER_SURFACE_PER_FRAME {

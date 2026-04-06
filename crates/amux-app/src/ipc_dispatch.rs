@@ -29,10 +29,8 @@ impl AmuxApp {
                 let sf_id = self
                     .panes
                     .get(&focused)
-                    .map(|e| {
-                        let PaneEntry::Terminal(m) = e;
-                        m.active_surface().id
-                    })
+                    .and_then(|e| e.as_terminal())
+                    .map(|m| m.active_surface().id)
                     .unwrap_or(0);
                 Response::ok(
                     req.id.clone(),
@@ -412,8 +410,12 @@ impl AmuxApp {
                                 None,
                             ) {
                                 Ok(surface) => {
-                                    let PaneEntry::Terminal(managed) =
-                                        self.panes.get_mut(&target_pane).unwrap();
+                                    let managed = self
+                                        .panes
+                                        .get_mut(&target_pane)
+                                        .unwrap()
+                                        .as_terminal_mut()
+                                        .unwrap();
                                     managed.surfaces.push(surface);
                                     managed.active_surface_idx = managed.surfaces.len() - 1;
                                     Response::ok(
@@ -444,15 +446,19 @@ impl AmuxApp {
                             if let Ok(sf_id) = sf_id_str.parse::<u64>() {
                                 // Find which pane owns this surface
                                 let target = self.panes.iter().find_map(|(&pid, entry)| {
-                                    let PaneEntry::Terminal(m) = entry;
+                                    let m = entry.as_terminal()?;
                                     m.surfaces
                                         .iter()
                                         .position(|s| s.id == sf_id)
                                         .map(|idx| (pid, idx))
                                 });
                                 if let Some((pane_id, idx)) = target {
-                                    let PaneEntry::Terminal(managed) =
-                                        self.panes.get_mut(&pane_id).unwrap();
+                                    let managed = self
+                                        .panes
+                                        .get_mut(&pane_id)
+                                        .unwrap()
+                                        .as_terminal_mut()
+                                        .unwrap();
                                     if managed.surfaces.len() <= 1 {
                                         self.close_pane(pane_id);
                                     } else {
@@ -503,7 +509,7 @@ impl AmuxApp {
                         if let Ok(sf_id) = params.surface_id.parse::<u64>() {
                             // Find the pane that owns this surface
                             let found = self.panes.iter_mut().find_map(|(pid, entry)| {
-                                let PaneEntry::Terminal(managed) = entry;
+                                let managed = entry.as_terminal_mut()?;
                                 managed
                                     .surfaces
                                     .iter()
@@ -511,7 +517,8 @@ impl AmuxApp {
                                     .map(|idx| (*pid, idx))
                             });
                             if let Some((pid, idx)) = found {
-                                let PaneEntry::Terminal(m) = self.panes.get_mut(&pid).unwrap();
+                                let m =
+                                    self.panes.get_mut(&pid).unwrap().as_terminal_mut().unwrap();
                                 m.active_surface_idx = idx;
                                 // Switch to the owning workspace before setting focus
                                 if let Some(ws_idx) = self
@@ -636,7 +643,7 @@ impl AmuxApp {
     fn resolve_surface_mut(&mut self, surface_id: &str) -> Option<&mut PaneSurface> {
         if surface_id == "default" || surface_id.is_empty() {
             let focused = self.focused_pane_id();
-            let PaneEntry::Terminal(m) = self.panes.get_mut(&focused)?;
+            let m = self.panes.get_mut(&focused)?.as_terminal_mut()?;
             return Some(m.active_surface_mut());
         }
 
@@ -646,19 +653,20 @@ impl AmuxApp {
                 .panes
                 .iter()
                 .find(|(_, entry)| {
-                    let PaneEntry::Terminal(m) = entry;
-                    m.surfaces.iter().any(|s| s.id == sf_id)
+                    entry
+                        .as_terminal()
+                        .is_some_and(|m| m.surfaces.iter().any(|s| s.id == sf_id))
                 })
                 .map(|(pid, _)| *pid);
 
             if let Some(pid) = target_pane {
-                let PaneEntry::Terminal(m) = self.panes.get_mut(&pid)?;
+                let m = self.panes.get_mut(&pid)?.as_terminal_mut()?;
                 return m.surfaces.iter_mut().find(|s| s.id == sf_id);
             }
 
             // Fall back to treating it as a pane ID
             if let Ok(pane_id) = surface_id.parse::<PaneId>() {
-                let PaneEntry::Terminal(m) = self.panes.get_mut(&pane_id)?;
+                let m = self.panes.get_mut(&pane_id)?.as_terminal_mut()?;
                 return Some(m.active_surface_mut());
             }
         }
@@ -669,17 +677,18 @@ impl AmuxApp {
     fn resolve_surface(&self, surface_id: &str) -> Option<&PaneSurface> {
         if surface_id == "default" || surface_id.is_empty() {
             let focused = self.focused_pane_id();
-            let PaneEntry::Terminal(m) = self.panes.get(&focused)?;
+            let m = self.panes.get(&focused)?.as_terminal()?;
             Some(m.active_surface())
         } else if let Ok(sf_id) = surface_id.parse::<u64>() {
             for entry in self.panes.values() {
-                let PaneEntry::Terminal(managed) = entry;
-                if let Some(sf) = managed.surfaces.iter().find(|s| s.id == sf_id) {
-                    return Some(sf);
+                if let PaneEntry::Terminal(managed) = entry {
+                    if let Some(sf) = managed.surfaces.iter().find(|s| s.id == sf_id) {
+                        return Some(sf);
+                    }
                 }
             }
             if let Ok(pane_id) = surface_id.parse::<PaneId>() {
-                let PaneEntry::Terminal(m) = self.panes.get(&pane_id)?;
+                let m = self.panes.get(&pane_id)?.as_terminal()?;
                 Some(m.active_surface())
             } else {
                 None

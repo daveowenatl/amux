@@ -12,6 +12,7 @@ members = [
     "crates/amux-notify",
     "crates/amux-session",
     "crates/amux-ghostty-config",
+    "crates/amux-browser",
 ]
 
 [workspace.package]
@@ -99,3 +100,4 @@ amux-session = { path = "crates/amux-session" }
 amux-render-soft = { path = "crates/amux-render-soft" }
 amux-render-gpu = { path = "crates/amux-render-gpu" }
 amux-ghostty-config = { path = "crates/amux-ghostty-config" }
+amux-browser = { path = "crates/amux-browser" }

@@ -430,7 +430,7 @@ impl AmuxApp {
                 let t = s.pane.scrollback_rows();
                 (c, r, t)
             }
-            None => {
+            _ => {
                 self.copy_mode = None;
                 return true;
             }
@@ -541,7 +541,7 @@ impl AmuxApp {
         line_visual: bool,
     ) -> Option<String> {
         let cm = self.copy_mode.as_ref()?;
-        let PaneEntry::Terminal(managed) = self.panes.get(&pane_id)?;
+        let managed = self.panes.get(&pane_id)?.as_terminal()?;
         let surface = managed.active_surface();
         let (start, end) =
             if anchor.1 < cm.cursor.1 || (anchor.1 == cm.cursor.1 && anchor.0 <= cm.cursor.0) {
@@ -585,7 +585,7 @@ impl AmuxApp {
         let focused = self.focused_pane_id();
         let managed = match self.panes.get_mut(&focused) {
             Some(PaneEntry::Terminal(m)) => m,
-            None => return false,
+            _ => return false,
         };
         let sel = match &managed.selection {
             Some(s) => s.clone(),
@@ -634,7 +634,7 @@ impl AmuxApp {
         let focused = self.focused_pane_id();
         let managed = match self.panes.get_mut(&focused) {
             Some(PaneEntry::Terminal(m)) => m,
-            None => return,
+            _ => return,
         };
         let surface = managed.active_surface();
         let (cols, visible_rows) = surface.pane.dimensions();
@@ -670,7 +670,7 @@ impl AmuxApp {
 
         let managed = match self.panes.get(&pane_id) {
             Some(PaneEntry::Terminal(m)) => m,
-            None => return false,
+            _ => return false,
         };
         let surface = managed.active_surface();
         let (cols, visible_rows) = surface.pane.dimensions();
@@ -764,10 +764,8 @@ impl AmuxApp {
             let has_active_selection = self
                 .panes
                 .get(&pane_id)
-                .and_then(|e| {
-                    let PaneEntry::Terminal(m) = e;
-                    m.selection.as_ref()
-                })
+                .and_then(|e| e.as_terminal())
+                .and_then(|m| m.selection.as_ref())
                 .is_some_and(|s| s.active);
 
             if has_active_selection {
@@ -855,7 +853,7 @@ impl AmuxApp {
 
         let managed = match self.panes.get_mut(&focused_id) {
             Some(PaneEntry::Terminal(m)) => m,
-            None => return has_input,
+            _ => return has_input,
         };
         let surface = managed.active_surface_mut();
 

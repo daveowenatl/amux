@@ -230,7 +230,9 @@ impl AmuxApp {
     /// title, working directory, and scrollback are up to date before save.
     fn flush_pending_io(&mut self) {
         for entry in self.panes.values_mut() {
-            let PaneEntry::Terminal(managed) = entry;
+            let PaneEntry::Terminal(managed) = entry else {
+                continue;
+            };
             for surface in &mut managed.surfaces {
                 while let Ok(bytes) = surface.byte_rx.try_recv() {
                     surface.pane.feed_bytes(&bytes);

@@ -20,12 +20,10 @@ pub(crate) use amux_core::model::{
 // ---------------------------------------------------------------------------
 
 /// A pane entry in the application's pane map.
-///
-/// Terminal panes are the only variant today. When browser panes land (#108),
-/// add `Browser(BrowserPane)` here and the compiler will flag every call site
-/// that needs a new match arm.
+#[allow(dead_code)]
 pub(crate) enum PaneEntry {
     Terminal(ManagedPane),
+    Browser(amux_browser::BrowserPane),
 }
 
 #[allow(dead_code)]
@@ -34,6 +32,7 @@ impl PaneEntry {
     pub(crate) fn as_terminal(&self) -> Option<&ManagedPane> {
         match self {
             PaneEntry::Terminal(m) => Some(m),
+            PaneEntry::Browser(_) => None,
         }
     }
 
@@ -41,6 +40,24 @@ impl PaneEntry {
     pub(crate) fn as_terminal_mut(&mut self) -> Option<&mut ManagedPane> {
         match self {
             PaneEntry::Terminal(m) => Some(m),
+            PaneEntry::Browser(_) => None,
+        }
+    }
+
+    /// Returns a reference to the inner `BrowserPane` if this is a browser pane.
+    pub(crate) fn as_browser(&self) -> Option<&amux_browser::BrowserPane> {
+        match self {
+            PaneEntry::Browser(b) => Some(b),
+            PaneEntry::Terminal(_) => None,
+        }
+    }
+
+    /// Returns a mutable reference to the inner `BrowserPane` if this is a browser pane.
+    #[allow(dead_code)]
+    pub(crate) fn as_browser_mut(&mut self) -> Option<&mut amux_browser::BrowserPane> {
+        match self {
+            PaneEntry::Browser(b) => Some(b),
+            PaneEntry::Terminal(_) => None,
         }
     }
 
@@ -48,6 +65,14 @@ impl PaneEntry {
     pub(crate) fn title(&self) -> String {
         match self {
             PaneEntry::Terminal(m) => m.title(),
+            PaneEntry::Browser(b) => {
+                let t = b.title();
+                if t.is_empty() {
+                    b.url().unwrap_or_else(|| "Browser".to_string())
+                } else {
+                    t.to_string()
+                }
+            }
         }
     }
 
@@ -55,6 +80,7 @@ impl PaneEntry {
     pub(crate) fn panel_type(&self) -> &'static str {
         match self {
             PaneEntry::Terminal(m) => m.panel_type(),
+            PaneEntry::Browser(_) => "browser",
         }
     }
 
@@ -62,7 +88,25 @@ impl PaneEntry {
     pub(crate) fn panel_info(&mut self) -> PanelInfo {
         match self {
             PaneEntry::Terminal(m) => m.panel_info(),
+            PaneEntry::Browser(b) => PanelInfo {
+                panel_type: "browser",
+                title: {
+                    let t = b.title();
+                    if t.is_empty() {
+                        b.url().unwrap_or_else(|| "Browser".to_string())
+                    } else {
+                        t.to_string()
+                    }
+                },
+                is_alive: true,
+                surface_count: 1,
+            },
         }
+    }
+
+    /// Whether this is a browser pane.
+    pub(crate) fn is_browser(&self) -> bool {
+        matches!(self, PaneEntry::Browser(_))
     }
 }
 

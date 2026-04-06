@@ -40,7 +40,9 @@ impl AmuxApp {
         let mut events: Vec<(u64, u64, u64, NotificationEvent)> = Vec::new();
 
         for (&pane_id, entry) in &self.panes {
-            let PaneEntry::Terminal(managed) = entry;
+            let PaneEntry::Terminal(managed) = entry else {
+                continue;
+            };
             let ws_id = self.workspace_for_pane(pane_id).unwrap_or(0);
             for surface in &managed.surfaces {
                 for event in surface.pane.drain_notifications() {
@@ -213,8 +215,8 @@ impl AmuxApp {
     pub(crate) fn workspace_metadata(&self, workspace: &Workspace) -> SurfaceMetadata {
         self.panes
             .get(&workspace.focused_pane)
-            .map(|entry| {
-                let PaneEntry::Terminal(mp) = entry;
+            .and_then(|e| e.as_terminal())
+            .map(|mp| {
                 let sf = mp.active_surface();
                 let mut meta = sf.metadata.clone();
                 // Capture the surface's OSC title for sidebar display
@@ -357,19 +359,7 @@ impl AmuxApp {
                     let tab_title = self
                         .panes
                         .get(&pid)
-                        .map(|entry| {
-                            let PaneEntry::Terminal(mp) = entry;
-                            let sf = mp.active_surface();
-                            let t = sf.pane.title();
-                            if t.is_empty() {
-                                sf.metadata
-                                    .surface_title
-                                    .clone()
-                                    .unwrap_or_else(|| "Tab".to_string())
-                            } else {
-                                t.to_string()
-                            }
-                        })
+                        .map(|entry| entry.title())
                         .unwrap_or_else(|| "Tab".to_string());
                     (pid, (ws.title.clone(), tab_title))
                 })

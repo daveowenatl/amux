@@ -264,7 +264,7 @@ impl AmuxApp {
 
         let managed = match self.panes.get_mut(&pane_id) {
             Some(PaneEntry::Terminal(m)) => m,
-            None => return,
+            _ => return,
         };
         let old_surface = managed.active_surface_mut();
         let cwd = old_surface.metadata.cwd.clone();

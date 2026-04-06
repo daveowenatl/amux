@@ -21,7 +21,7 @@ impl AmuxApp {
     ) {
         let managed = match self.panes.get_mut(&pane_id) {
             Some(PaneEntry::Terminal(m)) => m,
-            None => return,
+            _ => return,
         };
 
         // Always show tab bar
@@ -340,15 +340,21 @@ impl AmuxApp {
 
             // Apply tab switch/close (need to re-borrow managed)
             if let Some(idx) = close_tab {
-                let is_last = self.panes.get(&pane_id).is_some_and(|e| {
-                    let PaneEntry::Terminal(m) = e;
-                    m.surfaces.len() <= 1
-                });
+                let is_last = self
+                    .panes
+                    .get(&pane_id)
+                    .and_then(|e| e.as_terminal())
+                    .is_some_and(|m| m.surfaces.len() <= 1);
                 if is_last {
                     self.close_pane(pane_id);
                     return;
                 }
-                let PaneEntry::Terminal(managed) = self.panes.get_mut(&pane_id).unwrap();
+                let managed = self
+                    .panes
+                    .get_mut(&pane_id)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap();
                 managed.surfaces.remove(idx);
                 if idx < managed.active_surface_idx {
                     managed.active_surface_idx -= 1;
@@ -356,7 +362,12 @@ impl AmuxApp {
                     managed.active_surface_idx = managed.surfaces.len() - 1;
                 }
             } else if let Some(idx) = switch_to {
-                let PaneEntry::Terminal(managed) = self.panes.get_mut(&pane_id).unwrap();
+                let managed = self
+                    .panes
+                    .get_mut(&pane_id)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap();
                 managed.active_surface_idx = idx;
             }
 
@@ -419,7 +430,7 @@ impl AmuxApp {
         // Render terminal content for the active surface
         let managed = match self.panes.get_mut(&pane_id) {
             Some(PaneEntry::Terminal(m)) => m,
-            None => return,
+            _ => return,
         };
         let selection = copy_mode_sel
             .as_ref()
