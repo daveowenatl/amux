@@ -71,7 +71,7 @@ pub fn ensure_instance_buffer<T: Pod>(
     let new_capacity = required.max(1024).next_power_of_two();
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
-        size: (new_capacity * std::mem::size_of::<T>()) as u64,
+        size: new_capacity as u64 * std::mem::size_of::<T>() as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
