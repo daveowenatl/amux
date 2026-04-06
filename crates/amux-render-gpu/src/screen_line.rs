@@ -1,0 +1,917 @@
+//! Per-cell instance emission and paint-loop glue for terminal panes.
+//!
+//! This module owns the `CallbackTrait` implementation for
+//! `TerminalPaintCallback` — the large `prepare()` method that walks
+//! the `TerminalSnapshot`, builds text runs, shapes them via cosmic-text,
+//! emits background/foreground/image instances, rasterizes decorations,
+//! and uploads the per-pane instance buffers. Modeled on wezterm-gui's
+//! `termwindow/render/screen_line.rs`.
+//!
+//! The `paint()` method (draw call submission) also lives here; it is
+//! trivially small but must be part of the same `impl` block.
+//!
+//! `emit_custom_glyph` is a thin dispatcher for procedural box-drawing
+//! and block glyphs, invoked from the cell-emission loop.
+
+use std::collections::{HashMap, HashSet};
+
+use amux_term::backend::{CursorShape, UnderlineStyle};
+use egui_wgpu::wgpu;
+use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
+
+use crate::callback::TerminalPaintCallback;
+use crate::color::maybe_linearize;
+use crate::decorations::{rasterize_curly_tile, rasterize_dotted_tile};
+use crate::quad::{ensure_instance_buffer, CellBgInstance, CellFgInstance, ImageQuadInstance};
+use crate::resources::TerminalGpuResources;
+use crate::shape::{shape_and_rasterize, shape_run};
+use crate::state::{ImageTextureEntry, PaneRenderState, PhysRect, TextRun};
+
+#[allow(clippy::too_many_arguments)]
+/// Emit procedural rectangle quads for a custom glyph (box-drawing, block, shade).
+/// Returns `true` if the character was handled, `false` if it should fall through
+/// to normal font shaping.
+fn emit_custom_glyph(
+    ch: char,
+    col: usize,
+    row: usize,
+    fg_color: [f32; 4],
+    phys_x: f32,
+    phys_y: f32,
+    cell_width: f32,
+    cell_height: f32,
+    bg_instances: &mut Vec<CellBgInstance>,
+) -> bool {
+    if let Some(rects) = crate::custom_glyphs::custom_glyph_rects(ch) {
+        let cell_px = phys_x + col as f32 * cell_width;
+        let cell_py = phys_y + row as f32 * cell_height;
+        for r in rects {
+            // Round both edges and derive size from the difference so adjacent
+            // cells meet exactly without gaps or overlaps at fractional DPI.
+            let x0 = (cell_px + r.x * cell_width).round();
+            let y0 = (cell_py + r.y * cell_height).round();
+            let x1 = (cell_px + (r.x + r.w) * cell_width).round();
+            let y1 = (cell_py + (r.y + r.h) * cell_height).round();
+            let pw = (x1 - x0).max(1.0);
+            let ph = (y1 - y0).max(1.0);
+            bg_instances.push(CellBgInstance {
+                pos: [x0, y0],
+                size: [pw, ph],
+                color: fg_color,
+            });
+        }
+        true
+    } else {
+        false
+    }
+}
+
+impl CallbackTrait for TerminalPaintCallback {
+    fn prepare(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        screen_descriptor: &ScreenDescriptor,
+        _egui_encoder: &mut wgpu::CommandEncoder,
+        callback_resources: &mut CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        let resources = callback_resources
+            .get_mut::<TerminalGpuResources>()
+            .expect("TerminalGpuResources not initialized");
+
+        let pixels_per_point = screen_descriptor.pixels_per_point;
+
+        // Invalidate caches when DPI/scale factor changes.
+        if (resources.last_pixels_per_point - pixels_per_point).abs() > f32::EPSILON {
+            resources.shape_cache.clear();
+            resources.curly_tile = None;
+            resources.dotted_tile = None;
+            resources.atlas_bind_group_dirty = true;
+            resources.last_pixels_per_point = pixels_per_point;
+        }
+
+        let viewport_width = screen_descriptor.size_in_pixels[0] as f32;
+        let viewport_height = screen_descriptor.size_in_pixels[1] as f32;
+        let target_is_srgb = resources.target_is_srgb;
+        resources.bg_pipeline.upload_viewport(
+            queue,
+            viewport_width,
+            viewport_height,
+            target_is_srgb,
+        );
+        resources.fg_pipeline.upload_viewport(
+            queue,
+            viewport_width,
+            viewport_height,
+            target_is_srgb,
+        );
+        resources.img_pipeline.upload_viewport(
+            queue,
+            viewport_width,
+            viewport_height,
+            target_is_srgb,
+        );
+
+        // Get or create per-pane state.
+        let pane_state = resources
+            .pane_states
+            .entry(self.pane_id)
+            .or_insert_with(|| PaneRenderState::new(device));
+
+        let content_dirty = pane_state.is_content_dirty(
+            &self.snapshot,
+            &self.phys_rect,
+            self.cell_width,
+            self.cell_height,
+        );
+        let appearance_dirty = pane_state.is_appearance_dirty(&self.snapshot);
+
+        // Skip if nothing changed at all.
+        if !content_dirty && !appearance_dirty {
+            return Vec::new();
+        }
+
+        let snap = &self.snapshot;
+        let linearize = resources.target_is_srgb;
+
+        // --- Background instances (span-based to avoid hairline gaps) ---
+        let mut bg_instances = Vec::with_capacity(snap.cells.len() / 4 + 1);
+
+        // Full-rect background quad (absolute physical pixel positions)
+        let default_bg = maybe_linearize(snap.default_bg, linearize);
+        bg_instances.push(CellBgInstance {
+            pos: [self.phys_rect.x, self.phys_rect.y],
+            size: [self.phys_rect.width, self.phys_rect.height],
+            color: default_bg,
+        });
+
+        // Batch consecutive cells on the same row with the same bg into spans.
+        // This eliminates sub-pixel gaps between adjacent cell backgrounds.
+        {
+            let mut span_row: Option<usize> = None;
+            let mut span_col_start: usize = 0;
+            let mut span_col_end: usize = 0;
+            let mut span_bg: [f32; 4] = [0.0; 4];
+
+            let flush_span = |instances: &mut Vec<CellBgInstance>,
+                              row: usize,
+                              col_start: usize,
+                              col_end: usize,
+                              color: [f32; 4],
+                              phys_rect: &PhysRect,
+                              cell_w: f32,
+                              cell_h: f32| {
+                let px = phys_rect.x + col_start as f32 * cell_w;
+                let py = phys_rect.y + row as f32 * cell_h;
+                let w = (col_end - col_start) as f32 * cell_w;
+                instances.push(CellBgInstance {
+                    pos: [px, py],
+                    size: [w, cell_h],
+                    color,
+                });
+            };
+
+            for cell in &snap.cells {
+                if cell.bg == snap.default_bg {
+                    // Flush pending span
+                    if let Some(r) = span_row {
+                        flush_span(
+                            &mut bg_instances,
+                            r,
+                            span_col_start,
+                            span_col_end,
+                            span_bg,
+                            &self.phys_rect,
+                            self.cell_width,
+                            self.cell_height,
+                        );
+                        span_row = None;
+                    }
+                    continue;
+                }
+
+                let bg = maybe_linearize(cell.bg, linearize);
+
+                // Try to extend current span
+                if let Some(r) = span_row {
+                    if cell.row == r && cell.col == span_col_end && bg == span_bg {
+                        span_col_end = cell.col + 1;
+                        continue;
+                    }
+                    // Flush previous span
+                    flush_span(
+                        &mut bg_instances,
+                        r,
+                        span_col_start,
+                        span_col_end,
+                        span_bg,
+                        &self.phys_rect,
+                        self.cell_width,
+                        self.cell_height,
+                    );
+                }
+
+                // Start new span
+                span_row = Some(cell.row);
+                span_col_start = cell.col;
+                span_col_end = cell.col + 1;
+                span_bg = bg;
+            }
+
+            // Flush last span
+            if let Some(r) = span_row {
+                flush_span(
+                    &mut bg_instances,
+                    r,
+                    span_col_start,
+                    span_col_end,
+                    span_bg,
+                    &self.phys_rect,
+                    self.cell_width,
+                    self.cell_height,
+                );
+            }
+        }
+
+        // --- Foreground instances (glyphs) ---
+        // When only appearance changed (selection/highlights), reuse cached glyph
+        // layouts and just update colors. This skips expensive cosmic-text shaping.
+        let mut fg_instances = if content_dirty {
+            // Full reshape needed.
+            let mut fg = Vec::with_capacity(snap.cells.len());
+            let mut cached = Vec::new();
+
+            // --- Run-based shaping for ligature support ---
+            // Group adjacent same-style cells into text runs, then shape each
+            // run as a unit so cosmic-text / HarfBuzz can produce ligatures.
+            let cursor_col = snap.cursor_x;
+            let cursor_row = snap.cursor_y as usize;
+            let cursor_breaks = snap.cursor_visible && snap.scroll_offset == 0;
+
+            let mut runs: Vec<TextRun> = Vec::new();
+            let mut current_run: Option<TextRun> = None;
+
+            for cell in &snap.cells {
+                // Skip empty / space cells (implicitly breaks runs).
+                if cell.text.is_empty() || cell.text == " " {
+                    if let Some(run) = current_run.take() {
+                        runs.push(run);
+                    }
+                    continue;
+                }
+
+                // Custom box-drawing / block glyphs: emit directly, break run.
+                if cell.text.len() <= 4 {
+                    if let Some(ch) = cell.text.chars().next() {
+                        if cell.text.chars().nth(1).is_none() {
+                            let fg_color = maybe_linearize(cell.fg, linearize);
+                            if emit_custom_glyph(
+                                ch,
+                                cell.col,
+                                cell.row,
+                                fg_color,
+                                self.phys_rect.x,
+                                self.phys_rect.y,
+                                self.cell_width,
+                                self.cell_height,
+                                &mut bg_instances,
+                            ) {
+                                if let Some(run) = current_run.take() {
+                                    runs.push(run);
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                let cell_fg = maybe_linearize(cell.fg, linearize);
+                let is_cursor_cell =
+                    cursor_breaks && cell.col == cursor_col && cell.row == cursor_row;
+
+                // Flush before cursor cell so it becomes its own run.
+                if is_cursor_cell {
+                    if let Some(run) = current_run.take() {
+                        runs.push(run);
+                    }
+                }
+
+                // Check if cell can extend current run.
+                let can_extend = match &current_run {
+                    Some(run) => {
+                        cell.row == run.row
+                            && cell.col == run.col_start + run.col_count
+                            && cell.bold == run.bold
+                            && cell.italic == run.italic
+                            && cell.faint == run.faint
+                            && cell_fg == run.fg
+                            && !is_cursor_cell
+                    }
+                    None => false,
+                };
+
+                if can_extend {
+                    let run = current_run.as_mut().unwrap();
+                    run.cell_byte_offsets.push(run.text.len());
+                    run.text.push_str(&cell.text);
+                    run.col_count += 1;
+                } else {
+                    if let Some(run) = current_run.take() {
+                        runs.push(run);
+                    }
+                    let mut text = String::with_capacity(cell.text.len());
+                    text.push_str(&cell.text);
+                    current_run = Some(TextRun {
+                        row: cell.row,
+                        col_start: cell.col,
+                        col_count: 1,
+                        cell_byte_offsets: vec![0],
+                        text,
+                        bold: cell.bold,
+                        italic: cell.italic,
+                        faint: cell.faint,
+                        fg: cell_fg,
+                    });
+                }
+
+                // Flush after cursor cell so it stands alone.
+                if is_cursor_cell {
+                    if let Some(run) = current_run.take() {
+                        runs.push(run);
+                    }
+                }
+            }
+            if let Some(run) = current_run.take() {
+                runs.push(run);
+            }
+
+            // Shape each run.
+            for run in &runs {
+                shape_run(
+                    run,
+                    self.cell_width,
+                    self.cell_height,
+                    self.phys_rect.x,
+                    self.phys_rect.y,
+                    pixels_per_point,
+                    resources,
+                    queue,
+                    &mut fg,
+                    &mut cached,
+                );
+            }
+
+            // Store cache for future appearance-only rebuilds.
+            // Re-borrow pane_state to update the cache.
+            resources
+                .pane_states
+                .get_mut(&self.pane_id)
+                .unwrap()
+                .cached_glyph_layouts = cached;
+
+            fg
+        } else {
+            // Appearance-only change: reuse cached glyph layouts, apply new colors.
+            // Build a color lookup from snapshot cells.
+            let mut color_map: HashMap<(usize, usize), [f32; 4]> = HashMap::new();
+            for cell in &snap.cells {
+                if cell.text.is_empty() || cell.text == " " {
+                    continue;
+                }
+                // Re-emit custom glyph rects (they live in bg_instances, not cached glyphs).
+                if cell.text.len() <= 4 {
+                    if let Some(ch) = cell.text.chars().next() {
+                        if cell.text.chars().nth(1).is_none() {
+                            let fg_color = maybe_linearize(cell.fg, linearize);
+                            if emit_custom_glyph(
+                                ch,
+                                cell.col,
+                                cell.row,
+                                fg_color,
+                                self.phys_rect.x,
+                                self.phys_rect.y,
+                                self.cell_width,
+                                self.cell_height,
+                                &mut bg_instances,
+                            ) {
+                                continue;
+                            }
+                        }
+                    }
+                }
+                color_map.insert((cell.col, cell.row), maybe_linearize(cell.fg, linearize));
+            }
+
+            let cached = &pane_state.cached_glyph_layouts;
+            let mut fg = Vec::with_capacity(cached.len());
+            for glyph in cached {
+                let color = color_map
+                    .get(&(glyph.col, glyph.row))
+                    .copied()
+                    .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                fg.push(CellFgInstance {
+                    pos: glyph.pos,
+                    size: glyph.size,
+                    uv_min: glyph.uv_min,
+                    uv_max: glyph.uv_max,
+                    color,
+                    is_color: glyph.is_color,
+                    _pad: [0.0; 3],
+                });
+            }
+            fg
+        };
+
+        // --- Text decorations (underlines, strikethrough) ---
+        // Uses font metrics from OpenType tables for accurate positioning.
+        // Curly and dotted underlines are rendered as anti-aliased atlas tiles.
+        {
+            let dm = &resources.decoration_metrics;
+            let line_thickness = (dm.stroke_size * pixels_per_point).max(1.0);
+            // Underline: below baseline. The font's underline_offset is distance
+            // from baseline (positive = below). Baseline is at ~line_top + ascent.
+            // For a terminal cell: baseline is approximately at line_y from cosmic-text.
+            // We use the font's own metric scaled by ppem.
+            let baseline_y = self.cell_height * 0.78; // approximate baseline
+            let underline_y_offset = (baseline_y + dm.underline_offset * pixels_per_point).max(0.0);
+            let strikethrough_y_offset =
+                (baseline_y - dm.strikeout_offset * pixels_per_point - line_thickness / 2.0)
+                    .max(0.0);
+
+            // Lazily rasterize curly/dotted tiles into the atlas on first use.
+            if resources.curly_tile.is_none() {
+                let (w, h, data) = rasterize_curly_tile(self.cell_width, line_thickness);
+                if let Some(entry) = resources.atlas.insert_raw_mono(queue, w, h, &data) {
+                    resources.curly_tile = Some(entry);
+                    resources.atlas_bind_group_dirty = true;
+                }
+            }
+            if resources.dotted_tile.is_none() {
+                let (w, h, data) = rasterize_dotted_tile(self.cell_width, line_thickness);
+                if let Some(entry) = resources.atlas.insert_raw_mono(queue, w, h, &data) {
+                    resources.dotted_tile = Some(entry);
+                    resources.atlas_bind_group_dirty = true;
+                }
+            }
+            let curly_tile = resources.curly_tile;
+            let dotted_tile = resources.dotted_tile;
+
+            for cell in &snap.cells {
+                let mut fg_color = maybe_linearize(cell.fg, linearize);
+                if cell.faint {
+                    fg_color[3] *= 0.5;
+                }
+
+                let px = self.phys_rect.x + cell.col as f32 * self.cell_width;
+                let py = self.phys_rect.y + cell.row as f32 * self.cell_height;
+
+                // Strikethrough
+                if cell.strikethrough {
+                    bg_instances.push(CellBgInstance {
+                        pos: [px, py + strikethrough_y_offset],
+                        size: [self.cell_width, line_thickness],
+                        color: fg_color,
+                    });
+                }
+
+                // Underline
+                match cell.underline {
+                    UnderlineStyle::None => {}
+                    UnderlineStyle::Single => {
+                        let color = cell
+                            .underline_color
+                            .map(|c| maybe_linearize(c, linearize))
+                            .unwrap_or(fg_color);
+                        bg_instances.push(CellBgInstance {
+                            pos: [px, py + underline_y_offset],
+                            size: [self.cell_width, line_thickness],
+                            color,
+                        });
+                    }
+                    UnderlineStyle::Double => {
+                        let color = cell
+                            .underline_color
+                            .map(|c| maybe_linearize(c, linearize))
+                            .unwrap_or(fg_color);
+                        // Ghostty: gap = thickness (1:1 ratio)
+                        bg_instances.push(CellBgInstance {
+                            pos: [px, py + underline_y_offset - line_thickness],
+                            size: [self.cell_width, line_thickness],
+                            color,
+                        });
+                        bg_instances.push(CellBgInstance {
+                            pos: [px, py + underline_y_offset + line_thickness],
+                            size: [self.cell_width, line_thickness],
+                            color,
+                        });
+                    }
+                    UnderlineStyle::Dotted => {
+                        let color = cell
+                            .underline_color
+                            .map(|c| maybe_linearize(c, linearize))
+                            .unwrap_or(fg_color);
+                        // Use atlas tile for anti-aliased circles
+                        if let Some(tile) = dotted_tile {
+                            let tile_h = tile.height as f32;
+                            fg_instances.push(CellFgInstance {
+                                pos: [px, py + underline_y_offset - tile_h / 2.0],
+                                size: [tile.width as f32, tile_h],
+                                uv_min: [tile.uv[0], tile.uv[1]],
+                                uv_max: [tile.uv[2], tile.uv[3]],
+                                color,
+                                is_color: 0.0,
+                                _pad: [0.0; 3],
+                            });
+                        } else {
+                            // Fallback: rect-based dots
+                            let dot_w = (line_thickness * 1.5).max(2.0);
+                            let mut x = px;
+                            let x_end = px + self.cell_width;
+                            while x < x_end {
+                                let w = dot_w.min(x_end - x);
+                                bg_instances.push(CellBgInstance {
+                                    pos: [x, py + underline_y_offset],
+                                    size: [w, line_thickness],
+                                    color,
+                                });
+                                x += dot_w * 2.0;
+                            }
+                        }
+                    }
+                    UnderlineStyle::Dashed => {
+                        let color = cell
+                            .underline_color
+                            .map(|c| maybe_linearize(c, linearize))
+                            .unwrap_or(fg_color);
+                        // Ghostty: width/3 + 1px, every-other pattern
+                        let dash_w = self.cell_width / 3.0 + 1.0;
+                        let dash_count = ((self.cell_width / dash_w).ceil() as u32 + 1).max(1);
+                        for i in (0..dash_count).step_by(2) {
+                            let x = px + i as f32 * dash_w;
+                            let w = dash_w.min(px + self.cell_width - x);
+                            if w > 0.0 {
+                                bg_instances.push(CellBgInstance {
+                                    pos: [x, py + underline_y_offset],
+                                    size: [w, line_thickness],
+                                    color,
+                                });
+                            }
+                        }
+                    }
+                    UnderlineStyle::Curly => {
+                        let color = cell
+                            .underline_color
+                            .map(|c| maybe_linearize(c, linearize))
+                            .unwrap_or(fg_color);
+                        // Use atlas tile for anti-aliased sine wave
+                        if let Some(tile) = curly_tile {
+                            let tile_h = tile.height as f32;
+                            fg_instances.push(CellFgInstance {
+                                pos: [px, py + underline_y_offset - tile_h / 2.0],
+                                size: [tile.width as f32, tile_h],
+                                uv_min: [tile.uv[0], tile.uv[1]],
+                                uv_max: [tile.uv[2], tile.uv[3]],
+                                color,
+                                is_color: 0.0,
+                                _pad: [0.0; 3],
+                            });
+                        } else {
+                            // Fallback: rect-based wave
+                            let segments = 8u32;
+                            let seg_w = self.cell_width / segments as f32;
+                            let amplitude = line_thickness * 1.5;
+                            let y_base = py + underline_y_offset;
+                            for i in 0..segments {
+                                let t = i as f32 / segments as f32;
+                                let angle = t * std::f32::consts::TAU;
+                                let y_off = angle.sin() * amplitude;
+                                bg_instances.push(CellBgInstance {
+                                    pos: [px + i as f32 * seg_w, y_base + y_off],
+                                    size: [seg_w + 0.5, line_thickness],
+                                    color,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Faint text: dim glyph colors in fg_instances for faint cells. ---
+        {
+            let faint_cells: HashSet<(usize, usize)> = snap
+                .cells
+                .iter()
+                .filter(|c| c.faint)
+                .map(|c| (c.col, c.row))
+                .collect();
+            if !faint_cells.is_empty() {
+                for inst in &mut fg_instances {
+                    // Map pixel position back to cell coordinates, clamping to valid
+                    // range to handle glyphs with negative bearings or ligature offsets.
+                    let col_f = (inst.pos[0] - self.phys_rect.x) / self.cell_width;
+                    let row_f = (inst.pos[1] - self.phys_rect.y) / self.cell_height;
+                    if col_f < 0.0 || row_f < 0.0 {
+                        continue;
+                    }
+                    let col = (col_f.round() as usize).min(snap.cols.saturating_sub(1));
+                    let row = (row_f.round() as usize).min(snap.rows.saturating_sub(1));
+                    if faint_cells.contains(&(col, row)) {
+                        inst.color[3] *= 0.5;
+                    }
+                }
+            }
+        }
+
+        // --- Cursor ---
+        if snap.is_focused
+            && snap.scroll_offset == 0
+            && snap.cursor_visible
+            && !snap.cursor_blink_hidden
+            && snap.cursor_y >= 0
+            && (snap.cursor_y as usize) < snap.rows
+            && snap.cursor_x < snap.cols
+        {
+            let cx = self.phys_rect.x + snap.cursor_x as f32 * self.cell_width;
+            let cy = self.phys_rect.y + snap.cursor_y as f32 * self.cell_height;
+            let cursor_bg = maybe_linearize(snap.cursor_bg, linearize);
+
+            match snap.cursor_shape {
+                CursorShape::BlinkingBar | CursorShape::SteadyBar => {
+                    bg_instances.push(CellBgInstance {
+                        pos: [cx, cy],
+                        size: [2.0, self.cell_height],
+                        color: cursor_bg,
+                    });
+                }
+                CursorShape::BlinkingUnderline | CursorShape::SteadyUnderline => {
+                    bg_instances.push(CellBgInstance {
+                        pos: [cx, cy + self.cell_height - 2.0],
+                        size: [self.cell_width, 2.0],
+                        color: cursor_bg,
+                    });
+                }
+                CursorShape::Default | CursorShape::BlinkingBlock | CursorShape::SteadyBlock => {
+                    bg_instances.push(CellBgInstance {
+                        pos: [cx, cy],
+                        size: [self.cell_width, self.cell_height],
+                        color: cursor_bg,
+                    });
+                    if !snap.cursor_text.is_empty() {
+                        shape_and_rasterize(
+                            &snap.cursor_text,
+                            snap.cursor_text_bold,
+                            snap.cursor_text_italic,
+                            maybe_linearize(snap.cursor_fg, linearize),
+                            cx,
+                            cy,
+                            self.cell_width,
+                            self.cell_height,
+                            pixels_per_point,
+                            resources,
+                            queue,
+                            &mut fg_instances,
+                        );
+                    }
+                }
+            }
+        }
+
+        // --- Image textures and instances ---
+        let mut image_draws: Vec<([u8; 32], wgpu::Buffer, u32)> = Vec::new();
+        if !snap.images.is_empty() {
+            // Upload any new image textures.
+            for decoded in &snap.decoded_images {
+                if !resources.image_cache.contains_key(&decoded.hash) {
+                    let texture = device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("image_texture"),
+                        size: wgpu::Extent3d {
+                            width: decoded.width,
+                            height: decoded.height,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    });
+                    // Pad rows to wgpu's required alignment if needed.
+                    let unpadded_bpr = 4 * decoded.width;
+                    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+                    let padded_bpr = unpadded_bpr.div_ceil(align) * align;
+
+                    if unpadded_bpr == padded_bpr {
+                        queue.write_texture(
+                            wgpu::TexelCopyTextureInfo {
+                                texture: &texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d::ZERO,
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            &decoded.data,
+                            wgpu::TexelCopyBufferLayout {
+                                offset: 0,
+                                bytes_per_row: Some(unpadded_bpr),
+                                rows_per_image: Some(decoded.height),
+                            },
+                            wgpu::Extent3d {
+                                width: decoded.width,
+                                height: decoded.height,
+                                depth_or_array_layers: 1,
+                            },
+                        );
+                    } else {
+                        let mut padded = vec![0u8; (padded_bpr * decoded.height) as usize];
+                        let src_stride = unpadded_bpr as usize;
+                        let dst_stride = padded_bpr as usize;
+                        for row in 0..decoded.height as usize {
+                            padded[row * dst_stride..row * dst_stride + src_stride]
+                                .copy_from_slice(
+                                    &decoded.data[row * src_stride..row * src_stride + src_stride],
+                                );
+                        }
+                        queue.write_texture(
+                            wgpu::TexelCopyTextureInfo {
+                                texture: &texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d::ZERO,
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            &padded,
+                            wgpu::TexelCopyBufferLayout {
+                                offset: 0,
+                                bytes_per_row: Some(padded_bpr),
+                                rows_per_image: Some(decoded.height),
+                            },
+                            wgpu::Extent3d {
+                                width: decoded.width,
+                                height: decoded.height,
+                                depth_or_array_layers: 1,
+                            },
+                        );
+                    }
+                    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("image_bind_group"),
+                        layout: &resources.img_pipeline.image_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(&resources.image_sampler),
+                            },
+                        ],
+                    });
+                    resources.image_cache.insert(
+                        decoded.hash,
+                        ImageTextureEntry {
+                            texture,
+                            bind_group,
+                        },
+                    );
+                }
+            }
+
+            // Group image placements by hash and build instance buffers.
+            let mut grouped: HashMap<[u8; 32], Vec<ImageQuadInstance>> = HashMap::new();
+            for placement in &snap.images {
+                let px = self.phys_rect.x + placement.col as f32 * self.cell_width;
+                let py = self.phys_rect.y + placement.row as f32 * self.cell_height;
+                grouped
+                    .entry(placement.image_hash)
+                    .or_default()
+                    .push(ImageQuadInstance {
+                        pos: [px, py],
+                        size: [self.cell_width, self.cell_height],
+                        uv_min: placement.uv_min,
+                        uv_max: placement.uv_max,
+                    });
+            }
+
+            for (hash, instances) in grouped {
+                if resources.image_cache.contains_key(&hash) {
+                    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("image_instance_buffer"),
+                        size: (instances.len() * std::mem::size_of::<ImageQuadInstance>()) as u64,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    queue.write_buffer(&buf, 0, bytemuck::cast_slice(&instances));
+                    image_draws.push((hash, buf, instances.len() as u32));
+                }
+            }
+        }
+
+        // --- Update atlas bind group if glyphs were added ---
+        if resources.atlas_bind_group_dirty {
+            resources.fg_pipeline.update_atlas_bind_group(
+                device,
+                resources.atlas.mono_texture_view(),
+                resources.atlas.color_texture_view(),
+                &resources.atlas.sampler,
+            );
+            resources.atlas_bind_group_dirty = false;
+        }
+
+        // --- Upload to per-pane buffers ---
+        // Re-borrow pane_state after releasing the mutable borrow on resources.
+        let pane_state = resources.pane_states.get_mut(&self.pane_id).unwrap();
+
+        // Grow bg buffer if needed.
+        if let Some((buf, cap)) = ensure_instance_buffer::<CellBgInstance>(
+            device,
+            Some(&pane_state.bg_buffer),
+            pane_state.bg_capacity,
+            bg_instances.len(),
+            "pane_bg_instance_buffer",
+        ) {
+            pane_state.bg_buffer = buf;
+            pane_state.bg_capacity = cap;
+        }
+        if !bg_instances.is_empty() {
+            queue.write_buffer(
+                &pane_state.bg_buffer,
+                0,
+                bytemuck::cast_slice(&bg_instances),
+            );
+        }
+        pane_state.bg_count = bg_instances.len() as u32;
+
+        // Grow fg buffer if needed.
+        if let Some((buf, cap)) = ensure_instance_buffer::<CellFgInstance>(
+            device,
+            Some(&pane_state.fg_buffer),
+            pane_state.fg_capacity,
+            fg_instances.len(),
+            "pane_fg_instance_buffer",
+        ) {
+            pane_state.fg_buffer = buf;
+            pane_state.fg_capacity = cap;
+        }
+        if !fg_instances.is_empty() {
+            queue.write_buffer(
+                &pane_state.fg_buffer,
+                0,
+                bytemuck::cast_slice(&fg_instances),
+            );
+        }
+        pane_state.fg_count = fg_instances.len() as u32;
+
+        pane_state.image_draws = image_draws;
+
+        pane_state.update_fingerprint(
+            &self.snapshot,
+            &self.phys_rect,
+            self.cell_width,
+            self.cell_height,
+        );
+
+        Vec::new()
+    }
+
+    fn paint(
+        &self,
+        info: egui::PaintCallbackInfo,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        callback_resources: &CallbackResources,
+    ) {
+        let resources = callback_resources
+            .get::<TerminalGpuResources>()
+            .expect("TerminalGpuResources not initialized");
+
+        let Some(pane_state) = resources.pane_states.get(&self.pane_id) else {
+            return;
+        };
+
+        // Override egui's per-callback viewport (which is set to the callback rect)
+        // with the full window viewport. Our shader computes NDC from absolute physical
+        // pixel positions, so the viewport must cover the full framebuffer. The scissor
+        // rect (set by egui) still clips rendering to the callback area.
+        let [w, h] = info.screen_size_px;
+        render_pass.set_viewport(0.0, 0.0, w as f32, h as f32, 0.0, 1.0);
+
+        resources
+            .bg_pipeline
+            .draw(render_pass, &pane_state.bg_buffer, pane_state.bg_count);
+        resources
+            .fg_pipeline
+            .draw(render_pass, &pane_state.fg_buffer, pane_state.fg_count);
+
+        // Render inline images on top of text.
+        for (hash, instance_buffer, count) in &pane_state.image_draws {
+            if let Some(entry) = resources.image_cache.get(hash) {
+                resources.img_pipeline.draw(
+                    render_pass,
+                    &entry.bind_group,
+                    instance_buffer,
+                    *count,
+                );
+            }
+        }
+    }
+}
