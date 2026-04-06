@@ -128,6 +128,24 @@ pub fn list_profiles() -> Vec<String> {
     profiles
 }
 
+/// Default user agent matching a current Chrome release. Bare WebKit UA
+/// strings trigger CAPTCHAs on many sites because anti-bot systems expect
+/// a Chrome or Safari version token.
+fn default_user_agent() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".to_string()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".to_string()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".to_string()
+    }
+}
+
 /// Delete a profile's data directory.
 pub fn delete_profile(name: &str) -> std::io::Result<()> {
     if name == "default" {
@@ -307,10 +325,13 @@ impl BrowserPane {
                 }
             });
 
-        // Apply custom user agent if configured
-        if let Some(ua) = options.and_then(|o| o.user_agent) {
-            builder = builder.with_user_agent(ua);
-        }
+        // Use a Chrome-like user agent to avoid CAPTCHA triggers from bare
+        // WebKit UA strings. Custom config value takes precedence.
+        let default_ua = default_user_agent();
+        let ua = options
+            .and_then(|o| o.user_agent)
+            .unwrap_or(&default_ua);
+        builder = builder.with_user_agent(ua);
 
         let webview = builder.build_as_child(parent)?;
 
