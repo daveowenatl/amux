@@ -32,6 +32,9 @@ struct SharedState {
     favicon_url: Option<String>,
     /// Decoded favicon image data (base64-decoded bytes from JS fetch).
     favicon_data: Vec<(String, Vec<u8>)>,
+    /// Set when the webview receives a click/focus — used to surrender
+    /// omnibar focus since egui can't see native subview events.
+    got_focus: bool,
 }
 
 /// A JS dialog request intercepted from the page.
@@ -267,6 +270,9 @@ impl BrowserPane {
                                     s.favicon_url = Some(url.to_string());
                                 }
                             }
+                            Some("webview_focused") => {
+                                s.got_focus = true;
+                            }
                             Some("favicon_data") => {
                                 if let (Some(url), Some(b64)) = (
                                     parsed.get("url").and_then(|v| v.as_str()),
@@ -383,6 +389,23 @@ impl BrowserPane {
             })()"#,
         );
 
+        // Notify the app when the webview receives focus (mousedown/focusin)
+        // so egui text fields (omnibar) can surrender focus.
+        let _ = webview.evaluate_script(
+            r#"(function(){
+                var sent = false;
+                function notify() {
+                    if (!sent) {
+                        sent = true;
+                        window.ipc.postMessage(JSON.stringify({type:'webview_focused'}));
+                        setTimeout(function(){ sent = false; }, 200);
+                    }
+                }
+                document.addEventListener('mousedown', notify, true);
+                document.addEventListener('focusin', notify, true);
+            })()"#,
+        );
+
         Ok(Self {
             webview,
             state,
@@ -450,6 +473,15 @@ impl BrowserPane {
             .ok()
             .map(|mut s| std::mem::take(&mut s.favicon_data))
             .unwrap_or_default()
+    }
+
+    /// Check (and clear) whether the webview received focus since last call.
+    pub fn take_got_focus(&self) -> bool {
+        self.state
+            .lock()
+            .ok()
+            .map(|mut s| std::mem::replace(&mut s.got_focus, false))
+            .unwrap_or(false)
     }
 
     /// Navigate back in history.

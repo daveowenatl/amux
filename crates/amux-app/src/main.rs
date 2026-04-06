@@ -170,6 +170,10 @@ struct AmuxApp {
     favicon_cache: HashMap<String, egui::TextureHandle>,
     /// In-flight favicon fetches (URL). Prevents duplicate JS fetch requests.
     favicon_pending: std::collections::HashSet<String>,
+    /// Clipboard text from a menu-bar Paste action when an egui text field has
+    /// focus. The native menu bar consumes Cmd+V before egui sees it, so we
+    /// stash the text here and apply it during the text field's render pass.
+    pending_text_field_paste: Option<String>,
 }
 
 /// Editing state for a browser pane's omnibar.

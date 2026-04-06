@@ -33,6 +33,12 @@ impl AmuxApp {
             RenameTarget::Tab { .. } => "Rename Tab",
         };
 
+        // Apply pending paste from menu bar (Cmd+V consumed by muda before egui).
+        if let Some(paste_text) = self.pending_text_field_paste.take() {
+            let modal = self.rename_modal.as_mut().unwrap();
+            modal.buf.push_str(&paste_text);
+        }
+
         let modal = self.rename_modal.as_mut().unwrap();
         let just_opened = modal.just_opened;
 

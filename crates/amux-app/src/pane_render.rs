@@ -951,8 +951,17 @@ impl AmuxApp {
                 .desired_width(url_rect.width() - 12.0),
         );
 
-        // Track focus state
+        // Track focus state — detect clicks on the webview (native subview)
+        // via IPC and surrender omnibar focus so paste goes to the web page.
         let was_focused = state.focused;
+        let webview_got_focus = self
+            .panes
+            .get(&pane_id)
+            .and_then(|e| e.as_browser())
+            .is_some_and(|b| b.take_got_focus());
+        if webview_got_focus && response.has_focus() {
+            response.surrender_focus();
+        }
         state.focused = response.has_focus();
         state.text = text;
 
@@ -967,6 +976,42 @@ impl AmuxApp {
                         egui::text::CCursor::new(state.text.len()),
                     )));
                 text_state.store(ui.ctx(), text_id);
+            }
+        }
+
+        // Apply pending paste from menu bar (Cmd+V consumed by muda before egui).
+        if state.focused {
+            if let Some(paste_text) = self.pending_text_field_paste.take() {
+                if let Some(mut text_state) = egui::TextEdit::load_state(ui.ctx(), text_id) {
+                    if let Some(range) = text_state.cursor.char_range() {
+                        let start = range.primary.index.min(range.secondary.index);
+                        let end = range.primary.index.max(range.secondary.index);
+                        let byte_start = state
+                            .text
+                            .char_indices()
+                            .nth(start)
+                            .map(|(i, _)| i)
+                            .unwrap_or(state.text.len());
+                        let byte_end = state
+                            .text
+                            .char_indices()
+                            .nth(end)
+                            .map(|(i, _)| i)
+                            .unwrap_or(state.text.len());
+                        state.text.replace_range(byte_start..byte_end, &paste_text);
+                        let new_cursor = start + paste_text.chars().count();
+                        text_state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::one(
+                                egui::text::CCursor::new(new_cursor),
+                            )));
+                    } else {
+                        state.text.push_str(&paste_text);
+                    }
+                    text_state.store(ui.ctx(), text_id);
+                } else {
+                    state.text.push_str(&paste_text);
+                }
             }
         }
 

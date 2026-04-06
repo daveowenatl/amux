@@ -9,6 +9,13 @@ use crate::*;
 
 impl AmuxApp {
     pub(crate) fn render_find_bar(&mut self, ctx: &egui::Context) {
+        // Apply pending paste from menu bar (Cmd+V consumed by muda before egui).
+        if let Some(paste_text) = self.pending_text_field_paste.take() {
+            if let Some(fs) = self.find_state.as_mut() {
+                fs.query.push_str(&paste_text);
+            }
+        }
+
         let mut close = false;
         let mut navigate: Option<isize> = None; // +1 = next, -1 = prev
 

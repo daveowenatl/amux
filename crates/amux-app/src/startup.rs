@@ -192,6 +192,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 browser_history: amux_browser::history::BrowserHistory::load(),
                 favicon_cache: HashMap::new(),
                 favicon_pending: std::collections::HashSet::new(),
+                pending_text_field_paste: None,
             }))
         }),
     )

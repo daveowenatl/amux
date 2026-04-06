@@ -3,6 +3,13 @@
 use crate::*;
 
 impl AmuxApp {
+    /// Check if any egui text field (omnibar, rename modal, find bar) has focus.
+    pub(crate) fn has_focused_text_field(&self) -> bool {
+        self.rename_modal.is_some()
+            || self.find_state.is_some()
+            || self.omnibar_state.values().any(|s| s.focused)
+    }
+
     /// Remove a pane and any browser tabs it owns from the panes map.
     fn remove_pane_and_browser_tabs(&mut self, pane_id: PaneId) {
         let browser_ids: Vec<PaneId> = self
@@ -223,19 +230,41 @@ impl AmuxApp {
                     }
                 }
                 menu_bar::MenuAction::Copy => {
-                    self.copy_selection();
+                    // When an egui text field is focused, the menu bar consumed
+                    // the Cmd+C before egui saw it. Nothing to do here — egui's
+                    // TextEdit handles copy internally via Event::Copy which we
+                    // can't inject. For now, copy from text fields is a no-op
+                    // (users can use the TextEdit's built-in selection copy).
+                    if !self.has_focused_text_field() {
+                        self.copy_selection();
+                    }
                 }
                 menu_bar::MenuAction::Paste => {
-                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                        if let Ok(text) = clipboard.get_text() {
-                            if !text.is_empty() {
-                                self.do_paste(&text);
+                    if self.has_focused_text_field() {
+                        // Menu bar consumed Cmd+V before egui could generate
+                        // Event::Paste. Store the clipboard text so the focused
+                        // text field's render code can apply it.
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            if let Ok(text) = clipboard.get_text() {
+                                if !text.is_empty() {
+                                    self.pending_text_field_paste = Some(text);
+                                }
+                            }
+                        }
+                    } else {
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            if let Ok(text) = clipboard.get_text() {
+                                if !text.is_empty() {
+                                    self.do_paste(&text);
+                                }
                             }
                         }
                     }
                 }
                 menu_bar::MenuAction::SelectAll => {
-                    self.select_all_visible();
+                    if !self.has_focused_text_field() {
+                        self.select_all_visible();
+                    }
                 }
             }
         }
