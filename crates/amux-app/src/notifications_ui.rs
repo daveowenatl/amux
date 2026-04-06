@@ -39,7 +39,8 @@ impl AmuxApp {
         // Collect events first to avoid borrow conflicts
         let mut events: Vec<(u64, u64, u64, NotificationEvent)> = Vec::new();
 
-        for (&pane_id, managed) in &self.panes {
+        for (&pane_id, entry) in &self.panes {
+            let PaneEntry::Terminal(managed) = entry;
             let ws_id = self.workspace_for_pane(pane_id).unwrap_or(0);
             for surface in &managed.surfaces {
                 for event in surface.pane.drain_notifications() {
@@ -61,7 +62,7 @@ impl AmuxApp {
                 }
                 NotificationEvent::WorkingDirectoryChanged => {
                     // Store the CWD from OSC 7 into surface metadata
-                    if let Some(managed) = self.panes.get_mut(&pane_id) {
+                    if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
                         for surface in &mut managed.surfaces {
                             if surface.id == surface_id {
                                 let cwd = surface
@@ -212,7 +213,8 @@ impl AmuxApp {
     pub(crate) fn workspace_metadata(&self, workspace: &Workspace) -> SurfaceMetadata {
         self.panes
             .get(&workspace.focused_pane)
-            .map(|mp| {
+            .map(|entry| {
+                let PaneEntry::Terminal(mp) = entry;
                 let sf = mp.active_surface();
                 let mut meta = sf.metadata.clone();
                 // Capture the surface's OSC title for sidebar display
@@ -355,7 +357,8 @@ impl AmuxApp {
                     let tab_title = self
                         .panes
                         .get(&pid)
-                        .map(|mp| {
+                        .map(|entry| {
+                            let PaneEntry::Terminal(mp) = entry;
                             let sf = mp.active_surface();
                             let t = sf.pane.title();
                             if t.is_empty() {

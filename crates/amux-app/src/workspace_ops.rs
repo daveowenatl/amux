@@ -26,11 +26,11 @@ impl AmuxApp {
                 self.next_surface_id += 1;
                 self.panes.insert(
                     pane_id,
-                    ManagedPane {
+                    PaneEntry::Terminal(ManagedPane {
                         surfaces: vec![surface],
                         active_surface_idx: 0,
                         selection: None,
-                    },
+                    }),
                 );
                 Some(pane_id)
             }
@@ -65,11 +65,11 @@ impl AmuxApp {
                 self.next_surface_id += 1;
                 self.panes.insert(
                     pane_id,
-                    ManagedPane {
+                    PaneEntry::Terminal(ManagedPane {
                         surfaces: vec![surface],
                         active_surface_idx: 0,
                         selection: None,
-                    },
+                    }),
                 );
 
                 let workspace = Workspace {
@@ -112,7 +112,7 @@ impl AmuxApp {
             None,
         ) {
             Ok(surface) => {
-                if let Some(managed) = self.panes.get_mut(&focused) {
+                if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused) {
                     managed.surfaces.push(surface);
                     managed.active_surface_idx = managed.surfaces.len() - 1;
                     Some(sf_id)
@@ -238,7 +238,7 @@ impl AmuxApp {
         let focused_id = self.focused_pane_id();
 
         // First check: close a tab if >1 tab in focused pane
-        if let Some(managed) = self.panes.get_mut(&focused_id) {
+        if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused_id) {
             if managed.surfaces.len() > 1 {
                 managed.surfaces.remove(managed.active_surface_idx);
                 if managed.active_surface_idx >= managed.surfaces.len() {
@@ -263,7 +263,7 @@ impl AmuxApp {
             .unwrap_or(0);
 
         let managed = match self.panes.get_mut(&pane_id) {
-            Some(m) => m,
+            Some(PaneEntry::Terminal(m)) => m,
             None => return,
         };
         let old_surface = managed.active_surface_mut();
@@ -350,7 +350,7 @@ impl AmuxApp {
 
     pub(crate) fn do_scroll(&mut self, pages: isize) -> bool {
         let focused_id = self.focused_pane_id();
-        if let Some(managed) = self.panes.get_mut(&focused_id) {
+        if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused_id) {
             let surface = managed.active_surface_mut();
             let (_, rows) = surface.pane.dimensions();
             let page_size = rows.saturating_sub(1).max(1);
@@ -364,7 +364,7 @@ impl AmuxApp {
     }
 
     pub(crate) fn do_scroll_lines_for(&mut self, pane_id: PaneId, lines: isize) {
-        if let Some(managed) = self.panes.get_mut(&pane_id) {
+        if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
             let surface = managed.active_surface_mut();
             let (_, rows) = surface.pane.dimensions();
             let total = surface.pane.scrollback_rows();
@@ -376,7 +376,7 @@ impl AmuxApp {
 
     pub(crate) fn do_clear_scrollback(&mut self) {
         let focused_id = self.focused_pane_id();
-        if let Some(managed) = self.panes.get_mut(&focused_id) {
+        if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused_id) {
             let surface = managed.active_surface_mut();
             // 1. Clear visible screen and move cursor home via terminal state machine
             surface.pane.feed_bytes(b"\x1b[2J\x1b[H");

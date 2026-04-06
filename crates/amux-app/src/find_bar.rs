@@ -45,7 +45,7 @@ impl AmuxApp {
                         let find = self.find_state.as_ref().unwrap();
                         let query = find.query.clone();
                         let pane_id = find.pane_id;
-                        if let Some(managed) = self.panes.get(&pane_id) {
+                        if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
                             let matches = managed.active_surface().pane.search_scrollback(&query);
                             let find = self.find_state.as_mut().unwrap();
                             find.matches = matches;
@@ -100,7 +100,7 @@ impl AmuxApp {
                     // Scroll to the current match
                     let (phys_row, _, _) = find.matches[find.current_match];
                     let pane_id = find.pane_id;
-                    if let Some(managed) = self.panes.get_mut(&pane_id) {
+                    if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
                         let surface = managed.active_surface_mut();
                         let (_, rows) = surface.pane.dimensions();
                         let total_rows = surface.pane.scrollback_rows();

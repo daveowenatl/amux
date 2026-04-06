@@ -81,7 +81,7 @@ impl AmuxApp {
                         pane_id,
                         surface_id,
                     } => {
-                        if let Some(managed) = self.panes.get_mut(&pane_id) {
+                        if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
                             if let Some(surface) =
                                 managed.surfaces.iter_mut().find(|s| s.id == surface_id)
                             {

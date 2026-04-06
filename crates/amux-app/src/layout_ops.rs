@@ -22,7 +22,7 @@ impl AmuxApp {
 
         // Resize the active surface if its dimensions don't match the pane rect.
         // This handles both pane rect changes and tab switches (new surface at 80x24).
-        if let Some(managed) = self.panes.get_mut(&id) {
+        if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&id) {
             let surface = managed.active_surface_mut();
             let (cur_cols, cur_rows) = surface.pane.dimensions();
             if cur_cols != cols || cur_rows != rows {

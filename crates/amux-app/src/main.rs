@@ -107,7 +107,7 @@ fn main() -> anyhow::Result<()> {
 struct AmuxApp {
     workspaces: Vec<Workspace>,
     active_workspace_idx: usize,
-    panes: HashMap<PaneId, ManagedPane>,
+    panes: HashMap<PaneId, PaneEntry>,
     next_pane_id: PaneId,
     next_workspace_id: u64,
     next_surface_id: u64,
@@ -197,11 +197,11 @@ impl AmuxApp {
             ws.focused_pane = pane_id;
 
             // Send DECSET 1004 focus-out to old pane
-            if let Some(managed) = self.panes.get_mut(&old_id) {
+            if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&old_id) {
                 managed.active_surface_mut().pane.focus_changed(false);
             }
             // Send DECSET 1004 focus-in to new pane
-            if let Some(managed) = self.panes.get_mut(&pane_id) {
+            if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
                 managed.active_surface_mut().pane.focus_changed(true);
             }
 
@@ -229,7 +229,8 @@ impl AmuxApp {
     /// Drain any pending PTY bytes into the terminal state machine so that
     /// title, working directory, and scrollback are up to date before save.
     fn flush_pending_io(&mut self) {
-        for managed in self.panes.values_mut() {
+        for entry in self.panes.values_mut() {
+            let PaneEntry::Terminal(managed) = entry;
             for surface in &mut managed.surfaces {
                 while let Ok(bytes) = surface.byte_rx.try_recv() {
                     surface.pane.feed_bytes(&bytes);
@@ -243,7 +244,7 @@ impl AmuxApp {
         for ws in &self.workspaces {
             let mut saved_panes = std::collections::HashMap::new();
             for &pane_id in &ws.tree.iter_panes() {
-                if let Some(managed) = self.panes.get(&pane_id) {
+                if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
                     let surfaces: Vec<amux_session::SavedSurface> = managed
                         .surfaces
                         .iter()

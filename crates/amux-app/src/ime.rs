@@ -29,7 +29,7 @@ impl AmuxApp {
             }
         };
 
-        if let Some(managed) = self.panes.get(&focused_id) {
+        if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&focused_id) {
             let surface = managed.active_surface();
             let cursor = surface.pane.cursor();
             let (dim_cols, dim_rows) = surface.pane.dimensions();
@@ -67,7 +67,7 @@ impl AmuxApp {
             }
         };
 
-        if let Some(managed) = self.panes.get(&focused_id) {
+        if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&focused_id) {
             let surface = managed.active_surface();
             let cursor = surface.pane.cursor();
             let (dim_cols, dim_rows) = surface.pane.dimensions();

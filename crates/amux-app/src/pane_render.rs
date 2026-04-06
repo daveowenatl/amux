@@ -20,7 +20,7 @@ impl AmuxApp {
         is_focused: bool,
     ) {
         let managed = match self.panes.get_mut(&pane_id) {
-            Some(m) => m,
+            Some(PaneEntry::Terminal(m)) => m,
             None => return,
         };
 
@@ -244,7 +244,7 @@ impl AmuxApp {
                         let to = drag.drop_target_idx;
                         self.tab_drag = None;
                         if from != to {
-                            if let Some(m) = self.panes.get_mut(&pane_id) {
+                            if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
                                 let surface = m.surfaces.remove(from);
                                 let insert_idx = if from < to {
                                     (to - 1).min(m.surfaces.len())
@@ -328,7 +328,7 @@ impl AmuxApp {
                             None,
                         ) {
                             // Re-borrow managed after spawn_surface
-                            if let Some(m) = self.panes.get_mut(&pane_id) {
+                            if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
                                 m.surfaces.push(surface);
                                 m.active_surface_idx = m.surfaces.len() - 1;
                             }
@@ -340,15 +340,15 @@ impl AmuxApp {
 
             // Apply tab switch/close (need to re-borrow managed)
             if let Some(idx) = close_tab {
-                let is_last = self
-                    .panes
-                    .get(&pane_id)
-                    .is_some_and(|m| m.surfaces.len() <= 1);
+                let is_last = self.panes.get(&pane_id).is_some_and(|e| {
+                    let PaneEntry::Terminal(m) = e;
+                    m.surfaces.len() <= 1
+                });
                 if is_last {
                     self.close_pane(pane_id);
                     return;
                 }
-                let managed = self.panes.get_mut(&pane_id).unwrap();
+                let PaneEntry::Terminal(managed) = self.panes.get_mut(&pane_id).unwrap();
                 managed.surfaces.remove(idx);
                 if idx < managed.active_surface_idx {
                     managed.active_surface_idx -= 1;
@@ -356,13 +356,13 @@ impl AmuxApp {
                     managed.active_surface_idx = managed.surfaces.len() - 1;
                 }
             } else if let Some(idx) = switch_to {
-                let managed = self.panes.get_mut(&pane_id).unwrap();
+                let PaneEntry::Terminal(managed) = self.panes.get_mut(&pane_id).unwrap();
                 managed.active_surface_idx = idx;
             }
 
             // Open rename modal for tab
             if let Some(idx) = start_rename_tab {
-                if let Some(managed) = self.panes.get(&pane_id) {
+                if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
                     if idx < managed.surfaces.len() {
                         let surface = &managed.surfaces[idx];
                         let current_title = surface
@@ -418,7 +418,7 @@ impl AmuxApp {
 
         // Render terminal content for the active surface
         let managed = match self.panes.get_mut(&pane_id) {
-            Some(m) => m,
+            Some(PaneEntry::Terminal(m)) => m,
             None => return,
         };
         let selection = copy_mode_sel
@@ -454,7 +454,7 @@ impl AmuxApp {
         // Render copy mode cursor overlay
         if let Some(cm) = self.copy_mode.as_ref().filter(|cm| cm.pane_id == pane_id) {
             let (cell_w, cell_h) = self.cell_dimensions(ui);
-            if let Some(managed) = self.panes.get(&pane_id) {
+            if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
                 let surface = managed.active_surface();
                 let (_, rows) = surface.pane.dimensions();
                 let total = surface.pane.scrollback_rows();
