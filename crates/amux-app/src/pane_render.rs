@@ -2,8 +2,9 @@
 //!
 //! Draws the per-pane tab bar (surface tabs) and delegates the terminal
 //! content rendering to either the GPU or software renderer. Handles
-//! tab interactions: click to activate, middle-click to close, right-click
-//! context menu, drag to reorder, and the trailing "+" to add a surface.
+//! tab interactions: click to activate, right-click context menu, drag to
+//! reorder, close via hover "X" / context menu, and the trailing "+" to
+//! add a surface.
 //!
 //! Mirrors wezterm-gui's `termwindow/render/pane.rs` — the per-pane
 //! renderer that emits tab chrome plus the terminal content call.
@@ -245,23 +246,29 @@ impl AmuxApp {
                         self.tab_drag = None;
                         if from != to {
                             if let Some(m) = self.panes.get_mut(&pane_id) {
-                                let surface = m.surfaces.remove(from);
-                                let insert_idx = if from < to {
-                                    (to - 1).min(m.surfaces.len())
+                                // Validate indices — surfaces may have been removed
+                                // via IPC/keyboard while a drag was in progress.
+                                if from >= m.surfaces.len() || to >= m.surfaces.len() {
+                                    // Stale drag; silently discard.
                                 } else {
-                                    to.min(m.surfaces.len())
-                                };
-                                m.surfaces.insert(insert_idx, surface);
-                                if m.active_surface_idx == from {
-                                    m.active_surface_idx = insert_idx;
-                                } else if from < m.active_surface_idx
-                                    && insert_idx >= m.active_surface_idx
-                                {
-                                    m.active_surface_idx -= 1;
-                                } else if from > m.active_surface_idx
-                                    && insert_idx <= m.active_surface_idx
-                                {
-                                    m.active_surface_idx += 1;
+                                    let surface = m.surfaces.remove(from);
+                                    let insert_idx = if from < to {
+                                        (to - 1).min(m.surfaces.len())
+                                    } else {
+                                        to.min(m.surfaces.len())
+                                    };
+                                    m.surfaces.insert(insert_idx, surface);
+                                    if m.active_surface_idx == from {
+                                        m.active_surface_idx = insert_idx;
+                                    } else if from < m.active_surface_idx
+                                        && insert_idx >= m.active_surface_idx
+                                    {
+                                        m.active_surface_idx -= 1;
+                                    } else if from > m.active_surface_idx
+                                        && insert_idx <= m.active_surface_idx
+                                    {
+                                        m.active_surface_idx += 1;
+                                    }
                                 }
                             }
                             return;
