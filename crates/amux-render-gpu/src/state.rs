@@ -2,7 +2,7 @@
 //!
 //! Extracted from `callback.rs` to keep the paint loop module focused on
 //! the `CallbackTrait` impl. These types are pure data / dirty-tracking;
-//! the actual GPU paint logic lives in `callback.rs`.
+//! the actual GPU paint logic lives in `screen_line.rs`.
 
 use amux_term::backend::CursorShape;
 use egui_wgpu::wgpu;
