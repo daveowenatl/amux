@@ -431,7 +431,9 @@ impl AmuxApp {
             // Pane toolbar: new terminal, new browser, split vertical, split horizontal
             let icon_size = tab_icons::ICON_SIZE;
             let icon_pad = 6.0;
-            let toolbar_x = x + 6.0;
+            let button_count = 4.0;
+            let toolbar_width = button_count * icon_size + (button_count - 1.0) * icon_pad;
+            let toolbar_x = tab_rect.max.x - toolbar_width - 6.0;
             let icon_y = tab_rect.min.y + (TAB_BAR_HEIGHT - icon_size) / 2.0;
 
             struct ToolbarButton {
