@@ -37,10 +37,16 @@ impl AmuxApp {
                 _ => return,
             };
 
-        // Manage browser webview visibility: show active, hide others
+        // Manage browser webview visibility: show active, hide others.
+        // Native webviews sit above egui content, so hide them when an
+        // overlay (notification panel, rename modal, find bar) is open.
+        // TODO: replace with screenshot+hide for smoother UX.
+        let overlay_open = self.show_notification_panel
+            || self.rename_modal.is_some()
+            || self.find_state.is_some();
         for &bid in &browser_tab_ids {
             if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
-                b.set_visible(active_browser_id == Some(bid));
+                b.set_visible(active_browser_id == Some(bid) && !overlay_open);
             }
         }
 
@@ -973,7 +979,7 @@ impl AmuxApp {
                     .cursor
                     .set_char_range(Some(egui::text::CCursorRange::two(
                         egui::text::CCursor::new(0),
-                        egui::text::CCursor::new(state.text.len()),
+                        egui::text::CCursor::new(state.text.chars().count()),
                     )));
                 text_state.store(ui.ctx(), text_id);
             }

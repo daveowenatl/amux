@@ -39,10 +39,7 @@ impl AmuxApp {
             modal.buf.push_str(&paste_text);
         }
 
-        // Apply pending select-all from menu bar. The rename modal text field
-        // manages its own cursor state; clearing the flag is sufficient since
-        // egui's TextEdit handles Cmd+A internally when the field is focused.
-        self.pending_text_field_select_all = false;
+        let pending_select_all = std::mem::replace(&mut self.pending_text_field_select_all, false);
 
         let modal = self.rename_modal.as_mut().unwrap();
         let just_opened = modal.just_opened;
@@ -59,6 +56,21 @@ impl AmuxApp {
                     if just_opened {
                         response.request_focus();
                         modal.just_opened = false;
+                    }
+                    // Apply pending select-all from menu bar (Cmd+A consumed by muda).
+                    if pending_select_all && response.has_focus() {
+                        if let Some(mut text_state) =
+                            egui::TextEdit::load_state(ui.ctx(), response.id)
+                        {
+                            let char_count = modal.buf.chars().count();
+                            text_state
+                                .cursor
+                                .set_char_range(Some(egui::text::CCursorRange::two(
+                                    egui::text::CCursor::new(0),
+                                    egui::text::CCursor::new(char_count),
+                                )));
+                            text_state.store(ui.ctx(), response.id);
+                        }
                     }
                     if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         apply = Some(modal.buf.trim().to_string());

@@ -343,9 +343,9 @@ impl AmuxApp {
                     if let Some(PaneEntry::Terminal(managed)) =
                         self.panes.get_mut(&self.focused_pane_id())
                     {
-                        if managed.surfaces.len() > 1 {
-                            managed.active_surface_idx =
-                                (managed.active_surface_idx + 1) % managed.surfaces.len();
+                        let total = managed.tab_count();
+                        if total > 1 {
+                            managed.active_surface_idx = (managed.active_surface_idx + 1) % total;
                         }
                     }
                     return true;
@@ -356,9 +356,10 @@ impl AmuxApp {
                     if let Some(PaneEntry::Terminal(managed)) =
                         self.panes.get_mut(&self.focused_pane_id())
                     {
-                        if managed.surfaces.len() > 1 {
+                        let total = managed.tab_count();
+                        if total > 1 {
                             managed.active_surface_idx = if managed.active_surface_idx == 0 {
-                                managed.surfaces.len() - 1
+                                total - 1
                             } else {
                                 managed.active_surface_idx - 1
                             };

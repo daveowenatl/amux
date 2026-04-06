@@ -16,10 +16,7 @@ impl AmuxApp {
             }
         }
 
-        // Apply pending select-all from menu bar. The find bar text field
-        // manages its own cursor state; clearing the flag is sufficient since
-        // egui's TextEdit handles Cmd+A internally when the field is focused.
-        self.pending_text_field_select_all = false;
+        let pending_select_all = std::mem::replace(&mut self.pending_text_field_select_all, false);
 
         let mut close = false;
         let mut navigate: Option<isize> = None; // +1 = next, -1 = prev
@@ -39,6 +36,23 @@ impl AmuxApp {
                         if fs.just_opened {
                             response.request_focus();
                             fs.just_opened = false;
+                        }
+                    }
+
+                    // Apply pending select-all from menu bar (Cmd+A consumed by muda).
+                    if pending_select_all && response.has_focus() {
+                        let query = &self.find_state.as_ref().unwrap().query;
+                        if let Some(mut text_state) =
+                            egui::TextEdit::load_state(ui.ctx(), response.id)
+                        {
+                            let char_count = query.chars().count();
+                            text_state
+                                .cursor
+                                .set_char_range(Some(egui::text::CCursorRange::two(
+                                    egui::text::CCursor::new(0),
+                                    egui::text::CCursor::new(char_count),
+                                )));
+                            text_state.store(ui.ctx(), response.id);
                         }
                     }
 
