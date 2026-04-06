@@ -22,8 +22,10 @@ pub(crate) use amux_core::model::{
 /// A pane entry in the application's pane map.
 ///
 /// Terminal panes are the only variant today. When browser panes land (#108),
-/// add `Browser(BrowserPane)` here and the compiler will flag every call site
-/// that needs a new match arm.
+/// add `Browser(BrowserPane)` here — the compiler will flag the `match` arms
+/// in this enum's methods (`as_terminal`, `title`, etc.). Call sites that use
+/// `if let` / `as_terminal()` will silently skip non-terminal panes, which is
+/// the correct behavior for terminal-specific operations.
 pub(crate) enum PaneEntry {
     Terminal(ManagedPane),
 }
