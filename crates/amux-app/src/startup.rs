@@ -187,6 +187,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
                 pending_browser_panes: Vec::new(),
+                omnibar_state: HashMap::new(),
             }))
         }),
     )

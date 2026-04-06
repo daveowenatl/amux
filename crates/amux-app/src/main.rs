@@ -159,6 +159,16 @@ struct AmuxApp {
     /// Pending browser pane creation requests (URL). Processed in update()
     /// where the window handle is available.
     pending_browser_panes: Vec<String>,
+    /// Per-browser-pane omnibar editing state.
+    omnibar_state: HashMap<PaneId, OmnibarState>,
+}
+
+/// Editing state for a browser pane's omnibar.
+struct OmnibarState {
+    /// Text currently in the omnibar input.
+    text: String,
+    /// Whether the omnibar input is focused (editing mode).
+    focused: bool,
 }
 
 struct TabDragState {
@@ -233,6 +243,26 @@ impl AmuxApp {
     /// is available.
     fn queue_browser_pane(&mut self, url: String) {
         self.pending_browser_panes.push(url);
+    }
+
+    /// Open a URL in an existing browser pane, or queue creation of a new one.
+    fn open_url_in_browser_pane(&mut self, url: &str) {
+        // Find an existing browser pane in the current workspace
+        let ws = self.active_workspace();
+        let pane_ids = ws.tree.iter_panes();
+        let existing_browser = pane_ids
+            .iter()
+            .find(|&&id| self.panes.get(&id).is_some_and(|e| e.is_browser()))
+            .copied();
+
+        if let Some(browser_id) = existing_browser {
+            if let Some(PaneEntry::Browser(browser)) = self.panes.get(&browser_id) {
+                browser.navigate(url);
+            }
+            self.set_focus(browser_id);
+        } else {
+            self.queue_browser_pane(url.to_string());
+        }
     }
 
     /// Process pending browser pane creation requests.

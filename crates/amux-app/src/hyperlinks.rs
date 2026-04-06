@@ -124,7 +124,13 @@ impl AmuxApp {
                                 || lower.starts_with("https://")
                                 || lower.starts_with("mailto:")
                             {
-                                let _ = open::that(url);
+                                if self.app_config.browser.open_terminal_links_in_app
+                                    && !lower.starts_with("mailto:")
+                                {
+                                    self.open_url_in_browser_pane(url);
+                                } else {
+                                    let _ = open::that(url);
+                                }
                             }
                         }
                     }

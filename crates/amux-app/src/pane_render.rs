@@ -19,31 +19,9 @@ impl AmuxApp {
         rect: egui::Rect,
         is_focused: bool,
     ) {
-        // Handle browser panes: just update bounds, the webview renders itself
-        if let Some(PaneEntry::Browser(browser)) = self.panes.get(&pane_id) {
-            let content_rect = egui::Rect::from_min_max(
-                egui::pos2(rect.min.x, rect.min.y + TAB_CONTENT_TOP_INSET),
-                rect.max,
-            );
-            browser.set_bounds(amux_browser::BrowserRect {
-                x: content_rect.min.x as f64,
-                y: content_rect.min.y as f64,
-                width: content_rect.width() as f64,
-                height: content_rect.height() as f64,
-            });
-            // Draw a simple tab bar for the browser pane
-            let tab_rect =
-                egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), TAB_BAR_HEIGHT));
-            ui.painter()
-                .rect_filled(tab_rect, 0.0, self.theme.tab_bar_bg());
-            let title = browser.url().unwrap_or_else(|| "Browser".to_string());
-            ui.painter().text(
-                tab_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                title,
-                egui::FontId::proportional(12.0),
-                egui::Color32::from_gray(200),
-            );
+        // Handle browser panes: omnibar + webview
+        if self.panes.get(&pane_id).is_some_and(|e| e.is_browser()) {
+            self.render_browser_pane(ui, pane_id, rect, is_focused);
             return;
         }
 
@@ -588,6 +566,251 @@ impl AmuxApp {
                     ui.ctx().request_repaint();
                 }
             }
+        }
+    }
+
+    /// Render a browser pane: omnibar (back/forward/reload + URL input) + webview bounds update.
+    fn render_browser_pane(
+        &mut self,
+        ui: &mut egui::Ui,
+        pane_id: PaneId,
+        rect: egui::Rect,
+        _is_focused: bool,
+    ) {
+        const OMNIBAR_HEIGHT: f32 = TAB_BAR_HEIGHT;
+        const BUTTON_SIZE: f32 = 20.0;
+        const BUTTON_PAD: f32 = 4.0;
+
+        let omnibar_rect =
+            egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), OMNIBAR_HEIGHT));
+        let content_rect = egui::Rect::from_min_max(
+            egui::pos2(rect.min.x, rect.min.y + OMNIBAR_HEIGHT + 1.0),
+            rect.max,
+        );
+
+        // Update webview bounds
+        if let Some(PaneEntry::Browser(browser)) = self.panes.get(&pane_id) {
+            browser.set_bounds(amux_browser::BrowserRect {
+                x: content_rect.min.x as f64,
+                y: content_rect.min.y as f64,
+                width: content_rect.width() as f64,
+                height: content_rect.height() as f64,
+            });
+        }
+
+        // Draw omnibar background
+        let painter = ui.painter();
+        painter.rect_filled(omnibar_rect, 0.0, self.theme.tab_bar_bg());
+        painter.hline(
+            omnibar_rect.x_range(),
+            omnibar_rect.max.y,
+            egui::Stroke::new(1.0, self.theme.chrome.tab_bar_border),
+        );
+
+        let hover_pos = ui.input(|i| i.pointer.hover_pos());
+        let primary_clicked = ui.input(|i| i.pointer.primary_clicked());
+
+        // Navigation buttons: back, forward, reload
+        let button_y = omnibar_rect.min.y + (OMNIBAR_HEIGHT - BUTTON_SIZE) / 2.0;
+        let mut x = omnibar_rect.min.x + BUTTON_PAD;
+
+        // Back button
+        let back_rect = egui::Rect::from_min_size(
+            egui::pos2(x, button_y),
+            egui::vec2(BUTTON_SIZE, BUTTON_SIZE),
+        );
+        let back_hovered = hover_pos.is_some_and(|p| back_rect.contains(p));
+        let back_color = if back_hovered {
+            egui::Color32::WHITE
+        } else {
+            egui::Color32::from_gray(120)
+        };
+        painter.text(
+            back_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "\u{25C0}",
+            egui::FontId::proportional(11.0),
+            back_color,
+        );
+        if back_hovered && primary_clicked {
+            if let Some(PaneEntry::Browser(browser)) = self.panes.get(&pane_id) {
+                browser.go_back();
+            }
+        }
+        x += BUTTON_SIZE + 2.0;
+
+        // Forward button
+        let fwd_rect = egui::Rect::from_min_size(
+            egui::pos2(x, button_y),
+            egui::vec2(BUTTON_SIZE, BUTTON_SIZE),
+        );
+        let fwd_hovered = hover_pos.is_some_and(|p| fwd_rect.contains(p));
+        let fwd_color = if fwd_hovered {
+            egui::Color32::WHITE
+        } else {
+            egui::Color32::from_gray(120)
+        };
+        painter.text(
+            fwd_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "\u{25B6}",
+            egui::FontId::proportional(11.0),
+            fwd_color,
+        );
+        if fwd_hovered && primary_clicked {
+            if let Some(PaneEntry::Browser(browser)) = self.panes.get(&pane_id) {
+                browser.go_forward();
+            }
+        }
+        x += BUTTON_SIZE + 2.0;
+
+        // Reload button
+        let reload_rect = egui::Rect::from_min_size(
+            egui::pos2(x, button_y),
+            egui::vec2(BUTTON_SIZE, BUTTON_SIZE),
+        );
+        let reload_hovered = hover_pos.is_some_and(|p| reload_rect.contains(p));
+        let reload_color = if reload_hovered {
+            egui::Color32::WHITE
+        } else {
+            egui::Color32::from_gray(120)
+        };
+        painter.text(
+            reload_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "\u{21BB}",
+            egui::FontId::proportional(13.0),
+            reload_color,
+        );
+        if reload_hovered && primary_clicked {
+            if let Some(PaneEntry::Browser(browser)) = self.panes.get(&pane_id) {
+                browser.reload();
+            }
+        }
+        x += BUTTON_SIZE + BUTTON_PAD;
+
+        // URL input area
+        let url_rect = egui::Rect::from_min_max(
+            egui::pos2(x, omnibar_rect.min.y + 3.0),
+            egui::pos2(omnibar_rect.max.x - BUTTON_PAD, omnibar_rect.max.y - 3.0),
+        );
+
+        // Ensure omnibar state exists and sync URL when not editing
+        let current_url = self
+            .panes
+            .get(&pane_id)
+            .and_then(|e| e.as_browser())
+            .and_then(|b| b.url())
+            .unwrap_or_default();
+
+        let state = self
+            .omnibar_state
+            .entry(pane_id)
+            .or_insert_with(|| crate::OmnibarState {
+                text: current_url.clone(),
+                focused: false,
+            });
+
+        // When not focused, keep text synced with actual URL
+        if !state.focused {
+            state.text = current_url;
+        }
+
+        // Draw URL input background
+        let url_bg = if state.focused {
+            egui::Color32::from_gray(50)
+        } else {
+            egui::Color32::from_gray(35)
+        };
+        ui.painter().rect_filled(url_rect, 3.0, url_bg);
+        ui.painter().rect_stroke(
+            url_rect,
+            3.0,
+            egui::Stroke::new(
+                1.0,
+                if state.focused {
+                    self.theme.chrome.accent
+                } else {
+                    egui::Color32::from_gray(60)
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
+
+        // Render the text input using egui's TextEdit
+        let text_id = ui.id().with("omnibar").with(pane_id);
+        let mut text = state.text.clone();
+        let response = ui.put(
+            url_rect.shrink2(egui::vec2(6.0, 0.0)),
+            egui::TextEdit::singleline(&mut text)
+                .id(text_id)
+                .font(egui::FontId::proportional(12.0))
+                .text_color(egui::Color32::from_gray(220))
+                .frame(false)
+                .desired_width(url_rect.width() - 12.0),
+        );
+
+        // Track focus state
+        let was_focused = state.focused;
+        state.focused = response.has_focus();
+        state.text = text;
+
+        // Select all on first focus
+        if state.focused && !was_focused {
+            response.request_focus();
+            if let Some(mut text_state) = egui::TextEdit::load_state(ui.ctx(), text_id) {
+                text_state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(state.text.len()),
+                    )));
+                text_state.store(ui.ctx(), text_id);
+            }
+        }
+
+        // Handle Enter: navigate or search
+        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            let input = state.text.trim().to_string();
+            if !input.is_empty() {
+                let url = if config::is_url_like(&input) {
+                    if input.starts_with("http://")
+                        || input.starts_with("https://")
+                        || input.starts_with("file://")
+                    {
+                        input
+                    } else {
+                        format!("https://{input}")
+                    }
+                } else {
+                    config::search_url(&input, &self.app_config.browser.search_engine)
+                };
+                if let Some(PaneEntry::Browser(browser)) = self.panes.get(&pane_id) {
+                    browser.navigate(&url);
+                }
+            }
+        }
+
+        // Handle Escape: unfocus, revert to current URL
+        if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            response.surrender_focus();
+            let state = self.omnibar_state.get_mut(&pane_id).unwrap();
+            state.focused = false;
+        }
+
+        // Cmd+L / Ctrl+L to focus omnibar
+        let cmd_l = ui.input(|i| {
+            i.events.iter().any(|e| {
+                matches!(e, egui::Event::Key {
+                    key: egui::Key::L,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.command)
+            })
+        });
+        if cmd_l {
+            ui.memory_mut(|m| m.request_focus(text_id));
         }
     }
 }

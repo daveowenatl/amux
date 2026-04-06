@@ -205,6 +205,104 @@ async fn main() -> anyhow::Result<()> {
                 print_response(&resp, false);
             }
         }
+        Command::BrowserNavigate { url, pane } => {
+            let mut params = serde_json::json!({"url": url});
+            if let Some(p) = pane {
+                params["pane_id"] = serde_json::json!(p);
+            }
+            let resp = client.call("browser.navigate", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("Navigated to {}", url);
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::BrowserBack { pane } => {
+            let params = match pane {
+                Some(p) => serde_json::json!({"pane_id": p}),
+                None => serde_json::json!({}),
+            };
+            let resp = client.call("browser.go-back", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("Navigated back");
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::BrowserForward { pane } => {
+            let params = match pane {
+                Some(p) => serde_json::json!({"pane_id": p}),
+                None => serde_json::json!({}),
+            };
+            let resp = client.call("browser.go-forward", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("Navigated forward");
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::BrowserReload { pane } => {
+            let params = match pane {
+                Some(p) => serde_json::json!({"pane_id": p}),
+                None => serde_json::json!({}),
+            };
+            let resp = client.call("browser.reload", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("Page reloaded");
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::BrowserUrl { pane } => {
+            let params = match pane {
+                Some(p) => serde_json::json!({"pane_id": p}),
+                None => serde_json::json!({}),
+            };
+            let resp = client.call("browser.get-url", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                if let Some(url) = resp
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.get("url"))
+                    .and_then(|v| v.as_str())
+                {
+                    println!("{}", url);
+                }
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::BrowserTitle { pane } => {
+            let params = match pane {
+                Some(p) => serde_json::json!({"pane_id": p}),
+                None => serde_json::json!({}),
+            };
+            let resp = client.call("browser.get-title", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                if let Some(title) = resp
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.get("title"))
+                    .and_then(|v| v.as_str())
+                {
+                    println!("{}", title);
+                }
+            } else {
+                print_response(&resp, false);
+            }
+        }
         Command::FocusPane { pane_id } => {
             let resp = client
                 .call("pane.focus", serde_json::json!({"pane_id": pane_id}))

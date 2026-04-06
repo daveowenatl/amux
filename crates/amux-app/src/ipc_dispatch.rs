@@ -216,6 +216,85 @@ impl AmuxApp {
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
                 }
             }
+            "browser.navigate" => {
+                #[derive(serde::Deserialize)]
+                struct NavParams {
+                    #[serde(default)]
+                    pane_id: Option<String>,
+                    url: String,
+                }
+                match serde_json::from_value::<NavParams>(req.params.clone()) {
+                    Ok(params) => {
+                        let target = self.resolve_browser_pane(params.pane_id.as_deref());
+                        match target {
+                            Some(browser) => {
+                                browser.navigate(&params.url);
+                                Response::ok(req.id.clone(), serde_json::json!({}))
+                            }
+                            None => {
+                                Response::err(req.id.clone(), "not_found", "no browser pane found")
+                            }
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "browser.go-back" => {
+                match self.resolve_browser_pane(Self::pane_id_param(&req.params).as_deref()) {
+                    Some(browser) => {
+                        browser.go_back();
+                        Response::ok(req.id.clone(), serde_json::json!({}))
+                    }
+                    None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                }
+            }
+            "browser.go-forward" => {
+                match self.resolve_browser_pane(Self::pane_id_param(&req.params).as_deref()) {
+                    Some(browser) => {
+                        browser.go_forward();
+                        Response::ok(req.id.clone(), serde_json::json!({}))
+                    }
+                    None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                }
+            }
+            "browser.reload" => {
+                match self.resolve_browser_pane(Self::pane_id_param(&req.params).as_deref()) {
+                    Some(browser) => {
+                        browser.reload();
+                        Response::ok(req.id.clone(), serde_json::json!({}))
+                    }
+                    None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                }
+            }
+            "browser.stop" => {
+                match self.resolve_browser_pane(Self::pane_id_param(&req.params).as_deref()) {
+                    Some(browser) => {
+                        browser.stop();
+                        Response::ok(req.id.clone(), serde_json::json!({}))
+                    }
+                    None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                }
+            }
+            "browser.get-url" => {
+                let pane_id_str = Self::pane_id_param(&req.params);
+                match self.resolve_browser_pane_ref(pane_id_str.as_deref()) {
+                    Some(browser) => {
+                        let url = browser.url().unwrap_or_default();
+                        Response::ok(req.id.clone(), serde_json::json!({"url": url}))
+                    }
+                    None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                }
+            }
+            "browser.get-title" => {
+                let pane_id_str = Self::pane_id_param(&req.params);
+                match self.resolve_browser_pane_ref(pane_id_str.as_deref()) {
+                    Some(browser) => {
+                        let title = browser.title();
+                        Response::ok(req.id.clone(), serde_json::json!({"title": title}))
+                    }
+                    None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                }
+            }
             "pane.close" => {
                 #[derive(serde::Deserialize)]
                 struct CloseParams {
@@ -689,6 +768,36 @@ impl AmuxApp {
         }
 
         None
+    }
+
+    /// Extract optional pane_id from JSON params.
+    fn pane_id_param(params: &serde_json::Value) -> Option<String> {
+        params
+            .get("pane_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
+
+    /// Resolve a browser pane (mutable) by optional pane_id, falling back to focused pane.
+    fn resolve_browser_pane(
+        &mut self,
+        pane_id: Option<&str>,
+    ) -> Option<&mut amux_browser::BrowserPane> {
+        let target = pane_id
+            .and_then(|s| s.parse::<PaneId>().ok())
+            .unwrap_or_else(|| self.focused_pane_id());
+        self.panes.get_mut(&target)?.as_browser_mut()
+    }
+
+    /// Resolve a browser pane (immutable) by optional pane_id, falling back to focused pane.
+    fn resolve_browser_pane_ref(
+        &self,
+        pane_id: Option<&str>,
+    ) -> Option<&amux_browser::BrowserPane> {
+        let target = pane_id
+            .and_then(|s| s.parse::<PaneId>().ok())
+            .unwrap_or_else(|| self.focused_pane_id());
+        self.panes.get(&target)?.as_browser()
     }
 
     fn resolve_surface(&self, surface_id: &str) -> Option<&PaneSurface> {

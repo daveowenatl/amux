@@ -5,13 +5,21 @@
 //! the pane's content area (below the tab bar).
 
 use raw_window_handle::HasWindowHandle;
+use std::sync::{Arc, Mutex};
 use wry::dpi::{LogicalPosition, LogicalSize};
 use wry::{Rect, WebViewBuilder};
+
+/// Shared state updated by webview callbacks (title changes, navigation).
+#[derive(Default)]
+struct SharedState {
+    title: String,
+    url: String,
+}
 
 /// A browser pane backed by a platform-native webview.
 pub struct BrowserPane {
     webview: wry::WebView,
-    current_title: String,
+    state: Arc<Mutex<SharedState>>,
 }
 
 /// Logical rectangle for positioning the webview within its parent window.
@@ -42,9 +50,13 @@ impl BrowserPane {
         bounds: BrowserRect,
         url: &str,
     ) -> Result<Self, wry::Error> {
-        let title = String::new();
-        let title_clone = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-        let _title_ref = title_clone.clone();
+        let state = Arc::new(Mutex::new(SharedState {
+            title: String::new(),
+            url: url.to_string(),
+        }));
+
+        let title_state = state.clone();
+        let nav_state = state.clone();
 
         let webview = WebViewBuilder::new()
             .with_bounds(bounds.to_wry_rect())
@@ -53,12 +65,20 @@ impl BrowserPane {
             .with_clipboard(true)
             .with_hotkeys_zoom(true)
             .with_accept_first_mouse(true)
+            .with_document_title_changed_handler(move |title| {
+                if let Ok(mut s) = title_state.lock() {
+                    s.title = title;
+                }
+            })
+            .with_navigation_handler(move |url| {
+                if let Ok(mut s) = nav_state.lock() {
+                    s.url = url;
+                }
+                true // allow all navigations
+            })
             .build_as_child(parent)?;
 
-        Ok(Self {
-            webview,
-            current_title: title,
-        })
+        Ok(Self { webview, state })
     }
 
     /// Update the webview's position and size within the parent window.
@@ -68,17 +88,49 @@ impl BrowserPane {
 
     /// Navigate to a URL.
     pub fn navigate(&self, url: &str) {
+        if let Ok(mut s) = self.state.lock() {
+            s.url = url.to_string();
+        }
         let _ = self.webview.load_url(url);
     }
 
-    /// Get the current URL.
+    /// Get the current URL (from callback-tracked state, falls back to webview).
     pub fn url(&self) -> Option<String> {
+        if let Ok(s) = self.state.lock() {
+            if !s.url.is_empty() {
+                return Some(s.url.clone());
+            }
+        }
         self.webview.url().ok()
     }
 
-    /// Get the cached page title.
-    pub fn title(&self) -> &str {
-        &self.current_title
+    /// Get the page title (updated via document title change callback).
+    pub fn title(&self) -> String {
+        self.state
+            .lock()
+            .ok()
+            .map(|s| s.title.clone())
+            .unwrap_or_default()
+    }
+
+    /// Navigate back in history.
+    pub fn go_back(&self) {
+        let _ = self.webview.evaluate_script("window.history.back()");
+    }
+
+    /// Navigate forward in history.
+    pub fn go_forward(&self) {
+        let _ = self.webview.evaluate_script("window.history.forward()");
+    }
+
+    /// Reload the current page.
+    pub fn reload(&self) {
+        let _ = self.webview.evaluate_script("window.location.reload()");
+    }
+
+    /// Stop loading the current page.
+    pub fn stop(&self) {
+        let _ = self.webview.evaluate_script("window.stop()");
     }
 
     /// Show or hide the webview.

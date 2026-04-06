@@ -72,6 +72,50 @@ pub(crate) enum Command {
         /// URL to open (defaults to Google)
         url: Option<String>,
     },
+    /// Navigate a browser pane to a URL
+    #[command(name = "browser-navigate")]
+    BrowserNavigate {
+        /// URL to navigate to
+        url: String,
+        /// Target pane ID (defaults to focused browser pane)
+        #[arg(long)]
+        pane: Option<String>,
+    },
+    /// Navigate browser back
+    #[command(name = "browser-back")]
+    BrowserBack {
+        /// Target pane ID
+        #[arg(long)]
+        pane: Option<String>,
+    },
+    /// Navigate browser forward
+    #[command(name = "browser-forward")]
+    BrowserForward {
+        /// Target pane ID
+        #[arg(long)]
+        pane: Option<String>,
+    },
+    /// Reload browser page
+    #[command(name = "browser-reload")]
+    BrowserReload {
+        /// Target pane ID
+        #[arg(long)]
+        pane: Option<String>,
+    },
+    /// Get current browser URL
+    #[command(name = "browser-url")]
+    BrowserUrl {
+        /// Target pane ID
+        #[arg(long)]
+        pane: Option<String>,
+    },
+    /// Get current browser page title
+    #[command(name = "browser-title")]
+    BrowserTitle {
+        /// Target pane ID
+        #[arg(long)]
+        pane: Option<String>,
+    },
     /// Focus a specific pane
     FocusPane {
         /// Pane ID to focus

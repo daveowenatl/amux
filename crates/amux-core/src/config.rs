@@ -19,6 +19,7 @@ pub struct AppConfig {
     /// colors/fonts from Ghostty's config file (`~/.config/ghostty/config`).
     pub theme_source: String,
     pub notifications: NotificationConfig,
+    pub browser: BrowserConfig,
 }
 
 impl Default for AppConfig {
@@ -29,8 +30,56 @@ impl Default for AppConfig {
             backend: "wezterm".to_owned(),
             theme_source: "default".to_owned(),
             notifications: NotificationConfig::default(),
+            browser: BrowserConfig::default(),
         }
     }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(default)]
+pub struct BrowserConfig {
+    /// Search engine: "google", "duckduckgo", "bing", "kagi", "startpage"
+    pub search_engine: String,
+    /// Open terminal hyperlinks in an in-app browser pane instead of system browser.
+    pub open_terminal_links_in_app: bool,
+}
+
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        Self {
+            search_engine: "google".to_string(),
+            open_terminal_links_in_app: true,
+        }
+    }
+}
+
+/// Build a search URL from a query string and search engine name.
+pub fn search_url(query: &str, engine: &str) -> String {
+    let encoded = urlencoding::encode(query);
+    match engine {
+        "duckduckgo" => format!("https://duckduckgo.com/?q={encoded}"),
+        "bing" => format!("https://www.bing.com/search?q={encoded}"),
+        "kagi" => format!("https://kagi.com/search?q={encoded}"),
+        "startpage" => format!("https://www.startpage.com/sp/search?query={encoded}"),
+        _ => format!("https://www.google.com/search?q={encoded}"),
+    }
+}
+
+/// Determine if input looks like a URL (has a dot, no spaces) or a search query.
+pub fn is_url_like(input: &str) -> bool {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    // Already has a scheme
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("file://")
+    {
+        return true;
+    }
+    // Has a dot and no spaces → likely a domain
+    trimmed.contains('.') && !trimmed.contains(' ')
 }
 
 #[derive(Debug, serde::Deserialize)]
