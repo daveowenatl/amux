@@ -79,7 +79,7 @@ impl AmuxApp {
                 None => return,
             }
         };
-        let content_top = pane_rect.min.y + TAB_BAR_HEIGHT;
+        let content_top = pane_rect.min.y + TAB_CONTENT_TOP_INSET;
         if hover_pos.y < content_top || hover_pos.x < pane_rect.min.x {
             return;
         }
