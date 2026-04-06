@@ -90,13 +90,50 @@ pub struct SavedManagedPane {
     pub panel_type: String,
     pub surfaces: Vec<SavedSurface>,
     pub active_surface_idx: usize,
+    /// Legacy single browser pane state (kept for backwards compat on load).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<SavedBrowserPane>,
+    /// Browser tabs within this pane (each gets its own pane ID).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub browser_tabs: Vec<SavedBrowserTab>,
+}
+
+/// A browser tab saved within a ManagedPane.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SavedBrowserTab {
+    pub pane_id: u64,
+    pub url: String,
+    #[serde(default = "default_zoom_level")]
+    pub zoom_level: f64,
+    #[serde(default = "default_profile")]
+    pub profile: String,
 }
 
 /// The panel type identifier for terminal panes.
 pub const PANEL_TYPE_TERMINAL: &str = "terminal";
+/// The panel type identifier for browser panes.
+pub const PANEL_TYPE_BROWSER: &str = "browser";
 
 fn default_panel_type() -> String {
     PANEL_TYPE_TERMINAL.to_string()
+}
+
+/// Saved state for a browser pane (URL, zoom, profile).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SavedBrowserPane {
+    pub url: String,
+    #[serde(default = "default_zoom_level")]
+    pub zoom_level: f64,
+    #[serde(default = "default_profile")]
+    pub profile: String,
+}
+
+fn default_profile() -> String {
+    "default".to_string()
+}
+
+fn default_zoom_level() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -267,6 +304,8 @@ mod tests {
                     user_title: None,
                 }],
                 active_surface_idx: 0,
+                browser: None,
+                browser_tabs: Vec::new(),
             },
         );
 

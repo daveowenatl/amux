@@ -13,28 +13,42 @@ impl AmuxApp {
         if self.rename_modal.is_some() || self.find_state.is_some() {
             return false;
         }
+        let omnibar_focused = self.omnibar_state.values().any(|s| s.focused);
+        if omnibar_focused {
+            return false;
+        }
+
+        // When a browser tab is active, skip terminal-specific shortcuts
+        // (copy/paste/select-all/find/copy-mode/clear) so the webview gets them.
+        // Amux chrome shortcuts (tabs, workspaces, splits, nav) still apply.
+        let browser_active = {
+            let focused = self.focused_pane_id();
+            self.panes
+                .get(&focused)
+                .and_then(|e| e.as_terminal())
+                .is_some_and(|m| m.active_is_browser())
+        };
         let events = ctx.input(|i| i.events.clone());
 
         for event in &events {
-            // Handle platform copy/cut events (egui may fire these instead of
-            // Key events for Cmd+C / Cmd+X on macOS).
-            match event {
-                egui::Event::Copy => {
-                    if self.copy_selection() {
-                        return true;
+            // Handle platform copy/cut events (terminal only — browser handles
+            // its own copy/cut via the webview).
+            if !browser_active {
+                match event {
+                    egui::Event::Copy => {
+                        if self.copy_selection() {
+                            return true;
+                        }
+                        continue;
                     }
-                    // No selection to copy — leave this Copy event unhandled so any
-                    // terminal Ctrl+C behavior (e.g. SIGINT) remains unaffected.
-                    continue;
-                }
-                egui::Event::Cut => {
-                    // Terminal text is read-only; treat cut as copy.
-                    if self.copy_selection() {
-                        return true;
+                    egui::Event::Cut => {
+                        if self.copy_selection() {
+                            return true;
+                        }
+                        continue;
                     }
-                    continue;
+                    _ => {}
                 }
-                _ => {}
             }
 
             if let egui::Event::Key {
@@ -49,88 +63,166 @@ impl AmuxApp {
                 #[cfg(not(target_os = "macos"))]
                 let is_cmd = modifiers.ctrl && modifiers.shift;
 
-                // Copy: Cmd+C (with selection) / Cmd+Shift+C (always copy)
-                #[cfg(target_os = "macos")]
-                let is_copy = is_cmd && (*key == egui::Key::C);
-                #[cfg(not(target_os = "macos"))]
-                let is_copy = modifiers.ctrl && modifiers.shift && (*key == egui::Key::C);
+                // --- Terminal-specific shortcuts (skipped when browser tab active) ---
+                if !browser_active {
+                    // Copy: Cmd+C (with selection) / Cmd+Shift+C (always copy)
+                    #[cfg(target_os = "macos")]
+                    let is_copy = is_cmd && (*key == egui::Key::C);
+                    #[cfg(not(target_os = "macos"))]
+                    let is_copy = modifiers.ctrl && modifiers.shift && (*key == egui::Key::C);
 
-                // Copy selection if active; otherwise fall through to send Ctrl+C
-                if is_copy && self.copy_selection() {
-                    return true;
-                }
+                    if is_copy && self.copy_selection() {
+                        return true;
+                    }
 
-                // Paste: Cmd+V (macOS) / Ctrl+Shift+V (other)
-                #[cfg(target_os = "macos")]
-                let is_paste = is_cmd && !modifiers.shift && *key == egui::Key::V;
-                #[cfg(not(target_os = "macos"))]
-                let is_paste = modifiers.ctrl && modifiers.shift && *key == egui::Key::V;
+                    // Paste: Cmd+V (macOS) / Ctrl+Shift+V (other)
+                    #[cfg(target_os = "macos")]
+                    let is_paste = is_cmd && !modifiers.shift && *key == egui::Key::V;
+                    #[cfg(not(target_os = "macos"))]
+                    let is_paste = modifiers.ctrl && modifiers.shift && *key == egui::Key::V;
 
-                if is_paste {
-                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                        if let Ok(text) = clipboard.get_text() {
-                            if !text.is_empty() {
-                                self.do_paste(&text);
+                    if is_paste {
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            if let Ok(text) = clipboard.get_text() {
+                                if !text.is_empty() {
+                                    self.do_paste(&text);
+                                }
+                            }
+                        }
+                        return true;
+                    }
+
+                    // Copy mode: intercept all keys when active
+                    if self.copy_mode.is_some() {
+                        return self.handle_copy_mode_key(key, modifiers);
+                    }
+
+                    // Escape: close find bar, exit copy mode, or clear selection
+                    if *key == egui::Key::Escape
+                        && !modifiers.shift
+                        && !modifiers.ctrl
+                        && !modifiers.alt
+                    {
+                        if self.find_state.is_some() {
+                            self.find_state = None;
+                            return true;
+                        }
+                        let focused = self.focused_pane_id();
+                        if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&focused) {
+                            if m.selection.is_some() {
+                                m.selection = None;
+                                return true;
                             }
                         }
                     }
-                    return true;
-                }
 
-                // Copy mode: intercept all keys when active
-                if self.copy_mode.is_some() {
-                    return self.handle_copy_mode_key(key, modifiers);
-                }
-
-                // Escape: close find bar, exit copy mode, or clear selection
-                if *key == egui::Key::Escape
-                    && !modifiers.shift
-                    && !modifiers.ctrl
-                    && !modifiers.alt
-                {
-                    if self.find_state.is_some() {
-                        self.find_state = None;
+                    // Find: Cmd+F (macOS) / Ctrl+Shift+F (other)
+                    if is_cmd && !modifiers.shift && *key == egui::Key::F {
+                        let pane_id = self.focused_pane_id();
+                        self.find_state = Some(FindState {
+                            query: String::new(),
+                            matches: Vec::new(),
+                            current_match: 0,
+                            pane_id,
+                            just_opened: true,
+                        });
                         return true;
                     }
+
+                    // Select all: Cmd+A
+                    #[cfg(target_os = "macos")]
+                    if is_cmd && !modifiers.shift && *key == egui::Key::A {
+                        self.select_all_visible();
+                        return true;
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    if modifiers.ctrl && modifiers.shift && *key == egui::Key::A {
+                        self.select_all_visible();
+                        return true;
+                    }
+
+                    // Enter copy mode: Cmd+Shift+X (macOS) / Ctrl+Shift+X (other)
+                    if is_cmd && modifiers.shift && *key == egui::Key::X {
+                        self.enter_copy_mode();
+                        return true;
+                    }
+                }
+
+                // --- Browser-specific shortcuts (proxy to webview via JS) ---
+                if browser_active {
                     let focused = self.focused_pane_id();
-                    if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&focused) {
-                        if m.selection.is_some() {
-                            m.selection = None;
+                    let browser_id = self
+                        .panes
+                        .get(&focused)
+                        .and_then(|e| e.as_terminal())
+                        .and_then(|m| match m.active_tab() {
+                            managed_pane::ActiveTab::Browser(bid) => Some(bid),
+                            _ => None,
+                        });
+
+                    if let Some(bid) = browser_id {
+                        // Paste: Cmd+V / Ctrl+V — read clipboard and inject into webview
+                        #[cfg(target_os = "macos")]
+                        let is_paste = is_cmd && !modifiers.shift && *key == egui::Key::V;
+                        #[cfg(not(target_os = "macos"))]
+                        let is_paste = modifiers.ctrl && !modifiers.shift && *key == egui::Key::V;
+
+                        if is_paste {
+                            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                if let Ok(text) = clipboard.get_text() {
+                                    if !text.is_empty() {
+                                        if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
+                                            b.type_text(&text);
+                                        }
+                                    }
+                                }
+                            }
+                            return true;
+                        }
+
+                        // Select all: Cmd+A (macOS) / Ctrl+A (other)
+                        #[cfg(target_os = "macos")]
+                        let is_select_all = is_cmd && !modifiers.shift && *key == egui::Key::A;
+                        #[cfg(not(target_os = "macos"))]
+                        let is_select_all =
+                            modifiers.ctrl && !modifiers.shift && *key == egui::Key::A;
+
+                        if is_select_all {
+                            if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
+                                b.evaluate_script("document.execCommand('selectAll')");
+                            }
+                            return true;
+                        }
+
+                        // Copy: Cmd+C / Ctrl+C
+                        #[cfg(target_os = "macos")]
+                        let is_copy = is_cmd && *key == egui::Key::C;
+                        #[cfg(not(target_os = "macos"))]
+                        let is_copy = modifiers.ctrl && *key == egui::Key::C;
+
+                        if is_copy {
+                            if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
+                                b.evaluate_script("document.execCommand('copy')");
+                            }
+                            return true;
+                        }
+
+                        // Cut: Cmd+X (macOS) / Ctrl+X (other)
+                        #[cfg(target_os = "macos")]
+                        let is_cut = is_cmd && *key == egui::Key::X;
+                        #[cfg(not(target_os = "macos"))]
+                        let is_cut = modifiers.ctrl && *key == egui::Key::X;
+
+                        if is_cut {
+                            if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
+                                b.evaluate_script("document.execCommand('cut')");
+                            }
                             return true;
                         }
                     }
                 }
 
-                // Find: Cmd+F (macOS) / Ctrl+Shift+F (other)
-                if is_cmd && !modifiers.shift && *key == egui::Key::F {
-                    let pane_id = self.focused_pane_id();
-                    self.find_state = Some(FindState {
-                        query: String::new(),
-                        matches: Vec::new(),
-                        current_match: 0,
-                        pane_id,
-                        just_opened: true,
-                    });
-                    return true;
-                }
-
-                // Select all: Cmd+A
-                #[cfg(target_os = "macos")]
-                if is_cmd && !modifiers.shift && *key == egui::Key::A {
-                    self.select_all_visible();
-                    return true;
-                }
-                #[cfg(not(target_os = "macos"))]
-                if modifiers.ctrl && modifiers.shift && *key == egui::Key::A {
-                    self.select_all_visible();
-                    return true;
-                }
-
-                // Enter copy mode: Cmd+Shift+X (macOS) / Ctrl+Shift+X (other)
-                if is_cmd && modifiers.shift && *key == egui::Key::X {
-                    self.enter_copy_mode();
-                    return true;
-                }
+                // --- Amux chrome shortcuts (always active) ---
 
                 // Toggle sidebar: Cmd+B / Ctrl+B
                 #[cfg(target_os = "macos")]
@@ -141,6 +233,12 @@ impl AmuxApp {
                 #[cfg(not(target_os = "macos"))]
                 if modifiers.ctrl && !modifiers.shift && *key == egui::Key::B {
                     self.sidebar.visible = !self.sidebar.visible;
+                    return true;
+                }
+
+                // New browser tab: Cmd+Shift+L (macOS) / Ctrl+Shift+L (other)
+                if is_cmd && modifiers.shift && *key == egui::Key::L {
+                    self.queue_browser_pane("https://www.google.com".to_string());
                     return true;
                 }
 
@@ -245,9 +343,9 @@ impl AmuxApp {
                     if let Some(PaneEntry::Terminal(managed)) =
                         self.panes.get_mut(&self.focused_pane_id())
                     {
-                        if managed.surfaces.len() > 1 {
-                            managed.active_surface_idx =
-                                (managed.active_surface_idx + 1) % managed.surfaces.len();
+                        let total = managed.tab_count();
+                        if total > 1 {
+                            managed.active_surface_idx = (managed.active_surface_idx + 1) % total;
                         }
                     }
                     return true;
@@ -258,9 +356,10 @@ impl AmuxApp {
                     if let Some(PaneEntry::Terminal(managed)) =
                         self.panes.get_mut(&self.focused_pane_id())
                     {
-                        if managed.surfaces.len() > 1 {
+                        let total = managed.tab_count();
+                        if total > 1 {
                             managed.active_surface_idx = if managed.active_surface_idx == 0 {
-                                managed.surfaces.len() - 1
+                                total - 1
                             } else {
                                 managed.active_surface_idx - 1
                             };
@@ -324,6 +423,23 @@ impl AmuxApp {
                     return self.do_toggle_zoom();
                 }
 
+                // DevTools: Cmd+Option+I (macOS) / Ctrl+Shift+I (Windows)
+                #[cfg(target_os = "macos")]
+                let is_devtools = is_cmd && modifiers.alt && *key == egui::Key::I;
+                #[cfg(not(target_os = "macos"))]
+                let is_devtools = modifiers.ctrl && modifiers.shift && *key == egui::Key::I;
+                if is_devtools {
+                    let pane_id = self.focused_pane_id();
+                    if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
+                        if let managed_pane::ActiveTab::Browser(bid) = managed.active_tab() {
+                            if let Some(PaneEntry::Browser(browser)) = self.panes.get(&bid) {
+                                browser.open_devtools();
+                                return true;
+                            }
+                        }
+                    }
+                }
+
                 // Notification panel: Cmd+I / Ctrl+I
                 if is_cmd && !modifiers.shift && *key == egui::Key::I {
                     self.show_notification_panel = !self.show_notification_panel;
@@ -336,18 +452,20 @@ impl AmuxApp {
                     return true;
                 }
 
-                // Clear scrollback: Cmd+K (macOS) / Ctrl+Shift+K (other)
-                if is_cmd && !modifiers.shift && *key == egui::Key::K {
-                    self.do_clear_scrollback();
-                    return true;
-                }
+                if !browser_active {
+                    // Clear scrollback: Cmd+K (macOS) / Ctrl+Shift+K (other)
+                    if is_cmd && !modifiers.shift && *key == egui::Key::K {
+                        self.do_clear_scrollback();
+                        return true;
+                    }
 
-                // Scroll
-                if modifiers.shift && *key == egui::Key::PageUp {
-                    return self.do_scroll(-1);
-                }
-                if modifiers.shift && *key == egui::Key::PageDown {
-                    return self.do_scroll(1);
+                    // Scroll
+                    if modifiers.shift && *key == egui::Key::PageUp {
+                        return self.do_scroll(-1);
+                    }
+                    if modifiers.shift && *key == egui::Key::PageDown {
+                        return self.do_scroll(1);
+                    }
                 }
             }
         }
@@ -430,7 +548,7 @@ impl AmuxApp {
                 let t = s.pane.scrollback_rows();
                 (c, r, t)
             }
-            None => {
+            _ => {
                 self.copy_mode = None;
                 return true;
             }
@@ -541,7 +659,7 @@ impl AmuxApp {
         line_visual: bool,
     ) -> Option<String> {
         let cm = self.copy_mode.as_ref()?;
-        let PaneEntry::Terminal(managed) = self.panes.get(&pane_id)?;
+        let managed = self.panes.get(&pane_id)?.as_terminal()?;
         let surface = managed.active_surface();
         let (start, end) =
             if anchor.1 < cm.cursor.1 || (anchor.1 == cm.cursor.1 && anchor.0 <= cm.cursor.0) {
@@ -585,7 +703,7 @@ impl AmuxApp {
         let focused = self.focused_pane_id();
         let managed = match self.panes.get_mut(&focused) {
             Some(PaneEntry::Terminal(m)) => m,
-            None => return false,
+            _ => return false,
         };
         let sel = match &managed.selection {
             Some(s) => s.clone(),
@@ -634,7 +752,7 @@ impl AmuxApp {
         let focused = self.focused_pane_id();
         let managed = match self.panes.get_mut(&focused) {
             Some(PaneEntry::Terminal(m)) => m,
-            None => return,
+            _ => return,
         };
         let surface = managed.active_surface();
         let (cols, visible_rows) = surface.pane.dimensions();
@@ -670,7 +788,7 @@ impl AmuxApp {
 
         let managed = match self.panes.get(&pane_id) {
             Some(PaneEntry::Terminal(m)) => m,
-            None => return false,
+            _ => return false,
         };
         let surface = managed.active_surface();
         let (cols, visible_rows) = surface.pane.dimensions();
@@ -764,10 +882,8 @@ impl AmuxApp {
             let has_active_selection = self
                 .panes
                 .get(&pane_id)
-                .and_then(|e| {
-                    let PaneEntry::Terminal(m) = e;
-                    m.selection.as_ref()
-                })
+                .and_then(|e| e.as_terminal())
+                .and_then(|m| m.selection.as_ref())
                 .is_some_and(|s| s.active);
 
             if has_active_selection {
@@ -855,8 +971,12 @@ impl AmuxApp {
 
         let managed = match self.panes.get_mut(&focused_id) {
             Some(PaneEntry::Terminal(m)) => m,
-            None => return has_input,
+            _ => return has_input,
         };
+        // Skip terminal input when the active tab is a browser
+        if managed.active_is_browser() {
+            return has_input;
+        }
         let surface = managed.active_surface_mut();
 
         // When the process has exited, intercept Enter (close) and R (restart)

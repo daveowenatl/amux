@@ -88,6 +88,9 @@ impl AmuxApp {
 
         // Check if cell has a hyperlink
         if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
+            if managed.active_is_browser() {
+                return;
+            }
             let surface = managed.active_surface();
             let (cols, rows) = surface.pane.dimensions();
             if col >= cols || row >= rows {
@@ -124,7 +127,13 @@ impl AmuxApp {
                                 || lower.starts_with("https://")
                                 || lower.starts_with("mailto:")
                             {
-                                let _ = open::that(url);
+                                if self.app_config.browser.open_terminal_links_in_app
+                                    && !lower.starts_with("mailto:")
+                                {
+                                    self.open_url_in_browser_pane(url);
+                                } else {
+                                    let _ = open::that(url);
+                                }
                             }
                         }
                     }

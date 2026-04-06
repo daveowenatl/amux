@@ -3,6 +3,27 @@
 use crate::*;
 
 impl AmuxApp {
+    /// Check if any egui text field (omnibar, rename modal, find bar) has focus.
+    pub(crate) fn has_focused_text_field(&self) -> bool {
+        self.rename_modal.is_some()
+            || self.find_state.is_some()
+            || self.omnibar_state.values().any(|s| s.focused)
+    }
+
+    /// Remove a pane and any browser tabs it owns from the panes map.
+    fn remove_pane_and_browser_tabs(&mut self, pane_id: PaneId) {
+        let browser_ids: Vec<PaneId> = self
+            .panes
+            .get(&pane_id)
+            .and_then(|e| e.as_terminal())
+            .map(|m| m.browser_tab_ids.clone())
+            .unwrap_or_default();
+        for bid in browser_ids {
+            self.panes.remove(&bid);
+        }
+        self.panes.remove(&pane_id);
+    }
+
     // --- Pane/Workspace management ---
 
     pub(crate) fn spawn_pane_with_surface(&mut self) -> Option<PaneId> {
@@ -28,6 +49,7 @@ impl AmuxApp {
                     pane_id,
                     PaneEntry::Terminal(ManagedPane {
                         surfaces: vec![surface],
+                        browser_tab_ids: Vec::new(),
                         active_surface_idx: 0,
                         selection: None,
                     }),
@@ -67,6 +89,7 @@ impl AmuxApp {
                     pane_id,
                     PaneEntry::Terminal(ManagedPane {
                         surfaces: vec![surface],
+                        browser_tab_ids: Vec::new(),
                         active_surface_idx: 0,
                         selection: None,
                     }),
@@ -113,8 +136,11 @@ impl AmuxApp {
         ) {
             Ok(surface) => {
                 if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused) {
-                    managed.surfaces.push(surface);
-                    managed.active_surface_idx = managed.surfaces.len() - 1;
+                    // Insert right after the active tab (cmux behavior).
+                    // If active is a browser tab, clamp to end of terminal list.
+                    let insert_at = (managed.active_surface_idx + 1).min(managed.surfaces.len());
+                    managed.surfaces.insert(insert_at, surface);
+                    managed.active_surface_idx = insert_at;
                     Some(sf_id)
                 } else {
                     None
@@ -133,7 +159,7 @@ impl AmuxApp {
             // Last workspace — clean up and signal exit
             let pane_ids: Vec<PaneId> = self.workspaces[ws_idx].tree.iter_panes();
             for id in &pane_ids {
-                self.panes.remove(id);
+                self.remove_pane_and_browser_tabs(*id);
                 self.notifications.remove_pane(*id);
             }
             self.notifications.remove_workspace(ws_id);
@@ -142,7 +168,7 @@ impl AmuxApp {
         }
         let pane_ids: Vec<PaneId> = self.workspaces[ws_idx].tree.iter_panes();
         for id in &pane_ids {
-            self.panes.remove(id);
+            self.remove_pane_and_browser_tabs(*id);
             self.notifications.remove_pane(*id);
         }
         self.notifications.remove_workspace(ws_id);
@@ -162,6 +188,9 @@ impl AmuxApp {
                 }
                 menu_bar::MenuAction::NewTab => {
                     self.add_surface_to_focused_pane();
+                }
+                menu_bar::MenuAction::NewBrowserTab => {
+                    self.queue_browser_pane("https://www.google.com".to_string());
                 }
                 menu_bar::MenuAction::CloseTab => {
                     self.do_close_cascade();
@@ -201,19 +230,47 @@ impl AmuxApp {
                     }
                 }
                 menu_bar::MenuAction::Copy => {
-                    self.copy_selection();
+                    if !self.has_focused_text_field() {
+                        self.copy_selection();
+                    }
+                    // When an egui text field is focused, egui handles copy
+                    // internally through its own event processing. The native
+                    // menu bar Cmd+C is consumed before egui sees it, but egui's
+                    // TextEdit widget copies the selected text on its own — no
+                    // action needed here.
                 }
                 menu_bar::MenuAction::Paste => {
-                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                        if let Ok(text) = clipboard.get_text() {
-                            if !text.is_empty() {
-                                self.do_paste(&text);
+                    if self.has_focused_text_field() {
+                        // Menu bar consumed Cmd+V before egui could generate
+                        // Event::Paste. Store the clipboard text so the focused
+                        // text field's render code can apply it.
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            if let Ok(text) = clipboard.get_text() {
+                                if !text.is_empty() {
+                                    self.pending_text_field_paste = Some(text);
+                                }
+                            }
+                        }
+                    } else {
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            if let Ok(text) = clipboard.get_text() {
+                                if !text.is_empty() {
+                                    self.do_paste(&text);
+                                }
                             }
                         }
                     }
                 }
                 menu_bar::MenuAction::SelectAll => {
-                    self.select_all_visible();
+                    if self.has_focused_text_field() {
+                        // Signal the omnibar render pass to select all text.
+                        // The native menu bar consumes Cmd+A before egui sees
+                        // it, so we defer the selection update to the next frame
+                        // where the TextEdit state can be mutated.
+                        self.pending_text_field_select_all = true;
+                    } else {
+                        self.select_all_visible();
+                    }
                 }
             }
         }
@@ -264,7 +321,7 @@ impl AmuxApp {
 
         let managed = match self.panes.get_mut(&pane_id) {
             Some(PaneEntry::Terminal(m)) => m,
-            None => return,
+            _ => return,
         };
         let old_surface = managed.active_surface_mut();
         let cwd = old_surface.metadata.cwd.clone();
@@ -314,7 +371,7 @@ impl AmuxApp {
                 if ws.zoomed == Some(pane_id) {
                     ws.zoomed = None;
                 }
-                self.panes.remove(&pane_id);
+                self.remove_pane_and_browser_tabs(pane_id);
                 self.notifications.remove_pane(pane_id);
                 if ws_idx == self.active_workspace_idx {
                     self.set_focus(new_focus);

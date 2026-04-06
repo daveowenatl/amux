@@ -1,11 +1,12 @@
 //! Managed pane types for the amux application.
 //!
-//! `PaneEntry` is the top-level enum stored in `AmuxApp.panes`. Currently the
-//! only variant is `Terminal`, but this enum is the extension point for
-//! browser panes and other panel types.
+//! `PaneEntry` is the top-level enum stored in `AmuxApp.panes`. Terminal and
+//! browser surfaces share the same tab bar within a `ManagedPane`, matching
+//! the cmux UX where browser tabs sit alongside terminal tabs.
 
 use std::sync::mpsc;
 
+use amux_layout::PaneId;
 use amux_term::AnyBackend;
 use amux_term::TerminalBackend;
 
@@ -20,14 +21,10 @@ pub(crate) use amux_core::model::{
 // ---------------------------------------------------------------------------
 
 /// A pane entry in the application's pane map.
-///
-/// Terminal panes are the only variant today. When browser panes land (#108),
-/// add `Browser(BrowserPane)` here — the compiler will flag the `match` arms
-/// in this enum's methods (`as_terminal`, `title`, etc.). Call sites that use
-/// `if let` / `as_terminal()` will silently skip non-terminal panes, which is
-/// the correct behavior for terminal-specific operations.
+#[allow(dead_code)]
 pub(crate) enum PaneEntry {
     Terminal(ManagedPane),
+    Browser(amux_browser::BrowserPane),
 }
 
 #[allow(dead_code)]
@@ -36,6 +33,7 @@ impl PaneEntry {
     pub(crate) fn as_terminal(&self) -> Option<&ManagedPane> {
         match self {
             PaneEntry::Terminal(m) => Some(m),
+            PaneEntry::Browser(_) => None,
         }
     }
 
@@ -43,6 +41,24 @@ impl PaneEntry {
     pub(crate) fn as_terminal_mut(&mut self) -> Option<&mut ManagedPane> {
         match self {
             PaneEntry::Terminal(m) => Some(m),
+            PaneEntry::Browser(_) => None,
+        }
+    }
+
+    /// Returns a reference to the inner `BrowserPane` if this is a browser pane.
+    pub(crate) fn as_browser(&self) -> Option<&amux_browser::BrowserPane> {
+        match self {
+            PaneEntry::Browser(b) => Some(b),
+            PaneEntry::Terminal(_) => None,
+        }
+    }
+
+    /// Returns a mutable reference to the inner `BrowserPane` if this is a browser pane.
+    #[allow(dead_code)]
+    pub(crate) fn as_browser_mut(&mut self) -> Option<&mut amux_browser::BrowserPane> {
+        match self {
+            PaneEntry::Browser(b) => Some(b),
+            PaneEntry::Terminal(_) => None,
         }
     }
 
@@ -50,6 +66,14 @@ impl PaneEntry {
     pub(crate) fn title(&self) -> String {
         match self {
             PaneEntry::Terminal(m) => m.title(),
+            PaneEntry::Browser(b) => {
+                let t = b.title();
+                if t.is_empty() {
+                    b.url().unwrap_or_else(|| "Browser".to_string())
+                } else {
+                    t.to_string()
+                }
+            }
         }
     }
 
@@ -57,6 +81,7 @@ impl PaneEntry {
     pub(crate) fn panel_type(&self) -> &'static str {
         match self {
             PaneEntry::Terminal(m) => m.panel_type(),
+            PaneEntry::Browser(_) => "browser",
         }
     }
 
@@ -64,8 +89,39 @@ impl PaneEntry {
     pub(crate) fn panel_info(&mut self) -> PanelInfo {
         match self {
             PaneEntry::Terminal(m) => m.panel_info(),
+            PaneEntry::Browser(b) => PanelInfo {
+                panel_type: "browser",
+                title: {
+                    let t = b.title();
+                    if t.is_empty() {
+                        b.url().unwrap_or_else(|| "Browser".to_string())
+                    } else {
+                        t.to_string()
+                    }
+                },
+                is_alive: true,
+                surface_count: 1,
+            },
         }
     }
+
+    /// Whether this is a browser pane.
+    pub(crate) fn is_browser(&self) -> bool {
+        matches!(self, PaneEntry::Browser(_))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tab kind — unified tab index for terminal + browser tabs
+// ---------------------------------------------------------------------------
+
+/// Which kind of tab is active in a ManagedPane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActiveTab {
+    /// A terminal surface at the given index in `surfaces`.
+    Terminal(usize),
+    /// A browser tab — the PaneId references a `PaneEntry::Browser` in the panes map.
+    Browser(PaneId),
 }
 
 // ---------------------------------------------------------------------------
@@ -86,25 +142,76 @@ pub(crate) struct PaneSurface {
     pub(crate) exited: Option<ExitInfo>,
 }
 
-/// A leaf in the split tree. Each pane has its own tab bar with surfaces.
+/// A leaf in the split tree. Each pane has its own tab bar with both
+/// terminal surfaces and browser tabs.
 pub(crate) struct ManagedPane {
     pub(crate) surfaces: Vec<PaneSurface>,
+    /// Browser pane IDs that appear as tabs in this pane's tab bar.
+    /// Each ID references a `PaneEntry::Browser` in the main panes map.
+    pub(crate) browser_tab_ids: Vec<PaneId>,
     pub(crate) active_surface_idx: usize,
     pub(crate) selection: Option<SelectionState>,
 }
 
 #[allow(dead_code)]
 impl ManagedPane {
-    pub(crate) fn active_surface(&self) -> &PaneSurface {
-        &self.surfaces[self.active_surface_idx]
+    /// Total number of tabs (terminal surfaces + browser tabs).
+    pub(crate) fn tab_count(&self) -> usize {
+        self.surfaces.len() + self.browser_tab_ids.len()
     }
 
+    /// What kind of tab is currently active.
+    pub(crate) fn active_tab(&self) -> ActiveTab {
+        if self.active_surface_idx < self.surfaces.len() {
+            ActiveTab::Terminal(self.active_surface_idx)
+        } else {
+            let browser_idx = self.active_surface_idx - self.surfaces.len();
+            ActiveTab::Browser(self.browser_tab_ids[browser_idx])
+        }
+    }
+
+    /// Whether the active tab is a browser tab.
+    pub(crate) fn active_is_browser(&self) -> bool {
+        self.active_surface_idx >= self.surfaces.len()
+    }
+
+    /// Returns the active terminal surface.
+    /// When a browser tab is active, returns the last terminal surface as a
+    /// safe fallback (callers should check `active_is_browser()` first).
+    ///
+    /// # Panics
+    /// Panics if `surfaces` is empty (invariant: at least one surface must exist).
+    pub(crate) fn active_surface(&self) -> &PaneSurface {
+        assert!(
+            !self.surfaces.is_empty(),
+            "active_surface() called with no terminal surfaces"
+        );
+        let idx = self.active_surface_idx.min(self.surfaces.len() - 1);
+        &self.surfaces[idx]
+    }
+
+    /// Returns the active terminal surface mutably.
+    /// When a browser tab is active, returns the last terminal surface as a
+    /// safe fallback (callers should check `active_is_browser()` first).
+    ///
+    /// # Panics
+    /// Panics if `surfaces` is empty (invariant: at least one surface must exist).
     pub(crate) fn active_surface_mut(&mut self) -> &mut PaneSurface {
-        &mut self.surfaces[self.active_surface_idx]
+        assert!(
+            !self.surfaces.is_empty(),
+            "active_surface_mut() called with no terminal surfaces"
+        );
+        let idx = self.active_surface_idx.min(self.surfaces.len() - 1);
+        &mut self.surfaces[idx]
     }
 
     /// Display title for this pane (user title > OSC title > shell fallback).
     pub(crate) fn title(&self) -> String {
+        // If active tab is a browser, title comes from the browser pane
+        // (handled by caller since we don't have access to the panes map here).
+        if self.active_is_browser() {
+            return "Browser".to_string();
+        }
         let surface = self.active_surface();
         if let Some(ref t) = surface.user_title {
             return t.clone();
@@ -117,11 +224,17 @@ impl ManagedPane {
 
     /// Whether the active surface's PTY process is still alive.
     pub(crate) fn is_alive(&mut self) -> bool {
+        if self.active_is_browser() {
+            return true;
+        }
         self.active_surface_mut().pane.is_alive()
     }
 
     /// Current dimensions (cols, rows) of the active surface.
     pub(crate) fn dimensions(&self) -> (usize, usize) {
+        if self.active_is_browser() {
+            return (80, 24); // placeholder for browser tabs
+        }
         self.active_surface().pane.dimensions()
     }
 
@@ -151,7 +264,7 @@ impl ManagedPane {
             panel_type: self.panel_type(),
             title: self.title(),
             is_alive: self.is_alive(),
-            surface_count: self.surfaces.len(),
+            surface_count: self.tab_count(),
         }
     }
 }

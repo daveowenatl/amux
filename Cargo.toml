@@ -12,6 +12,7 @@ members = [
     "crates/amux-notify",
     "crates/amux-session",
     "crates/amux-ghostty-config",
+    "crates/amux-browser",
 ]
 
 [workspace.package]
@@ -44,7 +45,8 @@ egui = "0.31"
 cosmic-text = "0.12"
 
 # Image decoding
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "ico"] }
+base64 = "0.22"
 
 # GPU rendering
 wgpu = "24.0"
@@ -99,3 +101,4 @@ amux-session = { path = "crates/amux-session" }
 amux-render-soft = { path = "crates/amux-render-soft" }
 amux-render-gpu = { path = "crates/amux-render-gpu" }
 amux-ghostty-config = { path = "crates/amux-ghostty-config" }
+amux-browser = { path = "crates/amux-browser" }

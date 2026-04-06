@@ -17,6 +17,7 @@ mod selection;
 mod sidebar;
 mod startup;
 mod system_notify;
+mod tab_icons;
 mod theme;
 mod workspace_ops;
 
@@ -156,6 +157,37 @@ struct AmuxApp {
     menu_attached: bool,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
+    /// Pending browser pane creation requests (URL). Processed in update()
+    /// where the window handle is available.
+    pending_browser_panes: Vec<String>,
+    /// Browser panes being restored: (parent_pane_id, browser_pane_id, url).
+    pending_browser_restores: Vec<(PaneId, PaneId, String)>,
+    /// Per-browser-pane omnibar editing state.
+    omnibar_state: HashMap<PaneId, OmnibarState>,
+    /// Browser URL history for omnibar autocomplete.
+    browser_history: amux_browser::history::BrowserHistory,
+    /// Favicon texture cache: favicon URL → egui texture.
+    favicon_cache: HashMap<String, egui::TextureHandle>,
+    /// In-flight favicon fetches (URL). Prevents duplicate JS fetch requests.
+    favicon_pending: std::collections::HashSet<String>,
+    /// Clipboard text from a menu-bar Paste action when an egui text field has
+    /// focus. The native menu bar consumes Cmd+V before egui sees it, so we
+    /// stash the text here and apply it during the text field's render pass.
+    pending_text_field_paste: Option<String>,
+    /// Whether a menu-bar Select All action is pending for the focused text
+    /// field. Applied during the omnibar render pass so that egui can update
+    /// the TextEdit cursor selection state.
+    pending_text_field_select_all: bool,
+}
+
+/// Editing state for a browser pane's omnibar.
+struct OmnibarState {
+    /// Text currently in the omnibar input.
+    text: String,
+    /// Whether the omnibar input is focused (editing mode).
+    focused: bool,
+    /// Last URL recorded in history (to avoid duplicate recordings per frame).
+    last_recorded_url: String,
 }
 
 struct TabDragState {
@@ -196,13 +228,35 @@ impl AmuxApp {
             let old_id = ws.focused_pane;
             ws.focused_pane = pane_id;
 
-            // Send DECSET 1004 focus-out to old pane
-            if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&old_id) {
-                managed.active_surface_mut().pane.focus_changed(false);
+            // Send DECSET 1004 focus-out / unfocus browser webview
+            if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&old_id) {
+                match managed.active_tab() {
+                    managed_pane::ActiveTab::Terminal(_) => {
+                        if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&old_id) {
+                            m.active_surface_mut().pane.focus_changed(false);
+                        }
+                    }
+                    managed_pane::ActiveTab::Browser(bid) => {
+                        if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
+                            b.focus_parent();
+                        }
+                    }
+                }
             }
-            // Send DECSET 1004 focus-in to new pane
-            if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
-                managed.active_surface_mut().pane.focus_changed(true);
+            // Send DECSET 1004 focus-in / focus browser webview
+            if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
+                match managed.active_tab() {
+                    managed_pane::ActiveTab::Terminal(_) => {
+                        if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
+                            m.active_surface_mut().pane.focus_changed(true);
+                        }
+                    }
+                    managed_pane::ActiveTab::Browser(bid) => {
+                        if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
+                            b.focus();
+                        }
+                    }
+                }
             }
 
             // Clear notifications on the newly focused pane
@@ -226,11 +280,133 @@ impl AmuxApp {
         self.active_workspace().focused_pane
     }
 
+    /// Queue a browser pane creation. Deferred to update() where the window handle
+    /// is available.
+    fn queue_browser_pane(&mut self, url: String) {
+        self.pending_browser_panes.push(url);
+    }
+
+    /// Open a URL in an existing browser tab, or queue creation of a new one.
+    fn open_url_in_browser_pane(&mut self, url: &str) {
+        // Find an existing browser tab in the current workspace's panes
+        let ws = self.active_workspace();
+        let pane_ids = ws.tree.iter_panes();
+        let existing = pane_ids.iter().find_map(|&tree_pane_id| {
+            let managed = self.panes.get(&tree_pane_id)?.as_terminal()?;
+            let browser_id = managed.browser_tab_ids.first().copied()?;
+            Some((tree_pane_id, browser_id))
+        });
+
+        if let Some((tree_pane_id, browser_id)) = existing {
+            if let Some(PaneEntry::Browser(browser)) = self.panes.get(&browser_id) {
+                browser.navigate(url);
+            }
+            // Switch to the browser tab
+            if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&tree_pane_id) {
+                if let Some(idx) = managed
+                    .browser_tab_ids
+                    .iter()
+                    .position(|&id| id == browser_id)
+                {
+                    managed.active_surface_idx = managed.surfaces.len() + idx;
+                }
+            }
+            self.set_focus(tree_pane_id);
+        } else {
+            self.queue_browser_pane(url.to_string());
+        }
+    }
+
+    /// Process pending browser pane creation requests.
+    /// Must be called from update() where `frame` (with HasWindowHandle) is available.
+    fn create_pending_browser_panes(&mut self, frame: &eframe::Frame) {
+        let bounds = amux_browser::BrowserRect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+        };
+
+        let ua = self.app_config.browser.user_agent.clone();
+        let dl_dir = self.app_config.browser.download_dir.clone();
+        let options = amux_browser::BrowserOptions {
+            user_agent: ua.as_deref(),
+            download_dir: dl_dir.as_deref(),
+        };
+
+        // New browser panes (from IPC/CLI) — added as tabs in the focused pane
+        let urls: Vec<String> = self.pending_browser_panes.drain(..).collect();
+        for url in urls {
+            let browser_pane_id = self.next_pane_id;
+            self.next_pane_id += 1;
+
+            match amux_browser::BrowserPane::new(frame, bounds, &url, None, Some(&options)) {
+                Ok(browser) => {
+                    browser.focus();
+                    self.panes
+                        .insert(browser_pane_id, PaneEntry::Browser(browser));
+                    // Add as a tab in the focused ManagedPane (not a tree split).
+                    // Insert right after the active tab (cmux behavior).
+                    let focused = self.focused_pane_id();
+                    if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused) {
+                        let browser_insert = if managed.active_surface_idx >= managed.surfaces.len()
+                        {
+                            // Active is a browser tab — insert right after it
+                            let browser_idx = managed.active_surface_idx - managed.surfaces.len();
+                            (browser_idx + 1).min(managed.browser_tab_ids.len())
+                        } else {
+                            // Active is a terminal tab — append to end of browser list
+                            managed.browser_tab_ids.len()
+                        };
+                        managed
+                            .browser_tab_ids
+                            .insert(browser_insert, browser_pane_id);
+                        managed.active_surface_idx = managed.surfaces.len() + browser_insert;
+                    }
+                    tracing::info!(
+                        "Created browser tab {} in pane {} with URL: {}",
+                        browser_pane_id,
+                        self.focused_pane_id(),
+                        url
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("Failed to create browser pane: {}", e);
+                }
+            }
+        }
+
+        // Restored browser panes — added as tabs in their parent pane
+        let restores: Vec<(PaneId, PaneId, String)> =
+            self.pending_browser_restores.drain(..).collect();
+        for (parent_pane_id, browser_pane_id, url) in restores {
+            match amux_browser::BrowserPane::new(frame, bounds, &url, None, Some(&options)) {
+                Ok(browser) => {
+                    self.panes
+                        .insert(browser_pane_id, PaneEntry::Browser(browser));
+                    // browser_tab_ids was already populated during session restore
+                    // in startup.rs — no need to push again here.
+                    tracing::info!(
+                        "Restored browser tab {} in pane {} with URL: {}",
+                        browser_pane_id,
+                        parent_pane_id,
+                        url
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("Failed to restore browser pane {}: {}", browser_pane_id, e);
+                }
+            }
+        }
+    }
+
     /// Drain any pending PTY bytes into the terminal state machine so that
     /// title, working directory, and scrollback are up to date before save.
     fn flush_pending_io(&mut self) {
         for entry in self.panes.values_mut() {
-            let PaneEntry::Terminal(managed) = entry;
+            let PaneEntry::Terminal(managed) = entry else {
+                continue;
+            };
             for surface in &mut managed.surfaces {
                 while let Ok(bytes) = surface.byte_rx.try_recv() {
                     surface.pane.feed_bytes(&bytes);
@@ -244,57 +420,78 @@ impl AmuxApp {
         for ws in &self.workspaces {
             let mut saved_panes = std::collections::HashMap::new();
             for &pane_id in &ws.tree.iter_panes() {
-                if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
-                    let surfaces: Vec<amux_session::SavedSurface> = managed
-                        .surfaces
-                        .iter()
-                        .map(|sf| {
-                            // Prefer shell-reported CWD (metadata.cwd from set-cwd/OSC 7),
-                            // then fall back to pane.working_dir() and OS-level queries.
-                            let working_dir = sf.metadata.cwd.clone().or_else(|| {
-                                sf.pane
-                                    .working_dir()
-                                    .and_then(|url| url.to_file_path().ok())
-                                    .map(|p| p.to_string_lossy().to_string())
-                                    .or_else(|| sf.pane.child_pid().and_then(get_cwd_from_pid))
-                            });
-                            let raw_scrollback = sf
-                                .pane
-                                .read_scrollback_text(amux_session::MAX_SCROLLBACK_LINES);
-                            let truncated = amux_session::truncate_scrollback(
-                                &raw_scrollback,
-                                amux_session::MAX_SCROLLBACK_BYTES,
-                            );
-                            let scrollback = if truncated.len() == raw_scrollback.len() {
-                                raw_scrollback
-                            } else {
-                                truncated.to_string()
-                            };
-                            let (cols, rows) = sf.pane.dimensions();
-                            amux_session::SavedSurface {
-                                id: sf.id,
-                                title: sf.pane.title().to_string(),
-                                working_dir,
-                                scrollback,
-                                cols: cols as u16,
-                                rows: rows as u16,
-                                git_branch: sf.metadata.git_branch.clone(),
-                                git_dirty: sf.metadata.git_dirty,
-                                pr_number: sf.metadata.pr_number,
-                                pr_title: sf.metadata.pr_title.clone(),
-                                pr_state: sf.metadata.pr_state.clone(),
-                                user_title: sf.user_title.clone(),
-                            }
-                        })
-                        .collect();
-                    saved_panes.insert(
-                        pane_id,
-                        amux_session::SavedManagedPane {
-                            panel_type: managed.panel_type().to_string(),
-                            surfaces,
-                            active_surface_idx: managed.active_surface_idx,
-                        },
-                    );
+                match self.panes.get(&pane_id) {
+                    Some(PaneEntry::Terminal(managed)) => {
+                        let surfaces: Vec<amux_session::SavedSurface> = managed
+                            .surfaces
+                            .iter()
+                            .map(|sf| {
+                                let working_dir = sf.metadata.cwd.clone().or_else(|| {
+                                    sf.pane
+                                        .working_dir()
+                                        .and_then(|url| url.to_file_path().ok())
+                                        .map(|p| p.to_string_lossy().to_string())
+                                        .or_else(|| sf.pane.child_pid().and_then(get_cwd_from_pid))
+                                });
+                                let raw_scrollback = sf
+                                    .pane
+                                    .read_scrollback_text(amux_session::MAX_SCROLLBACK_LINES);
+                                let truncated = amux_session::truncate_scrollback(
+                                    &raw_scrollback,
+                                    amux_session::MAX_SCROLLBACK_BYTES,
+                                );
+                                let scrollback = if truncated.len() == raw_scrollback.len() {
+                                    raw_scrollback
+                                } else {
+                                    truncated.to_string()
+                                };
+                                let (cols, rows) = sf.pane.dimensions();
+                                amux_session::SavedSurface {
+                                    id: sf.id,
+                                    title: sf.pane.title().to_string(),
+                                    working_dir,
+                                    scrollback,
+                                    cols: cols as u16,
+                                    rows: rows as u16,
+                                    git_branch: sf.metadata.git_branch.clone(),
+                                    git_dirty: sf.metadata.git_dirty,
+                                    pr_number: sf.metadata.pr_number,
+                                    pr_title: sf.metadata.pr_title.clone(),
+                                    pr_state: sf.metadata.pr_state.clone(),
+                                    user_title: sf.user_title.clone(),
+                                }
+                            })
+                            .collect();
+                        // Save browser tabs within this pane
+                        let browser_tabs: Vec<amux_session::SavedBrowserTab> = managed
+                            .browser_tab_ids
+                            .iter()
+                            .filter_map(|&bid| {
+                                let b = self.panes.get(&bid)?.as_browser()?;
+                                Some(amux_session::SavedBrowserTab {
+                                    pane_id: bid,
+                                    url: b.url().unwrap_or_default(),
+                                    zoom_level: 1.0,
+                                    profile: b.profile().to_string(),
+                                })
+                            })
+                            .collect();
+                        saved_panes.insert(
+                            pane_id,
+                            amux_session::SavedManagedPane {
+                                panel_type: managed.panel_type().to_string(),
+                                surfaces,
+                                active_surface_idx: managed.active_surface_idx,
+                                browser: None,
+                                browser_tabs,
+                            },
+                        );
+                    }
+                    Some(PaneEntry::Browser(_)) => {
+                        // Standalone browser entries are saved via their parent
+                        // ManagedPane's browser_tabs list. Skip here.
+                    }
+                    None => {}
                 }
             }
             saved_workspaces.push(amux_session::SavedWorkspace {
