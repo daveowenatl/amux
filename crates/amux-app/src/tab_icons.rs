@@ -59,6 +59,106 @@ pub(crate) fn paint_terminal_icon(
     );
 }
 
+/// Paint a split-vertical icon (two side-by-side rectangles with a divider).
+pub(crate) fn paint_split_vertical_icon(
+    painter: &egui::Painter,
+    top_left: egui::Pos2,
+    size: f32,
+    color: egui::Color32,
+) {
+    let stroke = egui::Stroke::new((size * 0.1).max(1.0), color);
+    let rounding = size * 0.12;
+    let rect = egui::Rect::from_min_size(top_left, egui::vec2(size, size));
+
+    // Outer rounded rect
+    painter.rect_stroke(rect, rounding, stroke, egui::StrokeKind::Inside);
+    // Vertical divider in the middle
+    let mid_x = rect.center().x;
+    painter.line_segment(
+        [
+            egui::pos2(mid_x, rect.min.y + 2.0),
+            egui::pos2(mid_x, rect.max.y - 2.0),
+        ],
+        stroke,
+    );
+}
+
+/// Paint a split-horizontal icon (two stacked rectangles with a divider).
+pub(crate) fn paint_split_horizontal_icon(
+    painter: &egui::Painter,
+    top_left: egui::Pos2,
+    size: f32,
+    color: egui::Color32,
+) {
+    let stroke = egui::Stroke::new((size * 0.1).max(1.0), color);
+    let rounding = size * 0.12;
+    let rect = egui::Rect::from_min_size(top_left, egui::vec2(size, size));
+
+    // Outer rounded rect
+    painter.rect_stroke(rect, rounding, stroke, egui::StrokeKind::Inside);
+    // Horizontal divider in the middle
+    let mid_y = rect.center().y;
+    painter.line_segment(
+        [
+            egui::pos2(rect.min.x + 2.0, mid_y),
+            egui::pos2(rect.max.x - 2.0, mid_y),
+        ],
+        stroke,
+    );
+}
+
+/// Paint a globe icon (circle with horizontal and vertical arcs).
+pub(crate) fn paint_globe_icon(
+    painter: &egui::Painter,
+    top_left: egui::Pos2,
+    size: f32,
+    color: egui::Color32,
+) {
+    let stroke = egui::Stroke::new((size * 0.1).max(1.0), color);
+    let center = egui::pos2(top_left.x + size / 2.0, top_left.y + size / 2.0);
+    let r = size / 2.0 - 0.5;
+
+    // Outer circle
+    painter.circle_stroke(center, r, stroke);
+    // Horizontal line through middle
+    painter.line_segment(
+        [
+            egui::pos2(center.x - r, center.y),
+            egui::pos2(center.x + r, center.y),
+        ],
+        stroke,
+    );
+    // Vertical ellipse (simplified as vertical line + two arcs via line segments)
+    let inner_r = r * 0.5;
+    // Left arc approximation
+    let steps = 8;
+    for i in 0..steps {
+        let t0 = std::f32::consts::PI / 2.0 + (i as f32 / steps as f32) * std::f32::consts::PI;
+        let t1 =
+            std::f32::consts::PI / 2.0 + ((i + 1) as f32 / steps as f32) * std::f32::consts::PI;
+        painter.line_segment(
+            [
+                egui::pos2(center.x + inner_r * t0.cos(), center.y + r * t0.sin()),
+                egui::pos2(center.x + inner_r * t1.cos(), center.y + r * t1.sin()),
+            ],
+            stroke,
+        );
+    }
+    // Right arc
+    for i in 0..steps {
+        let t0 = -std::f32::consts::PI / 2.0 + (i as f32 / steps as f32) * std::f32::consts::PI;
+        let t1 =
+            -std::f32::consts::PI / 2.0 + ((i + 1) as f32 / steps as f32) * std::f32::consts::PI;
+        painter.line_segment(
+            [
+                egui::pos2(center.x + inner_r * t0.cos(), center.y + r * t0.sin()),
+                egui::pos2(center.x + inner_r * t1.cos(), center.y + r * t1.sin()),
+            ],
+            stroke,
+        );
+    }
+}
+
 impl AmuxApp {
     /// Get a favicon texture for a browser pane, initiating a JS fetch if needed.
     /// Returns None if the favicon hasn't been fetched/decoded yet.
