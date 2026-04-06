@@ -6,28 +6,42 @@
 
 pub fn print_response(resp: &amux_ipc::Response, json: bool) {
     if json {
-        println!("{}", serde_json::to_string_pretty(resp).unwrap());
+        match serde_json::to_string_pretty(resp) {
+            Ok(s) => println!("{}", s),
+            Err(e) => {
+                eprintln!("error: failed to serialize response: {}", e);
+                std::process::exit(1);
+            }
+        }
     } else if resp.ok {
         if let Some(result) = &resp.result {
-            println!("{}", serde_json::to_string_pretty(result).unwrap());
+            match serde_json::to_string_pretty(result) {
+                Ok(s) => println!("{}", s),
+                Err(e) => {
+                    eprintln!("error: failed to serialize result: {}", e);
+                    std::process::exit(1);
+                }
+            }
         }
     } else if let Some(err) = &resp.error {
         eprintln!("error [{}]: {}", err.code, err.message);
+        std::process::exit(1);
+    } else {
+        eprintln!("error: request failed with no error details");
         std::process::exit(1);
     }
 }
 
 pub fn print_hierarchy(ws_result: &serde_json::Value, sf_result: &serde_json::Value) {
+    let empty = Vec::new();
     let workspaces = ws_result
         .get("workspaces")
         .and_then(|w| w.as_array())
-        .cloned()
-        .unwrap_or_default();
+        .unwrap_or(&empty);
     let surfaces = sf_result
         .get("surfaces")
         .and_then(|s| s.as_array())
-        .cloned()
-        .unwrap_or_default();
+        .unwrap_or(&empty);
 
     for (ws_i, ws) in workspaces.iter().enumerate() {
         let ws_id = ws.get("id").and_then(|v| v.as_str()).unwrap_or("?");
