@@ -13,7 +13,7 @@
 //! `emit_custom_glyph` is a thin dispatcher for procedural box-drawing
 //! and block glyphs, invoked from the cell-emission loop.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use amux_term::backend::{CursorShape, UnderlineStyle};
 use egui_wgpu::wgpu;
@@ -372,8 +372,10 @@ impl CallbackTrait for TerminalPaintCallback {
             fg
         } else {
             // Appearance-only change: reuse cached glyph layouts, apply new colors.
-            // Build a color lookup from snapshot cells.
-            let mut color_map: HashMap<(usize, usize), [f32; 4]> = HashMap::new();
+            // Flat color lookup indexed by row * cols + col — avoids per-frame
+            // HashMap allocation and hashing overhead on this hot path.
+            let grid_size = snap.cols * snap.rows;
+            let mut color_lookup: Vec<[f32; 4]> = vec![[1.0, 1.0, 1.0, 1.0]; grid_size];
             for cell in &snap.cells {
                 if cell.text.is_empty() || cell.text == " " {
                     continue;
@@ -399,16 +401,21 @@ impl CallbackTrait for TerminalPaintCallback {
                         }
                     }
                 }
-                color_map.insert((cell.col, cell.row), maybe_linearize(cell.fg, linearize));
+                let idx = cell.row * snap.cols + cell.col;
+                if idx < grid_size {
+                    color_lookup[idx] = maybe_linearize(cell.fg, linearize);
+                }
             }
 
             let cached = &pane_state.cached_glyph_layouts;
             let mut fg = Vec::with_capacity(cached.len());
             for glyph in cached {
-                let color = color_map
-                    .get(&(glyph.col, glyph.row))
-                    .copied()
-                    .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                let idx = glyph.row * snap.cols + glyph.col;
+                let color = if idx < grid_size {
+                    color_lookup[idx]
+                } else {
+                    [1.0, 1.0, 1.0, 1.0]
+                };
                 fg.push(CellFgInstance {
                     pos: glyph.pos,
                     size: glyph.size,
@@ -599,13 +606,20 @@ impl CallbackTrait for TerminalPaintCallback {
 
         // --- Faint text: dim glyph colors in fg_instances for faint cells. ---
         {
-            let faint_cells: HashSet<(usize, usize)> = snap
-                .cells
-                .iter()
-                .filter(|c| c.faint)
-                .map(|c| (c.col, c.row))
-                .collect();
-            if !faint_cells.is_empty() {
+            // Flat bool lookup avoids per-frame HashSet allocation and hashing.
+            let grid_size = snap.cols * snap.rows;
+            let mut faint_grid = vec![false; grid_size];
+            let mut has_faint = false;
+            for cell in &snap.cells {
+                if cell.faint {
+                    let idx = cell.row * snap.cols + cell.col;
+                    if idx < grid_size {
+                        faint_grid[idx] = true;
+                        has_faint = true;
+                    }
+                }
+            }
+            if has_faint {
                 for inst in &mut fg_instances {
                     // Map pixel position back to cell coordinates, clamping to valid
                     // range to handle glyphs with negative bearings or ligature offsets.
@@ -616,7 +630,8 @@ impl CallbackTrait for TerminalPaintCallback {
                     }
                     let col = (col_f.round() as usize).min(snap.cols.saturating_sub(1));
                     let row = (row_f.round() as usize).min(snap.rows.saturating_sub(1));
-                    if faint_cells.contains(&(col, row)) {
+                    let idx = row * snap.cols + col;
+                    if idx < grid_size && faint_grid[idx] {
                         inst.color[3] *= 0.5;
                     }
                 }
