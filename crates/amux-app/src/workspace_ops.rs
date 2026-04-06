@@ -3,6 +3,20 @@
 use crate::*;
 
 impl AmuxApp {
+    /// Remove a pane and any browser tabs it owns from the panes map.
+    fn remove_pane_and_browser_tabs(&mut self, pane_id: PaneId) {
+        let browser_ids: Vec<PaneId> = self
+            .panes
+            .get(&pane_id)
+            .and_then(|e| e.as_terminal())
+            .map(|m| m.browser_tab_ids.clone())
+            .unwrap_or_default();
+        for bid in browser_ids {
+            self.panes.remove(&bid);
+        }
+        self.panes.remove(&pane_id);
+    }
+
     // --- Pane/Workspace management ---
 
     pub(crate) fn spawn_pane_with_surface(&mut self) -> Option<PaneId> {
@@ -28,6 +42,7 @@ impl AmuxApp {
                     pane_id,
                     PaneEntry::Terminal(ManagedPane {
                         surfaces: vec![surface],
+                        browser_tab_ids: Vec::new(),
                         active_surface_idx: 0,
                         selection: None,
                     }),
@@ -67,6 +82,7 @@ impl AmuxApp {
                     pane_id,
                     PaneEntry::Terminal(ManagedPane {
                         surfaces: vec![surface],
+                        browser_tab_ids: Vec::new(),
                         active_surface_idx: 0,
                         selection: None,
                     }),
@@ -133,7 +149,7 @@ impl AmuxApp {
             // Last workspace — clean up and signal exit
             let pane_ids: Vec<PaneId> = self.workspaces[ws_idx].tree.iter_panes();
             for id in &pane_ids {
-                self.panes.remove(id);
+                self.remove_pane_and_browser_tabs(*id);
                 self.notifications.remove_pane(*id);
             }
             self.notifications.remove_workspace(ws_id);
@@ -142,7 +158,7 @@ impl AmuxApp {
         }
         let pane_ids: Vec<PaneId> = self.workspaces[ws_idx].tree.iter_panes();
         for id in &pane_ids {
-            self.panes.remove(id);
+            self.remove_pane_and_browser_tabs(*id);
             self.notifications.remove_pane(*id);
         }
         self.notifications.remove_workspace(ws_id);
@@ -162,6 +178,9 @@ impl AmuxApp {
                 }
                 menu_bar::MenuAction::NewTab => {
                     self.add_surface_to_focused_pane();
+                }
+                menu_bar::MenuAction::NewBrowserTab => {
+                    self.queue_browser_pane("https://www.google.com".to_string());
                 }
                 menu_bar::MenuAction::CloseTab => {
                     self.do_close_cascade();
@@ -314,7 +333,7 @@ impl AmuxApp {
                 if ws.zoomed == Some(pane_id) {
                     ws.zoomed = None;
                 }
-                self.panes.remove(&pane_id);
+                self.remove_pane_and_browser_tabs(pane_id);
                 self.notifications.remove_pane(pane_id);
                 if ws_idx == self.active_workspace_idx {
                     self.set_focus(new_focus);

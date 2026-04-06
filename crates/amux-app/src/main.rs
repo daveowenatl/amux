@@ -17,6 +17,7 @@ mod selection;
 mod sidebar;
 mod startup;
 mod system_notify;
+mod tab_icons;
 mod theme;
 mod workspace_ops;
 
@@ -159,10 +160,16 @@ struct AmuxApp {
     /// Pending browser pane creation requests (URL). Processed in update()
     /// where the window handle is available.
     pending_browser_panes: Vec<String>,
-    /// Browser panes being restored from session (pane_id already in tree).
-    pending_browser_restores: Vec<(PaneId, String)>,
+    /// Browser panes being restored: (parent_pane_id, browser_pane_id, url).
+    pending_browser_restores: Vec<(PaneId, PaneId, String)>,
     /// Per-browser-pane omnibar editing state.
     omnibar_state: HashMap<PaneId, OmnibarState>,
+    /// Browser URL history for omnibar autocomplete.
+    browser_history: amux_browser::history::BrowserHistory,
+    /// Favicon texture cache: favicon URL → egui texture.
+    favicon_cache: HashMap<String, egui::TextureHandle>,
+    /// In-flight favicon fetches (URL). Prevents duplicate JS fetch requests.
+    favicon_pending: std::collections::HashSet<String>,
 }
 
 /// Editing state for a browser pane's omnibar.
@@ -171,6 +178,8 @@ struct OmnibarState {
     text: String,
     /// Whether the omnibar input is focused (editing mode).
     focused: bool,
+    /// Last URL recorded in history (to avoid duplicate recordings per frame).
+    last_recorded_url: String,
 }
 
 struct TabDragState {
@@ -211,13 +220,35 @@ impl AmuxApp {
             let old_id = ws.focused_pane;
             ws.focused_pane = pane_id;
 
-            // Send DECSET 1004 focus-out to old pane
-            if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&old_id) {
-                managed.active_surface_mut().pane.focus_changed(false);
+            // Send DECSET 1004 focus-out / unfocus browser webview
+            if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&old_id) {
+                match managed.active_tab() {
+                    managed_pane::ActiveTab::Terminal(_) => {
+                        if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&old_id) {
+                            m.active_surface_mut().pane.focus_changed(false);
+                        }
+                    }
+                    managed_pane::ActiveTab::Browser(bid) => {
+                        if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
+                            b.focus_parent();
+                        }
+                    }
+                }
             }
-            // Send DECSET 1004 focus-in to new pane
-            if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
-                managed.active_surface_mut().pane.focus_changed(true);
+            // Send DECSET 1004 focus-in / focus browser webview
+            if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
+                match managed.active_tab() {
+                    managed_pane::ActiveTab::Terminal(_) => {
+                        if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
+                            m.active_surface_mut().pane.focus_changed(true);
+                        }
+                    }
+                    managed_pane::ActiveTab::Browser(bid) => {
+                        if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
+                            b.focus();
+                        }
+                    }
+                }
             }
 
             // Clear notifications on the newly focused pane
@@ -247,21 +278,32 @@ impl AmuxApp {
         self.pending_browser_panes.push(url);
     }
 
-    /// Open a URL in an existing browser pane, or queue creation of a new one.
+    /// Open a URL in an existing browser tab, or queue creation of a new one.
     fn open_url_in_browser_pane(&mut self, url: &str) {
-        // Find an existing browser pane in the current workspace
+        // Find an existing browser tab in the current workspace's panes
         let ws = self.active_workspace();
         let pane_ids = ws.tree.iter_panes();
-        let existing_browser = pane_ids
-            .iter()
-            .find(|&&id| self.panes.get(&id).is_some_and(|e| e.is_browser()))
-            .copied();
+        let existing = pane_ids.iter().find_map(|&tree_pane_id| {
+            let managed = self.panes.get(&tree_pane_id)?.as_terminal()?;
+            let browser_id = managed.browser_tab_ids.first().copied()?;
+            Some((tree_pane_id, browser_id))
+        });
 
-        if let Some(browser_id) = existing_browser {
+        if let Some((tree_pane_id, browser_id)) = existing {
             if let Some(PaneEntry::Browser(browser)) = self.panes.get(&browser_id) {
                 browser.navigate(url);
             }
-            self.set_focus(browser_id);
+            // Switch to the browser tab
+            if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&tree_pane_id) {
+                if let Some(idx) = managed
+                    .browser_tab_ids
+                    .iter()
+                    .position(|&id| id == browser_id)
+                {
+                    managed.active_surface_idx = managed.surfaces.len() + idx;
+                }
+            }
+            self.set_focus(tree_pane_id);
         } else {
             self.queue_browser_pane(url.to_string());
         }
@@ -277,20 +319,37 @@ impl AmuxApp {
             height: 600.0,
         };
 
-        // New browser panes (from IPC/CLI)
+        let ua = self.app_config.browser.user_agent.clone();
+        let dl_dir = self.app_config.browser.download_dir.clone();
+        let options = amux_browser::BrowserOptions {
+            user_agent: ua.as_deref(),
+            download_dir: dl_dir.as_deref(),
+        };
+
+        // New browser panes (from IPC/CLI) — added as tabs in the focused pane
         let urls: Vec<String> = self.pending_browser_panes.drain(..).collect();
         for url in urls {
-            let pane_id = self.next_pane_id;
+            let browser_pane_id = self.next_pane_id;
             self.next_pane_id += 1;
 
-            match amux_browser::BrowserPane::new(frame, bounds, &url, None) {
+            match amux_browser::BrowserPane::new(frame, bounds, &url, None, Some(&options)) {
                 Ok(browser) => {
-                    self.panes.insert(pane_id, PaneEntry::Browser(browser));
-                    let ws = self.active_workspace_mut();
-                    ws.tree
-                        .split(ws.focused_pane, SplitDirection::Vertical, pane_id);
-                    ws.focused_pane = pane_id;
-                    tracing::info!("Created browser pane {} with URL: {}", pane_id, url);
+                    browser.focus();
+                    self.panes
+                        .insert(browser_pane_id, PaneEntry::Browser(browser));
+                    // Add as a tab in the focused ManagedPane (not a tree split)
+                    let focused = self.focused_pane_id();
+                    if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused) {
+                        managed.browser_tab_ids.push(browser_pane_id);
+                        managed.active_surface_idx =
+                            managed.surfaces.len() + managed.browser_tab_ids.len() - 1;
+                    }
+                    tracing::info!(
+                        "Created browser tab {} in pane {} with URL: {}",
+                        browser_pane_id,
+                        self.focused_pane_id(),
+                        url
+                    );
                 }
                 Err(e) => {
                     tracing::error!("Failed to create browser pane: {}", e);
@@ -298,16 +357,25 @@ impl AmuxApp {
             }
         }
 
-        // Restored browser panes (pane_id already in tree)
-        let restores: Vec<(PaneId, String)> = self.pending_browser_restores.drain(..).collect();
-        for (pane_id, url) in restores {
-            match amux_browser::BrowserPane::new(frame, bounds, &url, None) {
+        // Restored browser panes — added as tabs in their parent pane
+        let restores: Vec<(PaneId, PaneId, String)> =
+            self.pending_browser_restores.drain(..).collect();
+        for (parent_pane_id, browser_pane_id, url) in restores {
+            match amux_browser::BrowserPane::new(frame, bounds, &url, None, Some(&options)) {
                 Ok(browser) => {
-                    self.panes.insert(pane_id, PaneEntry::Browser(browser));
-                    tracing::info!("Restored browser pane {} with URL: {}", pane_id, url);
+                    self.panes
+                        .insert(browser_pane_id, PaneEntry::Browser(browser));
+                    // browser_tab_ids was already populated during session restore
+                    // in startup.rs — no need to push again here.
+                    tracing::info!(
+                        "Restored browser tab {} in pane {} with URL: {}",
+                        browser_pane_id,
+                        parent_pane_id,
+                        url
+                    );
                 }
                 Err(e) => {
-                    tracing::error!("Failed to restore browser pane {}: {}", pane_id, e);
+                    tracing::error!("Failed to restore browser pane {}: {}", browser_pane_id, e);
                 }
             }
         }
@@ -375,6 +443,20 @@ impl AmuxApp {
                                 }
                             })
                             .collect();
+                        // Save browser tabs within this pane
+                        let browser_tabs: Vec<amux_session::SavedBrowserTab> = managed
+                            .browser_tab_ids
+                            .iter()
+                            .filter_map(|&bid| {
+                                let b = self.panes.get(&bid)?.as_browser()?;
+                                Some(amux_session::SavedBrowserTab {
+                                    pane_id: bid,
+                                    url: b.url().unwrap_or_default(),
+                                    zoom_level: 1.0,
+                                    profile: b.profile().to_string(),
+                                })
+                            })
+                            .collect();
                         saved_panes.insert(
                             pane_id,
                             amux_session::SavedManagedPane {
@@ -382,23 +464,13 @@ impl AmuxApp {
                                 surfaces,
                                 active_surface_idx: managed.active_surface_idx,
                                 browser: None,
+                                browser_tabs,
                             },
                         );
                     }
-                    Some(PaneEntry::Browser(browser)) => {
-                        saved_panes.insert(
-                            pane_id,
-                            amux_session::SavedManagedPane {
-                                panel_type: amux_session::PANEL_TYPE_BROWSER.to_string(),
-                                surfaces: vec![],
-                                active_surface_idx: 0,
-                                browser: Some(amux_session::SavedBrowserPane {
-                                    url: browser.url().unwrap_or_default(),
-                                    zoom_level: 1.0,
-                                    profile: browser.profile().to_string(),
-                                }),
-                            },
-                        );
+                    Some(PaneEntry::Browser(_)) => {
+                        // Standalone browser entries are saved via their parent
+                        // ManagedPane's browser_tabs list. Skip here.
                     }
                     None => {}
                 }

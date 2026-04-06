@@ -19,16 +19,59 @@ impl AmuxApp {
         rect: egui::Rect,
         is_focused: bool,
     ) {
-        // Handle browser panes: omnibar + webview
-        if self.panes.get(&pane_id).is_some_and(|e| e.is_browser()) {
-            self.render_browser_pane(ui, pane_id, rect, is_focused);
-            return;
+        // Collect info we need before borrowing panes mutably
+        let (active_is_browser, active_surface_idx, browser_tab_ids, active_browser_id) =
+            match self.panes.get(&pane_id) {
+                Some(PaneEntry::Terminal(m)) => {
+                    let active_bid = match m.active_tab() {
+                        managed_pane::ActiveTab::Browser(bid) => Some(bid),
+                        _ => None,
+                    };
+                    (
+                        m.active_is_browser(),
+                        m.active_surface_idx,
+                        m.browser_tab_ids.clone(),
+                        active_bid,
+                    )
+                }
+                _ => return,
+            };
+
+        // Manage browser webview visibility: show active, hide others
+        for &bid in &browser_tab_ids {
+            if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
+                b.set_visible(active_browser_id == Some(bid));
+            }
         }
+
+        // Pre-collect browser tab info and favicon textures before mutable borrow
+        let browser_tab_info: Vec<(String, Option<egui::TextureId>)> = browser_tab_ids
+            .iter()
+            .map(|&bid| {
+                let (title, favicon_url) = self
+                    .panes
+                    .get(&bid)
+                    .and_then(|e| e.as_browser())
+                    .map(|b| {
+                        let t = b.title();
+                        let title = if t.is_empty() {
+                            b.url().unwrap_or_else(|| "Browser".to_string())
+                        } else {
+                            t
+                        };
+                        (title, b.favicon_url())
+                    })
+                    .unwrap_or_else(|| ("Browser".to_string(), None));
+                let icon_tex = favicon_url.and_then(|url| self.get_favicon(ui.ctx(), &url, bid));
+                (title, icon_tex)
+            })
+            .collect();
 
         let managed = match self.panes.get_mut(&pane_id) {
             Some(PaneEntry::Terminal(m)) => m,
             _ => return,
         };
+        let _ = active_surface_idx; // used later in tab rendering
 
         // Always show tab bar
         let tab_rect =
@@ -56,7 +99,6 @@ impl AmuxApp {
 
             let active_idx = managed.active_surface_idx;
             let tab_font = egui::FontId::proportional(11.5);
-            let tab_icon = ">_ ";
             let mut x = tab_rect.min.x + 2.0;
 
             // Get pointer state for hover detection and drag
@@ -75,22 +117,33 @@ impl AmuxApp {
             let mut drag_start: Option<usize> = None;
             let mut start_rename_tab: Option<usize> = None;
 
-            for (idx, surface) in managed.surfaces.iter().enumerate() {
-                let is_active = idx == active_idx;
+            // Build unified tab list: terminal surfaces + browser tabs
+            let terminal_count = managed.surfaces.len();
+            let total_tabs = managed.tab_count();
+
+            // Collect tab info for unified iteration
+            enum TabIcon {
+                Terminal,
+                Favicon(egui::TextureId),
+                None,
+            }
+            struct TabInfo {
+                icon: TabIcon,
+                title: String,
+                is_dead: bool,
+            }
+            let mut tabs: Vec<TabInfo> = Vec::with_capacity(total_tabs);
+            for surface in &managed.surfaces {
                 let raw_title = surface
                     .user_title
                     .as_deref()
                     .unwrap_or_else(|| surface.pane.title());
                 let raw = if raw_title.is_empty() || raw_title == "?" {
-                    // Fall back to working directory path.
                     surface
                         .metadata
                         .cwd
                         .as_deref()
                         .map(|p| {
-                            // Replace home-dir prefix with ~ using path semantics
-                            // (string strip_prefix would match partial components
-                            // like "/home/dave" vs "/home/dave2").
                             if let Some(home) = dirs::home_dir() {
                                 let path = std::path::Path::new(p);
                                 if let Ok(rest) = path.strip_prefix(&home) {
@@ -106,21 +159,45 @@ impl AmuxApp {
                 } else {
                     raw_title.to_string()
                 };
-                // Cap at 20 chars for any title source — long cwd paths would
-                // otherwise overflow the TAB_MAX_WIDTH-clamped tab and overlap
-                // neighbors. Ellipsize with "..." when truncated.
-                let title = if raw.chars().count() > 20 {
-                    let prefix: String = raw.chars().take(17).collect();
+                tabs.push(TabInfo {
+                    icon: TabIcon::Terminal,
+                    title: raw,
+                    is_dead: surface.exited.is_some(),
+                });
+            }
+            // Browser tabs: use pre-collected titles and favicon textures
+            for (title, icon_texture) in &browser_tab_info {
+                tabs.push(TabInfo {
+                    icon: match icon_texture {
+                        Some(tex) => TabIcon::Favicon(*tex),
+                        None => TabIcon::None,
+                    },
+                    title: title.clone(),
+                    is_dead: false,
+                });
+            }
+
+            for (idx, tab) in tabs.iter().enumerate() {
+                let is_active = idx == active_idx;
+                // Cap at 20 chars
+                let title = if tab.title.chars().count() > 20 {
+                    let prefix: String = tab.title.chars().take(17).collect();
                     format!("{prefix}...")
                 } else {
-                    raw
+                    tab.title.clone()
                 };
-                let label = format!("{tab_icon}{title}");
+                let is_dead = tab.is_dead;
+                let has_icon = !matches!(tab.icon, TabIcon::None);
+                let icon_space = if has_icon {
+                    tab_icons::ICON_SIZE + 4.0
+                } else {
+                    0.0
+                };
 
                 let text_galley =
-                    painter.layout_no_wrap(label.clone(), tab_font.clone(), egui::Color32::WHITE);
+                    painter.layout_no_wrap(title.clone(), tab_font.clone(), egui::Color32::WHITE);
                 let text_width = text_galley.size().x;
-                let tab_w = (text_width + 24.0).clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH);
+                let tab_w = (icon_space + text_width + 24.0).clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH);
 
                 let this_tab = egui::Rect::from_min_size(
                     egui::pos2(x, tab_rect.min.y),
@@ -129,8 +206,6 @@ impl AmuxApp {
                 tab_rects.push(this_tab);
 
                 let tab_hovered = hover_pos.is_some_and(|p| this_tab.contains(p));
-
-                let is_dead = surface.exited.is_some();
                 let is_leftmost = idx == 0;
 
                 // Tab background + border
@@ -177,12 +252,50 @@ impl AmuxApp {
                 } else {
                     egui::Color32::from_gray(180)
                 };
-                let text_font = tab_font.clone();
+
+                // Draw icon + title text
+                let mut text_x = x + 6.0;
+                let icon_color = if is_dead {
+                    egui::Color32::from_gray(80)
+                } else {
+                    egui::Color32::from_gray(160)
+                };
+                match &tab.icon {
+                    TabIcon::Terminal => {
+                        let icon_y = tab_rect.min.y + (TAB_BAR_HEIGHT - tab_icons::ICON_SIZE) / 2.0;
+                        tab_icons::paint_terminal_icon(
+                            painter,
+                            egui::pos2(text_x, icon_y),
+                            tab_icons::ICON_SIZE,
+                            icon_color,
+                        );
+                        text_x += tab_icons::ICON_SIZE + 4.0;
+                    }
+                    TabIcon::Favicon(tex_id) => {
+                        let icon_y = tab_rect.min.y + (TAB_BAR_HEIGHT - tab_icons::ICON_SIZE) / 2.0;
+                        let icon_rect = egui::Rect::from_min_size(
+                            egui::pos2(text_x, icon_y),
+                            egui::vec2(tab_icons::ICON_SIZE, tab_icons::ICON_SIZE),
+                        );
+                        painter.image(
+                            *tex_id,
+                            icon_rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            if is_dead {
+                                egui::Color32::from_gray(80)
+                            } else {
+                                egui::Color32::WHITE
+                            },
+                        );
+                        text_x += tab_icons::ICON_SIZE + 4.0;
+                    }
+                    TabIcon::None => {}
+                }
                 painter.text(
-                    egui::pos2(x + 6.0, tab_rect.min.y + 6.0),
+                    egui::pos2(text_x, tab_rect.min.y + 6.0),
                     egui::Align2::LEFT_TOP,
-                    &label,
-                    text_font,
+                    &title,
+                    tab_font.clone(),
                     text_color,
                 );
 
@@ -202,8 +315,9 @@ impl AmuxApp {
                 // Right-click context menu
                 let tab_id = ui.id().with("tab_ctx").with(pane_id).with(idx);
                 let tab_response = ui.interact(this_tab, tab_id, egui::Sense::click());
+                let is_browser_tab = idx >= terminal_count;
                 tab_response.context_menu(|ui| {
-                    if ui.button("Rename Tab").clicked() {
+                    if !is_browser_tab && ui.button("Rename Tab").clicked() {
                         start_rename_tab = Some(idx);
                         ui.close_menu();
                     }
@@ -251,6 +365,10 @@ impl AmuxApp {
                         self.tab_drag = None;
                         if from != to {
                             if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
+                                // Only reorder within terminal tabs
+                                if from >= m.surfaces.len() || to >= m.surfaces.len() {
+                                    return;
+                                }
                                 let surface = m.surfaces.remove(from);
                                 let insert_idx = if from < to {
                                     (to - 1).min(m.surfaces.len())
@@ -346,28 +464,63 @@ impl AmuxApp {
 
             // Apply tab switch/close (need to re-borrow managed)
             if let Some(idx) = close_tab {
-                let is_last = self
+                let managed = self
                     .panes
                     .get(&pane_id)
                     .and_then(|e| e.as_terminal())
-                    .is_some_and(|m| m.surfaces.len() <= 1);
-                if is_last {
+                    .unwrap();
+                let tc = managed.tab_count();
+                let tcount = managed.surfaces.len();
+                if tc <= 1 {
                     self.close_pane(pane_id);
                     return;
                 }
-                let managed = self
-                    .panes
-                    .get_mut(&pane_id)
-                    .unwrap()
-                    .as_terminal_mut()
-                    .unwrap();
-                managed.surfaces.remove(idx);
-                if idx < managed.active_surface_idx {
-                    managed.active_surface_idx -= 1;
-                } else if managed.active_surface_idx >= managed.surfaces.len() {
-                    managed.active_surface_idx = managed.surfaces.len() - 1;
+                if idx < tcount {
+                    // Close terminal tab
+                    let managed = self
+                        .panes
+                        .get_mut(&pane_id)
+                        .unwrap()
+                        .as_terminal_mut()
+                        .unwrap();
+                    managed.surfaces.remove(idx);
+                    if idx < managed.active_surface_idx {
+                        managed.active_surface_idx -= 1;
+                    } else if managed.active_surface_idx >= managed.tab_count() {
+                        managed.active_surface_idx = managed.tab_count() - 1;
+                    }
+                } else {
+                    // Close browser tab
+                    let browser_idx = idx - tcount;
+                    let managed = self
+                        .panes
+                        .get_mut(&pane_id)
+                        .unwrap()
+                        .as_terminal_mut()
+                        .unwrap();
+                    let browser_pane_id = managed.browser_tab_ids.remove(browser_idx);
+                    self.panes.remove(&browser_pane_id);
+                    self.omnibar_state.remove(&browser_pane_id);
+                    let managed = self
+                        .panes
+                        .get_mut(&pane_id)
+                        .unwrap()
+                        .as_terminal_mut()
+                        .unwrap();
+                    if managed.active_surface_idx >= managed.tab_count() {
+                        managed.active_surface_idx = managed.tab_count() - 1;
+                    }
                 }
             } else if let Some(idx) = switch_to {
+                // Determine old and new browser tab IDs for visibility management
+                let old_browser = self
+                    .panes
+                    .get(&pane_id)
+                    .and_then(|e| e.as_terminal())
+                    .and_then(|m| match m.active_tab() {
+                        managed_pane::ActiveTab::Browser(bid) => Some(bid),
+                        _ => None,
+                    });
                 let managed = self
                     .panes
                     .get_mut(&pane_id)
@@ -375,6 +528,25 @@ impl AmuxApp {
                     .as_terminal_mut()
                     .unwrap();
                 managed.active_surface_idx = idx;
+                let new_browser = match managed.active_tab() {
+                    managed_pane::ActiveTab::Browser(bid) => Some(bid),
+                    _ => None,
+                };
+                // Hide old browser webview, show new one; manage keyboard focus
+                if old_browser != new_browser {
+                    if let Some(bid) = old_browser {
+                        if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
+                            b.set_visible(false);
+                            b.focus_parent();
+                        }
+                    }
+                    if let Some(bid) = new_browser {
+                        if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
+                            b.set_visible(true);
+                            b.focus();
+                        }
+                    }
+                }
             }
 
             // Open rename modal for tab
@@ -397,6 +569,16 @@ impl AmuxApp {
                     }
                 }
             }
+        }
+
+        // If active tab is a browser, render browser content and return
+        if active_is_browser {
+            if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
+                if let managed_pane::ActiveTab::Browser(browser_pane_id) = managed.active_tab() {
+                    self.render_browser_pane(ui, browser_pane_id, content_rect, is_focused);
+                }
+            }
+            return;
         }
 
         // Collect find highlights for this pane
@@ -569,7 +751,9 @@ impl AmuxApp {
         }
     }
 
-    /// Render a browser pane: omnibar (back/forward/reload + URL input) + webview bounds update.
+    /// Render browser content: omnibar (back/forward/reload + URL input) + webview bounds update.
+    /// `pane_id` is the browser pane ID (PaneEntry::Browser in the panes map).
+    /// `rect` is the content area below the tab bar.
     fn render_browser_pane(
         &mut self,
         ui: &mut egui::Ui,
@@ -664,7 +848,12 @@ impl AmuxApp {
         }
         x += BUTTON_SIZE + 2.0;
 
-        // Reload button
+        // Reload/Stop button (shows stop ✕ when loading, reload ↻ when idle)
+        let is_loading = self
+            .panes
+            .get(&pane_id)
+            .and_then(|e| e.as_browser())
+            .is_some_and(|b| b.is_loading());
         let reload_rect = egui::Rect::from_min_size(
             egui::pos2(x, button_y),
             egui::vec2(BUTTON_SIZE, BUTTON_SIZE),
@@ -675,16 +864,25 @@ impl AmuxApp {
         } else {
             egui::Color32::from_gray(120)
         };
+        let (reload_icon, reload_font_size) = if is_loading {
+            ("\u{2715}", 11.0) // ✕ stop
+        } else {
+            ("\u{21BB}", 13.0) // ↻ reload
+        };
         painter.text(
             reload_rect.center(),
             egui::Align2::CENTER_CENTER,
-            "\u{21BB}",
-            egui::FontId::proportional(13.0),
+            reload_icon,
+            egui::FontId::proportional(reload_font_size),
             reload_color,
         );
         if reload_hovered && primary_clicked {
             if let Some(PaneEntry::Browser(browser)) = self.panes.get(&pane_id) {
-                browser.reload();
+                if is_loading {
+                    browser.stop();
+                } else {
+                    browser.reload();
+                }
             }
         }
         x += BUTTON_SIZE + BUTTON_PAD;
@@ -709,6 +907,7 @@ impl AmuxApp {
             .or_insert_with(|| crate::OmnibarState {
                 text: current_url.clone(),
                 focused: false,
+                last_recorded_url: String::new(),
             });
 
         // When not focused, keep text synced with actual URL
@@ -787,6 +986,8 @@ impl AmuxApp {
                 };
                 if let Some(PaneEntry::Browser(browser)) = self.panes.get(&pane_id) {
                     browser.navigate(&url);
+                    let title = browser.title();
+                    self.browser_history.record_visit(&url, &title);
                 }
             }
         }
@@ -796,6 +997,83 @@ impl AmuxApp {
             response.surrender_focus();
             let state = self.omnibar_state.get_mut(&pane_id).unwrap();
             state.focused = false;
+        }
+
+        // Autocomplete suggestions when omnibar is focused and has text
+        let state = self.omnibar_state.get(&pane_id).unwrap();
+        if state.focused && !state.text.is_empty() && state.text.len() >= 2 {
+            let suggestions = self.browser_history.search(&state.text, 6);
+            if !suggestions.is_empty() {
+                let popup_id = ui.id().with("omnibar_popup").with(pane_id);
+                let popup_rect = egui::Rect::from_min_size(
+                    egui::pos2(url_rect.min.x, url_rect.max.y + 2.0),
+                    egui::vec2(url_rect.width(), suggestions.len() as f32 * 22.0 + 4.0),
+                );
+
+                // Draw popup background
+                ui.painter()
+                    .rect_filled(popup_rect, 4.0, egui::Color32::from_gray(40));
+                ui.painter().rect_stroke(
+                    popup_rect,
+                    4.0,
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
+                    egui::StrokeKind::Inside,
+                );
+
+                let mut selected_url: Option<String> = None;
+                let mut y = popup_rect.min.y + 2.0;
+                for (i, entry) in suggestions.iter().enumerate() {
+                    let item_rect = egui::Rect::from_min_size(
+                        egui::pos2(popup_rect.min.x, y),
+                        egui::vec2(popup_rect.width(), 22.0),
+                    );
+                    let item_hovered = hover_pos.is_some_and(|p| item_rect.contains(p));
+                    if item_hovered {
+                        ui.painter()
+                            .rect_filled(item_rect, 0.0, egui::Color32::from_gray(55));
+                    }
+
+                    // Show title (truncated) + URL domain
+                    let display = if entry.title.is_empty() {
+                        entry.url.clone()
+                    } else {
+                        let title: String = entry.title.chars().take(30).collect();
+                        let domain = entry
+                            .url
+                            .split("//")
+                            .nth(1)
+                            .and_then(|s| s.split('/').next())
+                            .unwrap_or("");
+                        format!("{title} — {domain}")
+                    };
+
+                    ui.painter().text(
+                        egui::pos2(item_rect.min.x + 8.0, item_rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        &display,
+                        egui::FontId::proportional(11.0),
+                        egui::Color32::from_gray(200),
+                    );
+
+                    let item_id = popup_id.with(i);
+                    let item_response = ui.interact(item_rect, item_id, egui::Sense::click());
+                    if item_response.clicked() {
+                        selected_url = Some(entry.url.clone());
+                    }
+                    y += 22.0;
+                }
+
+                if let Some(url) = selected_url {
+                    if let Some(PaneEntry::Browser(browser)) = self.panes.get(&pane_id) {
+                        browser.navigate(&url);
+                    }
+                    if let Some(state) = self.omnibar_state.get_mut(&pane_id) {
+                        state.text = url;
+                        state.focused = false;
+                    }
+                    response.surrender_focus();
+                }
+            }
         }
 
         // Cmd+L / Ctrl+L to focus omnibar

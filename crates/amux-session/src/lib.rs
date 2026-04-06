@@ -90,9 +90,23 @@ pub struct SavedManagedPane {
     pub panel_type: String,
     pub surfaces: Vec<SavedSurface>,
     pub active_surface_idx: usize,
-    /// Browser pane state (only set when panel_type == "browser").
+    /// Legacy single browser pane state (kept for backwards compat on load).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<SavedBrowserPane>,
+    /// Browser tabs within this pane (each gets its own pane ID).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub browser_tabs: Vec<SavedBrowserTab>,
+}
+
+/// A browser tab saved within a ManagedPane.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SavedBrowserTab {
+    pub pane_id: u64,
+    pub url: String,
+    #[serde(default = "default_zoom_level")]
+    pub zoom_level: f64,
+    #[serde(default = "default_profile")]
+    pub profile: String,
 }
 
 /// The panel type identifier for terminal panes.
@@ -291,6 +305,7 @@ mod tests {
                 }],
                 active_surface_idx: 0,
                 browser: None,
+                browser_tabs: Vec::new(),
             },
         );
 

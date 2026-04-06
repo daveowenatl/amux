@@ -4,6 +4,8 @@ use amux_layout::{PaneId, SplitDirection};
 use amux_notify::NotificationSource;
 use amux_term::TerminalBackend;
 
+use crate::managed_pane;
+
 use crate::managed_pane::{PaneEntry, PaneSurface};
 use crate::{startup, AmuxApp};
 
@@ -995,25 +997,42 @@ impl AmuxApp {
             .map(|s| s.to_string())
     }
 
-    /// Resolve a browser pane (mutable) by optional pane_id, falling back to focused pane.
+    /// Resolve a browser pane (mutable) by optional pane_id, falling back to
+    /// the active browser tab in the focused pane.
     fn resolve_browser_pane(
         &mut self,
         pane_id: Option<&str>,
     ) -> Option<&mut amux_browser::BrowserPane> {
-        let target = pane_id
-            .and_then(|s| s.parse::<PaneId>().ok())
-            .unwrap_or_else(|| self.focused_pane_id());
+        let target = if let Some(id_str) = pane_id {
+            id_str.parse::<PaneId>().ok()?
+        } else {
+            // Find active browser tab in focused pane
+            let focused = self.focused_pane_id();
+            let managed = self.panes.get(&focused)?.as_terminal()?;
+            match managed.active_tab() {
+                managed_pane::ActiveTab::Browser(bid) => bid,
+                _ => return None,
+            }
+        };
         self.panes.get_mut(&target)?.as_browser_mut()
     }
 
-    /// Resolve a browser pane (immutable) by optional pane_id, falling back to focused pane.
+    /// Resolve a browser pane (immutable) by optional pane_id, falling back to
+    /// the active browser tab in the focused pane.
     fn resolve_browser_pane_ref(
         &self,
         pane_id: Option<&str>,
     ) -> Option<&amux_browser::BrowserPane> {
-        let target = pane_id
-            .and_then(|s| s.parse::<PaneId>().ok())
-            .unwrap_or_else(|| self.focused_pane_id());
+        let target = if let Some(id_str) = pane_id {
+            id_str.parse::<PaneId>().ok()?
+        } else {
+            let focused = self.focused_pane_id();
+            let managed = self.panes.get(&focused)?.as_terminal()?;
+            match managed.active_tab() {
+                managed_pane::ActiveTab::Browser(bid) => bid,
+                _ => return None,
+            }
+        };
         self.panes.get(&target)?.as_browser()
     }
 

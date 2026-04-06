@@ -45,7 +45,8 @@ egui = "0.31"
 cosmic-text = "0.12"
 
 # Image decoding
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "ico"] }
+base64 = "0.22"
 
 # GPU rendering
 wgpu = "24.0"

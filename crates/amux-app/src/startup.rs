@@ -189,6 +189,9 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 pending_browser_panes: Vec::new(),
                 pending_browser_restores: state.pending_browser_restores,
                 omnibar_state: HashMap::new(),
+                browser_history: amux_browser::history::BrowserHistory::load(),
+                favicon_cache: HashMap::new(),
+                favicon_pending: std::collections::HashSet::new(),
             }))
         }),
     )
@@ -209,8 +212,8 @@ pub(crate) struct StartupState {
     pub(crate) sidebar: SidebarState,
     pub(crate) notifications: NotificationStore,
     /// Browser panes that need to be created once the window handle is available.
-    /// Tuple: (pane_id, url).
-    pub(crate) pending_browser_restores: Vec<(PaneId, String)>,
+    /// Tuple: (parent_pane_id, browser_pane_id, url).
+    pub(crate) pending_browser_restores: Vec<(PaneId, PaneId, String)>,
 }
 
 /// Create a fresh default startup (one workspace, one pane).
@@ -224,6 +227,7 @@ pub(crate) fn fresh_startup(
 
     let managed = PaneEntry::Terminal(ManagedPane {
         surfaces: vec![surface],
+        browser_tab_ids: Vec::new(),
         active_surface_idx: 0,
         selection: None,
     });
@@ -268,17 +272,17 @@ pub(crate) fn restore_session(
 ) -> StartupState {
     let mut workspaces = Vec::new();
     let mut panes: HashMap<PaneId, PaneEntry> = HashMap::new();
-    let mut pending_browser_restores: Vec<(PaneId, String)> = Vec::new();
+    let mut pending_browser_restores: Vec<(PaneId, PaneId, String)> = Vec::new();
 
     for saved_ws in &session.workspaces {
         for (&pane_id, saved_pane) in &saved_ws.panes {
-            // Browser panes: defer creation until window handle is available
+            // Legacy standalone browser panes: skip (they're now tabs within panes)
             if saved_pane.panel_type == amux_session::PANEL_TYPE_BROWSER {
-                if let Some(ref browser_state) = saved_pane.browser {
-                    pending_browser_restores.push((pane_id, browser_state.url.clone()));
-                    // Insert a placeholder — will be replaced in create_pending_browser_panes
-                    continue;
-                }
+                tracing::info!(
+                    "Skipping legacy standalone browser pane {} (not supported in tab model)",
+                    pane_id
+                );
+                continue;
             }
 
             if saved_pane.panel_type != amux_session::PANEL_TYPE_TERMINAL {
@@ -335,13 +339,20 @@ pub(crate) fn restore_session(
                 continue;
             }
 
-            let active_idx = saved_pane
-                .active_surface_idx
-                .min(surfaces.len().saturating_sub(1));
+            // Queue browser tab restores for this pane
+            let mut browser_tab_ids = Vec::new();
+            for bt in &saved_pane.browser_tabs {
+                pending_browser_restores.push((pane_id, bt.pane_id, bt.url.clone()));
+                browser_tab_ids.push(bt.pane_id);
+            }
+
+            let max_idx = (surfaces.len() + browser_tab_ids.len()).saturating_sub(1);
+            let active_idx = saved_pane.active_surface_idx.min(max_idx);
             panes.insert(
                 pane_id,
                 PaneEntry::Terminal(ManagedPane {
                     surfaces,
+                    browser_tab_ids,
                     active_surface_idx: active_idx,
                     selection: None,
                 }),
@@ -349,13 +360,8 @@ pub(crate) fn restore_session(
         }
 
         // Verify all pane IDs in the tree were actually restored
-        // (browser panes are pending, so count them too)
         let tree_pane_ids = saved_ws.tree.iter_panes();
-        let pending_ids: std::collections::HashSet<PaneId> =
-            pending_browser_restores.iter().map(|(id, _)| *id).collect();
-        let all_panes_restored = tree_pane_ids
-            .iter()
-            .all(|id| panes.contains_key(id) || pending_ids.contains(id));
+        let all_panes_restored = tree_pane_ids.iter().all(|id| panes.contains_key(id));
         if !all_panes_restored {
             tracing::warn!(
                 "Skipping workspace {} (tree references missing panes)",

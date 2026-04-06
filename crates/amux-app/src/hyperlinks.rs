@@ -88,6 +88,9 @@ impl AmuxApp {
 
         // Check if cell has a hyperlink
         if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
+            if managed.active_is_browser() {
+                return;
+            }
             let surface = managed.active_surface();
             let (cols, rows) = surface.pane.dimensions();
             if col >= cols || row >= rows {

@@ -30,6 +30,9 @@ impl AmuxApp {
         };
 
         if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&focused_id) {
+            if managed.active_is_browser() {
+                return;
+            }
             let surface = managed.active_surface();
             let cursor = surface.pane.cursor();
             let (dim_cols, dim_rows) = surface.pane.dimensions();
@@ -68,6 +71,9 @@ impl AmuxApp {
         };
 
         if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&focused_id) {
+            if managed.active_is_browser() {
+                return;
+            }
             let surface = managed.active_surface();
             let cursor = surface.pane.cursor();
             let (dim_cols, dim_rows) = surface.pane.dimensions();

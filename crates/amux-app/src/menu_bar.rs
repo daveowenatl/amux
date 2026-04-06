@@ -21,6 +21,7 @@ use muda::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 pub(crate) enum MenuAction {
     NewWorkspace,
     NewTab,
+    NewBrowserTab,
     CloseTab,
     SaveSession,
     ToggleSidebar,
@@ -37,6 +38,7 @@ pub(crate) enum MenuAction {
 struct MenuItems {
     new_workspace: muda::MenuId,
     new_tab: muda::MenuId,
+    new_browser_tab: muda::MenuId,
     close_tab: muda::MenuId,
     save_session: muda::MenuId,
     toggle_sidebar: muda::MenuId,
@@ -92,6 +94,12 @@ pub(crate) fn build() -> Menu {
     #[cfg(not(target_os = "macos"))]
     let new_tab = MenuItem::new("New Tab", true, accel(CMD_SHIFT, Code::KeyT));
 
+    let new_browser_tab = MenuItem::new(
+        "New Browser Tab",
+        true,
+        accel(CMD.union(Modifiers::SHIFT), Code::KeyL),
+    );
+
     #[cfg(target_os = "macos")]
     let close_tab = MenuItem::new("Close Tab", true, accel(CMD, Code::KeyW));
     #[cfg(not(target_os = "macos"))]
@@ -132,6 +140,7 @@ pub(crate) fn build() -> Menu {
         .set(MenuItems {
             new_workspace: new_workspace.id().clone(),
             new_tab: new_tab.id().clone(),
+            new_browser_tab: new_browser_tab.id().clone(),
             close_tab: close_tab.id().clone(),
             save_session: save_session.id().clone(),
             toggle_sidebar: toggle_sidebar.id().clone(),
@@ -180,6 +189,7 @@ pub(crate) fn build() -> Menu {
         let _ = file_menu.append_items(&[
             &new_workspace,
             &new_tab,
+            &new_browser_tab,
             &PredefinedMenuItem::separator(),
             &close_tab,
             &PredefinedMenuItem::separator(),
@@ -275,6 +285,8 @@ pub(crate) fn take_pending_action() -> Option<MenuAction> {
             return Some(MenuAction::NewWorkspace);
         } else if *id == items.new_tab {
             return Some(MenuAction::NewTab);
+        } else if *id == items.new_browser_tab {
+            return Some(MenuAction::NewBrowserTab);
         } else if *id == items.close_tab {
             return Some(MenuAction::CloseTab);
         } else if *id == items.save_session {

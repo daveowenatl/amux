@@ -42,6 +42,10 @@ pub struct BrowserConfig {
     pub search_engine: String,
     /// Open terminal hyperlinks in an in-app browser pane instead of system browser.
     pub open_terminal_links_in_app: bool,
+    /// Custom user agent string. When set, overrides the default webview UA.
+    pub user_agent: Option<String>,
+    /// Download directory. Defaults to the system Downloads folder.
+    pub download_dir: Option<String>,
 }
 
 impl Default for BrowserConfig {
@@ -49,6 +53,8 @@ impl Default for BrowserConfig {
         Self {
             search_engine: "google".to_string(),
             open_terminal_links_in_app: true,
+            user_agent: None,
+            download_dir: None,
         }
     }
 }

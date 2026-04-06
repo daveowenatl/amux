@@ -41,6 +41,37 @@ impl eframe::App for AmuxApp {
             self.queue_browser_pane(url);
         }
 
+        // Record browser page visits for history/autocomplete (only when URL changes)
+        let visits: Vec<(PaneId, String, String)> = self
+            .panes
+            .iter()
+            .filter_map(|(&id, e)| {
+                let b = e.as_browser()?;
+                if b.is_loading() {
+                    return None;
+                }
+                let url = b.url()?;
+                if url == "about:blank" || url.is_empty() {
+                    return None;
+                }
+                let last = self
+                    .omnibar_state
+                    .get(&id)
+                    .map(|s| s.last_recorded_url.as_str())
+                    .unwrap_or("");
+                if url == last {
+                    return None;
+                }
+                Some((id, url, b.title()))
+            })
+            .collect();
+        for (pane_id, url, title) in visits {
+            self.browser_history.record_visit(&url, &title);
+            if let Some(state) = self.omnibar_state.get_mut(&pane_id) {
+                state.last_recorded_url = url;
+            }
+        }
+
         self.selection_changed = false;
         self.app_focused = ctx.input(|i| i.focused);
 
@@ -122,6 +153,9 @@ impl eframe::App for AmuxApp {
 
         // Process IPC commands
         self.process_ipc_commands();
+
+        // Process favicon data from browser panes
+        self.process_favicon_data(ctx);
 
         // Handle keyboard shortcuts BEFORE terminal input
         let shortcut_consumed = self.handle_shortcuts(ctx);
@@ -351,10 +385,17 @@ impl eframe::App for AmuxApp {
         // Hyperlink hover detection + Cmd+click handling
         self.handle_hyperlinks(ctx);
 
-        // Update window title from focused pane's active surface
+        // Update window title from focused pane's active tab
         let focused_id = self.focused_pane_id();
         if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&focused_id) {
-            let title = managed.active_surface().pane.title();
+            let title = match managed.active_tab() {
+                managed_pane::ActiveTab::Terminal(_) => {
+                    managed.active_surface().pane.title().to_string()
+                }
+                managed_pane::ActiveTab::Browser(bid) => {
+                    self.panes.get(&bid).map(|e| e.title()).unwrap_or_default()
+                }
+            };
             if !title.is_empty() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("amux — {}", title)));
             }
@@ -385,6 +426,8 @@ impl eframe::App for AmuxApp {
     }
 
     fn on_exit(&mut self) {
+        self.browser_history.save();
+
         if self.wants_exit {
             // User explicitly closed everything — clear session so next
             // launch starts fresh instead of restoring an empty state.
