@@ -87,7 +87,7 @@ impl AmuxApp {
         let row = ((hover_pos.y - content_top) / cell_h) as usize;
 
         // Check if cell has a hyperlink
-        if let Some(managed) = self.panes.get(&pane_id) {
+        if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
             let surface = managed.active_surface();
             let (cols, rows) = surface.pane.dimensions();
             if col >= cols || row >= rows {

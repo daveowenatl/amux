@@ -93,7 +93,7 @@ impl AmuxApp {
                         return true;
                     }
                     let focused = self.focused_pane_id();
-                    if let Some(m) = self.panes.get_mut(&focused) {
+                    if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&focused) {
                         if m.selection.is_some() {
                             m.selection = None;
                             return true;
@@ -242,7 +242,9 @@ impl AmuxApp {
 
                 // Next tab in focused pane: Ctrl+Tab
                 if modifiers.ctrl && !modifiers.shift && *key == egui::Key::Tab {
-                    if let Some(managed) = self.panes.get_mut(&self.focused_pane_id()) {
+                    if let Some(PaneEntry::Terminal(managed)) =
+                        self.panes.get_mut(&self.focused_pane_id())
+                    {
                         if managed.surfaces.len() > 1 {
                             managed.active_surface_idx =
                                 (managed.active_surface_idx + 1) % managed.surfaces.len();
@@ -253,7 +255,9 @@ impl AmuxApp {
 
                 // Prev tab in focused pane: Ctrl+Shift+Tab
                 if modifiers.ctrl && modifiers.shift && *key == egui::Key::Tab {
-                    if let Some(managed) = self.panes.get_mut(&self.focused_pane_id()) {
+                    if let Some(PaneEntry::Terminal(managed)) =
+                        self.panes.get_mut(&self.focused_pane_id())
+                    {
                         if managed.surfaces.len() > 1 {
                             managed.active_surface_idx = if managed.active_surface_idx == 0 {
                                 managed.surfaces.len() - 1
@@ -369,7 +373,7 @@ impl AmuxApp {
                     .map(|(id, _)| *id)
             });
             if let Some(pane_id) = target_pane {
-                if let Some(managed) = self.panes.get_mut(&pane_id) {
+                if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
                     let surface = managed.active_surface_mut();
                     let font_id = egui::FontId::monospace(self.font_size);
                     let cell_height = ctx.fonts(|f| f.row_height(&font_id));
@@ -389,7 +393,7 @@ impl AmuxApp {
 
     pub(crate) fn enter_copy_mode(&mut self) {
         let pane_id = self.focused_pane_id();
-        if let Some(managed) = self.panes.get(&pane_id) {
+        if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
             let surface = managed.active_surface();
             let cursor = surface.pane.cursor();
             let (_, rows) = surface.pane.dimensions();
@@ -420,7 +424,7 @@ impl AmuxApp {
 
         // Get dimensions for bounds checking
         let (cols, rows, total_rows) = match self.panes.get(&pane_id) {
-            Some(m) => {
+            Some(PaneEntry::Terminal(m)) => {
                 let s = m.active_surface();
                 let (c, r) = s.pane.dimensions();
                 let t = s.pane.scrollback_rows();
@@ -514,7 +518,7 @@ impl AmuxApp {
         }
 
         // Scroll viewport to keep cursor visible
-        if let Some(managed) = self.panes.get_mut(&pane_id) {
+        if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
             let cm = self.copy_mode.as_ref().unwrap();
             let surface = managed.active_surface_mut();
             let end = total_rows.saturating_sub(surface.scroll_offset);
@@ -537,7 +541,7 @@ impl AmuxApp {
         line_visual: bool,
     ) -> Option<String> {
         let cm = self.copy_mode.as_ref()?;
-        let managed = self.panes.get(&pane_id)?;
+        let PaneEntry::Terminal(managed) = self.panes.get(&pane_id)?;
         let surface = managed.active_surface();
         let (start, end) =
             if anchor.1 < cm.cursor.1 || (anchor.1 == cm.cursor.1 && anchor.0 <= cm.cursor.0) {
@@ -580,7 +584,7 @@ impl AmuxApp {
     pub(crate) fn copy_selection(&mut self) -> bool {
         let focused = self.focused_pane_id();
         let managed = match self.panes.get_mut(&focused) {
-            Some(m) => m,
+            Some(PaneEntry::Terminal(m)) => m,
             None => return false,
         };
         let sel = match &managed.selection {
@@ -612,7 +616,7 @@ impl AmuxApp {
 
     pub(crate) fn do_paste(&mut self, text: &str) {
         let focused_id = self.focused_pane_id();
-        if let Some(managed) = self.panes.get_mut(&focused_id) {
+        if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused_id) {
             let surface = managed.active_surface_mut();
             surface.scroll_offset = 0;
             surface.scroll_accum = 0.0;
@@ -629,7 +633,7 @@ impl AmuxApp {
     pub(crate) fn select_all_visible(&mut self) {
         let focused = self.focused_pane_id();
         let managed = match self.panes.get_mut(&focused) {
-            Some(m) => m,
+            Some(PaneEntry::Terminal(m)) => m,
             None => return,
         };
         let surface = managed.active_surface();
@@ -649,7 +653,7 @@ impl AmuxApp {
 
     pub(crate) fn clear_selection_on_focused(&mut self) {
         let focused = self.focused_pane_id();
-        if let Some(m) = self.panes.get_mut(&focused) {
+        if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&focused) {
             m.selection = None;
         }
     }
@@ -665,7 +669,7 @@ impl AmuxApp {
         let (cell_width, cell_height) = self.cell_dimensions(ui);
 
         let managed = match self.panes.get(&pane_id) {
-            Some(m) => m,
+            Some(PaneEntry::Terminal(m)) => m,
             None => return false,
         };
         let surface = managed.active_surface();
@@ -687,7 +691,7 @@ impl AmuxApp {
             if let Some(pos) = pointer_pos {
                 if !content_rect.contains(pos) {
                     // Click outside content — clear any existing selection
-                    if let Some(m) = self.panes.get_mut(&pane_id) {
+                    if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
                         m.selection = None;
                     }
                     return true;
@@ -745,7 +749,7 @@ impl AmuxApp {
                     }
                 };
 
-                if let Some(m) = self.panes.get_mut(&pane_id) {
+                if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
                     m.selection = Some(SelectionState {
                         anchor,
                         end,
@@ -760,7 +764,10 @@ impl AmuxApp {
             let has_active_selection = self
                 .panes
                 .get(&pane_id)
-                .and_then(|m| m.selection.as_ref())
+                .and_then(|e| {
+                    let PaneEntry::Terminal(m) = e;
+                    m.selection.as_ref()
+                })
                 .is_some_and(|s| s.active);
 
             if has_active_selection {
@@ -776,7 +783,7 @@ impl AmuxApp {
                     );
                     let col = col.min(cols.saturating_sub(1));
 
-                    if let Some(m) = self.panes.get_mut(&pane_id) {
+                    if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
                         if let Some(ref mut sel) = m.selection {
                             match sel.mode {
                                 SelectionMode::Cell => {
@@ -814,7 +821,7 @@ impl AmuxApp {
                 }
             }
         } else if primary_released {
-            if let Some(m) = self.panes.get_mut(&pane_id) {
+            if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
                 if let Some(ref mut sel) = m.selection {
                     sel.active = false;
                     // If no actual drag (anchor == end), clear selection
@@ -847,7 +854,7 @@ impl AmuxApp {
         }
 
         let managed = match self.panes.get_mut(&focused_id) {
-            Some(m) => m,
+            Some(PaneEntry::Terminal(m)) => m,
             None => return has_input,
         };
         let surface = managed.active_surface_mut();

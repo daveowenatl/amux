@@ -1,23 +1,8 @@
 //! Managed pane types for the amux application.
 //!
-//! Currently all panes are terminal panes (`ManagedPane`). When a second
-//! panel type is introduced (e.g., markdown viewer, browser), extract the
-//! common interface into a `Panel` trait or enum:
-//!
-//! ```ignore
-//! pub(crate) trait Panel {
-//!     fn id(&self) -> PaneId;
-//!     fn panel_type(&self) -> &'static str;
-//!     fn title(&self) -> String;
-//!     fn is_alive(&self) -> bool;
-//!     fn panel_info(&self) -> PanelInfo;
-//!     fn resize(&mut self, cols: u16, rows: u16);
-//!     fn focus_changed(&mut self, focused: bool);
-//! }
-//! ```
-//!
-//! Then change `AmuxApp.panes` from `HashMap<PaneId, ManagedPane>`
-//! to `HashMap<PaneId, Box<dyn Panel>>` (or an enum).
+//! `PaneEntry` is the top-level enum stored in `AmuxApp.panes`. Currently the
+//! only variant is `Terminal`, but this enum is the extension point for
+//! browser panes and other panel types.
 
 use std::sync::mpsc;
 
@@ -29,6 +14,57 @@ pub(crate) use amux_core::model::{
     CopyModeState, DeadPaneAction, ExitInfo, FindState, PanelInfo, SelectionMode, SelectionState,
     SurfaceMetadata, WORD_DELIMITERS,
 };
+
+// ---------------------------------------------------------------------------
+// Pane entry enum — the value type of `AmuxApp.panes`
+// ---------------------------------------------------------------------------
+
+/// A pane entry in the application's pane map.
+///
+/// Terminal panes are the only variant today. When browser panes land (#108),
+/// add `Browser(BrowserPane)` here and the compiler will flag every call site
+/// that needs a new match arm.
+pub(crate) enum PaneEntry {
+    Terminal(ManagedPane),
+}
+
+#[allow(dead_code)]
+impl PaneEntry {
+    /// Returns a reference to the inner `ManagedPane` if this is a terminal pane.
+    pub(crate) fn as_terminal(&self) -> Option<&ManagedPane> {
+        match self {
+            PaneEntry::Terminal(m) => Some(m),
+        }
+    }
+
+    /// Returns a mutable reference to the inner `ManagedPane` if this is a terminal pane.
+    pub(crate) fn as_terminal_mut(&mut self) -> Option<&mut ManagedPane> {
+        match self {
+            PaneEntry::Terminal(m) => Some(m),
+        }
+    }
+
+    /// Display title for this pane, dispatched by type.
+    pub(crate) fn title(&self) -> String {
+        match self {
+            PaneEntry::Terminal(m) => m.title(),
+        }
+    }
+
+    /// Panel type identifier string.
+    pub(crate) fn panel_type(&self) -> &'static str {
+        match self {
+            PaneEntry::Terminal(m) => m.panel_type(),
+        }
+    }
+
+    /// Summary info for sidebar/IPC without exposing internals.
+    pub(crate) fn panel_info(&mut self) -> PanelInfo {
+        match self {
+            PaneEntry::Terminal(m) => m.panel_info(),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Terminal-dependent types (stay in amux-app)

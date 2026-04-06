@@ -199,7 +199,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
 pub(crate) struct StartupState {
     pub(crate) workspaces: Vec<Workspace>,
     pub(crate) active_workspace_idx: usize,
-    pub(crate) panes: HashMap<PaneId, ManagedPane>,
+    pub(crate) panes: HashMap<PaneId, PaneEntry>,
     pub(crate) next_pane_id: PaneId,
     pub(crate) next_workspace_id: u64,
     pub(crate) next_surface_id: u64,
@@ -216,11 +216,11 @@ pub(crate) fn fresh_startup(
     let initial_pane_id: PaneId = 0;
     let surface = spawn_surface(80, 24, ipc_addr, socket_token, config, 0, 0, None, None)?;
 
-    let managed = ManagedPane {
+    let managed = PaneEntry::Terminal(ManagedPane {
         surfaces: vec![surface],
         active_surface_idx: 0,
         selection: None,
-    };
+    });
 
     let mut panes = HashMap::new();
     panes.insert(initial_pane_id, managed);
@@ -260,7 +260,7 @@ pub(crate) fn restore_session(
     config: &Arc<AmuxTermConfig>,
 ) -> StartupState {
     let mut workspaces = Vec::new();
-    let mut panes: HashMap<PaneId, ManagedPane> = HashMap::new();
+    let mut panes: HashMap<PaneId, PaneEntry> = HashMap::new();
 
     for saved_ws in &session.workspaces {
         for (&pane_id, saved_pane) in &saved_ws.panes {
@@ -323,11 +323,11 @@ pub(crate) fn restore_session(
                 .min(surfaces.len().saturating_sub(1));
             panes.insert(
                 pane_id,
-                ManagedPane {
+                PaneEntry::Terminal(ManagedPane {
                     surfaces,
                     active_surface_idx: active_idx,
                     selection: None,
-                },
+                }),
             );
         }
 

@@ -4,7 +4,7 @@ use amux_layout::{PaneId, SplitDirection};
 use amux_notify::NotificationSource;
 use amux_term::TerminalBackend;
 
-use crate::managed_pane::PaneSurface;
+use crate::managed_pane::{PaneEntry, PaneSurface};
 use crate::{startup, AmuxApp};
 
 impl AmuxApp {
@@ -29,7 +29,10 @@ impl AmuxApp {
                 let sf_id = self
                     .panes
                     .get(&focused)
-                    .map(|m| m.active_surface().id)
+                    .map(|e| {
+                        let PaneEntry::Terminal(m) = e;
+                        m.active_surface().id
+                    })
                     .unwrap_or(0);
                 Response::ok(
                     req.id.clone(),
@@ -43,7 +46,7 @@ impl AmuxApp {
                 let mut surfaces = Vec::new();
                 for ws in &self.workspaces {
                     for pane_id in ws.tree.iter_panes() {
-                        if let Some(managed) = self.panes.get_mut(&pane_id) {
+                        if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
                             for (sf_idx, sf) in managed.surfaces.iter_mut().enumerate() {
                                 let (cols, rows) = sf.pane.dimensions();
                                 surfaces.push(serde_json::json!({
@@ -263,7 +266,7 @@ impl AmuxApp {
                 let focused = ws.focused_pane;
                 let mut pane_list = Vec::new();
                 for id in &pane_ids {
-                    if let Some(managed) = self.panes.get_mut(id) {
+                    if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(id) {
                         let sf = managed.active_surface_mut();
                         let (cols, rows) = sf.pane.dimensions();
                         let alive = sf.pane.is_alive();
@@ -409,7 +412,8 @@ impl AmuxApp {
                                 None,
                             ) {
                                 Ok(surface) => {
-                                    let managed = self.panes.get_mut(&target_pane).unwrap();
+                                    let PaneEntry::Terminal(managed) =
+                                        self.panes.get_mut(&target_pane).unwrap();
                                     managed.surfaces.push(surface);
                                     managed.active_surface_idx = managed.surfaces.len() - 1;
                                     Response::ok(
@@ -439,14 +443,16 @@ impl AmuxApp {
                             // Find and close the specific surface
                             if let Ok(sf_id) = sf_id_str.parse::<u64>() {
                                 // Find which pane owns this surface
-                                let target = self.panes.iter().find_map(|(&pid, m)| {
+                                let target = self.panes.iter().find_map(|(&pid, entry)| {
+                                    let PaneEntry::Terminal(m) = entry;
                                     m.surfaces
                                         .iter()
                                         .position(|s| s.id == sf_id)
                                         .map(|idx| (pid, idx))
                                 });
                                 if let Some((pane_id, idx)) = target {
-                                    let managed = self.panes.get_mut(&pane_id).unwrap();
+                                    let PaneEntry::Terminal(managed) =
+                                        self.panes.get_mut(&pane_id).unwrap();
                                     if managed.surfaces.len() <= 1 {
                                         self.close_pane(pane_id);
                                     } else {
@@ -468,7 +474,8 @@ impl AmuxApp {
                             }
                         } else {
                             // Close active surface in focused pane
-                            if let Some(managed) = self.panes.get_mut(&focused) {
+                            if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused)
+                            {
                                 if managed.surfaces.len() <= 1 {
                                     self.close_pane(focused);
                                 } else {
@@ -495,7 +502,8 @@ impl AmuxApp {
                     Ok(params) => {
                         if let Ok(sf_id) = params.surface_id.parse::<u64>() {
                             // Find the pane that owns this surface
-                            let found = self.panes.iter_mut().find_map(|(pid, managed)| {
+                            let found = self.panes.iter_mut().find_map(|(pid, entry)| {
+                                let PaneEntry::Terminal(managed) = entry;
                                 managed
                                     .surfaces
                                     .iter()
@@ -503,7 +511,8 @@ impl AmuxApp {
                                     .map(|idx| (*pid, idx))
                             });
                             if let Some((pid, idx)) = found {
-                                self.panes.get_mut(&pid).unwrap().active_surface_idx = idx;
+                                let PaneEntry::Terminal(m) = self.panes.get_mut(&pid).unwrap();
+                                m.active_surface_idx = idx;
                                 // Switch to the owning workspace before setting focus
                                 if let Some(ws_idx) = self
                                     .workspaces
@@ -627,7 +636,8 @@ impl AmuxApp {
     fn resolve_surface_mut(&mut self, surface_id: &str) -> Option<&mut PaneSurface> {
         if surface_id == "default" || surface_id.is_empty() {
             let focused = self.focused_pane_id();
-            return self.panes.get_mut(&focused).map(|m| m.active_surface_mut());
+            let PaneEntry::Terminal(m) = self.panes.get_mut(&focused)?;
+            return Some(m.active_surface_mut());
         }
 
         // Try as surface ID first: find which pane contains it
@@ -635,19 +645,21 @@ impl AmuxApp {
             let target_pane = self
                 .panes
                 .iter()
-                .find(|(_, m)| m.surfaces.iter().any(|s| s.id == sf_id))
+                .find(|(_, entry)| {
+                    let PaneEntry::Terminal(m) = entry;
+                    m.surfaces.iter().any(|s| s.id == sf_id)
+                })
                 .map(|(pid, _)| *pid);
 
             if let Some(pid) = target_pane {
-                return self
-                    .panes
-                    .get_mut(&pid)
-                    .and_then(|m| m.surfaces.iter_mut().find(|s| s.id == sf_id));
+                let PaneEntry::Terminal(m) = self.panes.get_mut(&pid)?;
+                return m.surfaces.iter_mut().find(|s| s.id == sf_id);
             }
 
             // Fall back to treating it as a pane ID
             if let Ok(pane_id) = surface_id.parse::<PaneId>() {
-                return self.panes.get_mut(&pane_id).map(|m| m.active_surface_mut());
+                let PaneEntry::Terminal(m) = self.panes.get_mut(&pane_id)?;
+                return Some(m.active_surface_mut());
             }
         }
 
@@ -657,15 +669,18 @@ impl AmuxApp {
     fn resolve_surface(&self, surface_id: &str) -> Option<&PaneSurface> {
         if surface_id == "default" || surface_id.is_empty() {
             let focused = self.focused_pane_id();
-            self.panes.get(&focused).map(|m| m.active_surface())
+            let PaneEntry::Terminal(m) = self.panes.get(&focused)?;
+            Some(m.active_surface())
         } else if let Ok(sf_id) = surface_id.parse::<u64>() {
-            for managed in self.panes.values() {
+            for entry in self.panes.values() {
+                let PaneEntry::Terminal(managed) = entry;
                 if let Some(sf) = managed.surfaces.iter().find(|s| s.id == sf_id) {
                     return Some(sf);
                 }
             }
             if let Ok(pane_id) = surface_id.parse::<PaneId>() {
-                self.panes.get(&pane_id).map(|m| m.active_surface())
+                let PaneEntry::Terminal(m) = self.panes.get(&pane_id)?;
+                Some(m.active_surface())
             } else {
                 None
             }

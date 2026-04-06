@@ -34,7 +34,8 @@ impl eframe::App for AmuxApp {
         const MAX_BYTES_PER_SURFACE_PER_FRAME: usize = 64 * 1024;
         let mut got_data = false;
         let mut pending_data = false;
-        for managed in self.panes.values_mut() {
+        for entry in self.panes.values_mut() {
+            let PaneEntry::Terminal(managed) = entry;
             for surface in &mut managed.surfaces {
                 let mut bytes_this_frame = 0;
                 while bytes_this_frame < MAX_BYTES_PER_SURFACE_PER_FRAME {
@@ -267,7 +268,9 @@ impl eframe::App for AmuxApp {
                                 if rect.contains(pos) && id != focused {
                                     // Clear selection on old pane
                                     let old_focused = focused;
-                                    if let Some(m) = self.panes.get_mut(&old_focused) {
+                                    if let Some(PaneEntry::Terminal(m)) =
+                                        self.panes.get_mut(&old_focused)
+                                    {
                                         m.selection = None;
                                     }
                                     self.set_focus(id);
@@ -332,7 +335,7 @@ impl eframe::App for AmuxApp {
 
         // Update window title from focused pane's active surface
         let focused_id = self.focused_pane_id();
-        if let Some(managed) = self.panes.get(&focused_id) {
+        if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&focused_id) {
             let title = managed.active_surface().pane.title();
             if !title.is_empty() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("amux — {}", title)));
