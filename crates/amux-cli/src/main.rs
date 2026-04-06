@@ -303,6 +303,81 @@ async fn main() -> anyhow::Result<()> {
                 print_response(&resp, false);
             }
         }
+        Command::BrowserExec { script, pane } => {
+            let mut params = serde_json::json!({"script": script});
+            if let Some(p) = pane {
+                params["pane_id"] = serde_json::json!(p);
+            }
+            let resp = client.call("browser.execute-script", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("Script executed");
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::BrowserEval { script, pane } => {
+            let mut params = serde_json::json!({"script": script});
+            if let Some(p) = pane {
+                params["pane_id"] = serde_json::json!(p);
+            }
+            let resp = client.call("browser.evaluate", params).await?;
+            print_response(&resp, cli.json);
+        }
+        Command::BrowserText { pane } => {
+            let params = match pane {
+                Some(p) => serde_json::json!({"pane_id": p}),
+                None => serde_json::json!({}),
+            };
+            let resp = client.call("browser.get-text", params).await?;
+            print_response(&resp, cli.json);
+        }
+        Command::BrowserSnapshot { pane } => {
+            let params = match pane {
+                Some(p) => serde_json::json!({"pane_id": p}),
+                None => serde_json::json!({}),
+            };
+            let resp = client.call("browser.snapshot", params).await?;
+            print_response(&resp, cli.json);
+        }
+        Command::BrowserDevtools { pane, open } => {
+            let mut params = serde_json::json!({});
+            if let Some(p) = pane {
+                params["pane_id"] = serde_json::json!(p);
+            }
+            if let Some(o) = open {
+                params["open"] = serde_json::json!(o);
+            }
+            let resp = client.call("browser.toggle-devtools", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("DevTools toggled");
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::BrowserConsole { pane } => {
+            let params = match pane {
+                Some(p) => serde_json::json!({"pane_id": p}),
+                None => serde_json::json!({}),
+            };
+            let resp = client.call("browser.console", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if let Some(result) = &resp.result {
+                if let Some(messages) = result.get("messages").and_then(|v| v.as_array()) {
+                    for msg in messages {
+                        if let Some(s) = msg.as_str() {
+                            println!("{}", s);
+                        }
+                    }
+                }
+            } else {
+                print_response(&resp, false);
+            }
+        }
         Command::FocusPane { pane_id } => {
             let resp = client
                 .call("pane.focus", serde_json::json!({"pane_id": pane_id}))

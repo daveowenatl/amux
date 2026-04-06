@@ -295,6 +295,196 @@ impl AmuxApp {
                     None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
                 }
             }
+            "browser.execute-script" => {
+                #[derive(serde::Deserialize)]
+                struct ScriptParams {
+                    #[serde(default)]
+                    pane_id: Option<String>,
+                    script: String,
+                }
+                match serde_json::from_value::<ScriptParams>(req.params.clone()) {
+                    Ok(params) => match self.resolve_browser_pane(params.pane_id.as_deref()) {
+                        Some(browser) => {
+                            browser.evaluate_script(&params.script);
+                            Response::ok(req.id.clone(), serde_json::json!({}))
+                        }
+                        None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                    },
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "browser.evaluate" => {
+                #[derive(serde::Deserialize)]
+                struct EvalParams {
+                    #[serde(default)]
+                    pane_id: Option<String>,
+                    script: String,
+                }
+                match serde_json::from_value::<EvalParams>(req.params.clone()) {
+                    Ok(params) => {
+                        let eval_id = format!("eval_{}", req.id);
+                        match self.resolve_browser_pane(params.pane_id.as_deref()) {
+                            Some(browser) => {
+                                browser.evaluate_with_result(&eval_id, &params.script);
+                                // Return the eval_id so the caller can poll for results
+                                Response::ok(
+                                    req.id.clone(),
+                                    serde_json::json!({"eval_id": eval_id, "status": "pending"}),
+                                )
+                            }
+                            None => {
+                                Response::err(req.id.clone(), "not_found", "no browser pane found")
+                            }
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "browser.get-text" => {
+                let eval_id = format!("text_{}", req.id);
+                let pane_id_str = Self::pane_id_param(&req.params);
+                match self.resolve_browser_pane(pane_id_str.as_deref()) {
+                    Some(browser) => {
+                        browser.get_text(&eval_id);
+                        Response::ok(
+                            req.id.clone(),
+                            serde_json::json!({"eval_id": eval_id, "status": "pending"}),
+                        )
+                    }
+                    None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                }
+            }
+            "browser.snapshot" => {
+                let eval_id = format!("snap_{}", req.id);
+                let pane_id_str = Self::pane_id_param(&req.params);
+                match self.resolve_browser_pane(pane_id_str.as_deref()) {
+                    Some(browser) => {
+                        browser.get_snapshot(&eval_id);
+                        Response::ok(
+                            req.id.clone(),
+                            serde_json::json!({"eval_id": eval_id, "status": "pending"}),
+                        )
+                    }
+                    None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                }
+            }
+            "browser.click" => {
+                #[derive(serde::Deserialize)]
+                struct ClickParams {
+                    #[serde(default)]
+                    pane_id: Option<String>,
+                    x: f64,
+                    y: f64,
+                }
+                match serde_json::from_value::<ClickParams>(req.params.clone()) {
+                    Ok(params) => match self.resolve_browser_pane(params.pane_id.as_deref()) {
+                        Some(browser) => {
+                            browser.click_at(params.x, params.y);
+                            Response::ok(req.id.clone(), serde_json::json!({}))
+                        }
+                        None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                    },
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "browser.type" => {
+                #[derive(serde::Deserialize)]
+                struct TypeParams {
+                    #[serde(default)]
+                    pane_id: Option<String>,
+                    text: String,
+                }
+                match serde_json::from_value::<TypeParams>(req.params.clone()) {
+                    Ok(params) => match self.resolve_browser_pane(params.pane_id.as_deref()) {
+                        Some(browser) => {
+                            browser.type_text(&params.text);
+                            Response::ok(req.id.clone(), serde_json::json!({}))
+                        }
+                        None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                    },
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "browser.scroll" => {
+                #[derive(serde::Deserialize)]
+                struct ScrollParams {
+                    #[serde(default)]
+                    pane_id: Option<String>,
+                    #[serde(default)]
+                    dx: f64,
+                    #[serde(default)]
+                    dy: f64,
+                }
+                match serde_json::from_value::<ScrollParams>(req.params.clone()) {
+                    Ok(params) => match self.resolve_browser_pane(params.pane_id.as_deref()) {
+                        Some(browser) => {
+                            browser.scroll_by(params.dx, params.dy);
+                            Response::ok(req.id.clone(), serde_json::json!({}))
+                        }
+                        None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                    },
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "browser.console" => {
+                let pane_id_str = Self::pane_id_param(&req.params);
+                match self.resolve_browser_pane(pane_id_str.as_deref()) {
+                    Some(browser) => {
+                        let messages = browser.drain_console();
+                        Response::ok(req.id.clone(), serde_json::json!({"messages": messages}))
+                    }
+                    None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                }
+            }
+            "browser.toggle-devtools" => {
+                #[derive(serde::Deserialize)]
+                struct DevToolsParams {
+                    #[serde(default)]
+                    pane_id: Option<String>,
+                    #[serde(default)]
+                    open: Option<bool>,
+                }
+                match serde_json::from_value::<DevToolsParams>(req.params.clone()) {
+                    Ok(params) => {
+                        match self.resolve_browser_pane(params.pane_id.as_deref()) {
+                            Some(browser) => {
+                                match params.open {
+                                    Some(true) => browser.open_devtools(),
+                                    Some(false) => browser.close_devtools(),
+                                    None => browser.open_devtools(), // toggle defaults to open
+                                }
+                                Response::ok(req.id.clone(), serde_json::json!({}))
+                            }
+                            None => {
+                                Response::err(req.id.clone(), "not_found", "no browser pane found")
+                            }
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "browser.zoom" => {
+                #[derive(serde::Deserialize)]
+                struct ZoomParams {
+                    #[serde(default)]
+                    pane_id: Option<String>,
+                    #[serde(default = "default_zoom")]
+                    level: f64,
+                }
+                fn default_zoom() -> f64 {
+                    1.0
+                }
+                match serde_json::from_value::<ZoomParams>(req.params.clone()) {
+                    Ok(params) => match self.resolve_browser_pane(params.pane_id.as_deref()) {
+                        Some(browser) => {
+                            browser.zoom(params.level);
+                            Response::ok(req.id.clone(), serde_json::json!({}))
+                        }
+                        None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                    },
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
             "pane.close" => {
                 #[derive(serde::Deserialize)]
                 struct CloseParams {

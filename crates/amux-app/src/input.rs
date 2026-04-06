@@ -324,6 +324,19 @@ impl AmuxApp {
                     return self.do_toggle_zoom();
                 }
 
+                // DevTools: Cmd+Option+I (macOS) / Ctrl+Shift+I (Windows)
+                #[cfg(target_os = "macos")]
+                let is_devtools = is_cmd && modifiers.alt && *key == egui::Key::I;
+                #[cfg(not(target_os = "macos"))]
+                let is_devtools = modifiers.ctrl && modifiers.shift && *key == egui::Key::I;
+                if is_devtools {
+                    let pane_id = self.focused_pane_id();
+                    if let Some(PaneEntry::Browser(browser)) = self.panes.get(&pane_id) {
+                        browser.open_devtools();
+                        return true;
+                    }
+                }
+
                 // Notification panel: Cmd+I / Ctrl+I
                 if is_cmd && !modifiers.shift && *key == egui::Key::I {
                     self.show_notification_panel = !self.show_notification_panel;

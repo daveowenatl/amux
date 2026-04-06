@@ -14,6 +14,11 @@ use wry::{Rect, WebViewBuilder};
 struct SharedState {
     title: String,
     url: String,
+    /// Results from JS evaluations sent back via IPC handler.
+    /// Key: request ID, Value: JSON string result.
+    eval_results: std::collections::HashMap<String, String>,
+    /// Console messages captured from the page.
+    console_messages: Vec<String>,
 }
 
 /// A browser pane backed by a platform-native webview.
@@ -53,10 +58,12 @@ impl BrowserPane {
         let state = Arc::new(Mutex::new(SharedState {
             title: String::new(),
             url: url.to_string(),
+            ..Default::default()
         }));
 
         let title_state = state.clone();
         let nav_state = state.clone();
+        let ipc_state = state.clone();
 
         let webview = WebViewBuilder::new()
             .with_bounds(bounds.to_wry_rect())
@@ -76,7 +83,55 @@ impl BrowserPane {
                 }
                 true // allow all navigations
             })
+            .with_ipc_handler(move |msg| {
+                // Messages from JS: JSON with {type, id, data}
+                let body = msg.body();
+                if let Ok(mut s) = ipc_state.lock() {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) {
+                        match parsed.get("type").and_then(|t| t.as_str()) {
+                            Some("eval_result") => {
+                                if let (Some(id), Some(data)) = (
+                                    parsed.get("id").and_then(|v| v.as_str()),
+                                    parsed.get("data"),
+                                ) {
+                                    s.eval_results.insert(id.to_string(), data.to_string());
+                                }
+                            }
+                            Some("console") => {
+                                if let Some(msg) = parsed.get("message").and_then(|v| v.as_str()) {
+                                    s.console_messages.push(msg.to_string());
+                                    // Cap at 1000 messages
+                                    if s.console_messages.len() > 1000 {
+                                        s.console_messages.remove(0);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            })
             .build_as_child(parent)?;
+
+        // Inject console capture script
+        let _ = webview.evaluate_script(
+            r#"(function(){
+                const orig = {log: console.log, warn: console.warn, error: console.error, info: console.info};
+                function wrap(level) {
+                    return function() {
+                        orig[level].apply(console, arguments);
+                        try {
+                            const msg = Array.from(arguments).map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+                            window.ipc.postMessage(JSON.stringify({type:'console', level:level, message:'['+level+'] '+msg}));
+                        } catch(e) {}
+                    };
+                }
+                console.log = wrap('log');
+                console.warn = wrap('warn');
+                console.error = wrap('error');
+                console.info = wrap('info');
+            })()"#,
+        );
 
         Ok(Self { webview, state })
     }
@@ -166,5 +221,88 @@ impl BrowserPane {
     /// Set the page zoom level.
     pub fn zoom(&self, scale_factor: f64) {
         let _ = self.webview.zoom(scale_factor);
+    }
+
+    /// Execute JavaScript and capture the result via IPC bridge.
+    /// The result will be available via `take_eval_result(id)`.
+    pub fn evaluate_with_result(&self, id: &str, js: &str) {
+        let escaped_id = id.replace('\\', "\\\\").replace('\'', "\\'");
+        let script = format!(
+            r#"(async function() {{
+                try {{
+                    const __result = await (async function() {{ {js} }})();
+                    window.ipc.postMessage(JSON.stringify({{type:'eval_result', id:'{escaped_id}', data:__result}}));
+                }} catch(e) {{
+                    window.ipc.postMessage(JSON.stringify({{type:'eval_result', id:'{escaped_id}', data:{{"error": e.message}}}}));
+                }}
+            }})()"#
+        );
+        let _ = self.webview.evaluate_script(&script);
+    }
+
+    /// Take a pending evaluation result by ID (returns None if not yet available).
+    pub fn take_eval_result(&self, id: &str) -> Option<String> {
+        self.state.lock().ok()?.eval_results.remove(id)
+    }
+
+    /// Get visible page text (document.body.innerText).
+    pub fn get_text(&self, id: &str) {
+        self.evaluate_with_result(id, "return document.body ? document.body.innerText : ''");
+    }
+
+    /// Get DOM snapshot (document.documentElement.outerHTML).
+    pub fn get_snapshot(&self, id: &str) {
+        self.evaluate_with_result(
+            id,
+            "return document.documentElement ? document.documentElement.outerHTML : ''",
+        );
+    }
+
+    /// Click at page coordinates.
+    pub fn click_at(&self, x: f64, y: f64) {
+        let _ = self
+            .webview
+            .evaluate_script(&format!("document.elementFromPoint({x},{y})?.click()"));
+    }
+
+    /// Type text into the currently focused element.
+    pub fn type_text(&self, text: &str) {
+        let escaped = text
+            .replace('\\', "\\\\")
+            .replace('\'', "\\'")
+            .replace('\n', "\\n");
+        let _ = self.webview.evaluate_script(&format!(
+            r#"(function(){{
+                const el = document.activeElement;
+                if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) {{
+                    const text = '{escaped}';
+                    if (el.isContentEditable) {{
+                        document.execCommand('insertText', false, text);
+                    }} else {{
+                        const start = el.selectionStart || 0;
+                        const end = el.selectionEnd || 0;
+                        el.value = el.value.substring(0, start) + text + el.value.substring(end);
+                        el.selectionStart = el.selectionEnd = start + text.length;
+                        el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    }}
+                }}
+            }})()"#
+        ));
+    }
+
+    /// Scroll the page by (dx, dy) pixels.
+    pub fn scroll_by(&self, dx: f64, dy: f64) {
+        let _ = self
+            .webview
+            .evaluate_script(&format!("window.scrollBy({dx},{dy})"));
+    }
+
+    /// Drain captured console messages.
+    pub fn drain_console(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .ok()
+            .map(|mut s| std::mem::take(&mut s.console_messages))
+            .unwrap_or_default()
     }
 }

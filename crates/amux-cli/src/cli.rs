@@ -116,6 +116,55 @@ pub(crate) enum Command {
         #[arg(long)]
         pane: Option<String>,
     },
+    /// Execute JavaScript in browser pane (fire-and-forget)
+    #[command(name = "browser-exec")]
+    BrowserExec {
+        /// JavaScript code to execute
+        script: String,
+        /// Target pane ID
+        #[arg(long)]
+        pane: Option<String>,
+    },
+    /// Evaluate JavaScript and return result
+    #[command(name = "browser-eval")]
+    BrowserEval {
+        /// JavaScript expression (use 'return <expr>' for a value)
+        script: String,
+        /// Target pane ID
+        #[arg(long)]
+        pane: Option<String>,
+    },
+    /// Get visible page text
+    #[command(name = "browser-text")]
+    BrowserText {
+        /// Target pane ID
+        #[arg(long)]
+        pane: Option<String>,
+    },
+    /// Get page DOM snapshot (HTML)
+    #[command(name = "browser-snapshot")]
+    BrowserSnapshot {
+        /// Target pane ID
+        #[arg(long)]
+        pane: Option<String>,
+    },
+    /// Toggle browser DevTools
+    #[command(name = "browser-devtools")]
+    BrowserDevtools {
+        /// Target pane ID
+        #[arg(long)]
+        pane: Option<String>,
+        /// Explicitly open or close (toggles if omitted)
+        #[arg(long)]
+        open: Option<bool>,
+    },
+    /// Drain browser console messages
+    #[command(name = "browser-console")]
+    BrowserConsole {
+        /// Target pane ID
+        #[arg(long)]
+        pane: Option<String>,
+    },
     /// Focus a specific pane
     FocusPane {
         /// Pane ID to focus

@@ -187,6 +187,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
                 pending_browser_panes: Vec::new(),
+                pending_browser_restores: state.pending_browser_restores,
                 omnibar_state: HashMap::new(),
             }))
         }),
@@ -207,6 +208,9 @@ pub(crate) struct StartupState {
     pub(crate) next_surface_id: u64,
     pub(crate) sidebar: SidebarState,
     pub(crate) notifications: NotificationStore,
+    /// Browser panes that need to be created once the window handle is available.
+    /// Tuple: (pane_id, url).
+    pub(crate) pending_browser_restores: Vec<(PaneId, String)>,
 }
 
 /// Create a fresh default startup (one workspace, one pane).
@@ -251,6 +255,7 @@ pub(crate) fn fresh_startup(
             drag: None,
         },
         notifications: NotificationStore::new(),
+        pending_browser_restores: Vec::new(),
     })
 }
 
@@ -263,9 +268,19 @@ pub(crate) fn restore_session(
 ) -> StartupState {
     let mut workspaces = Vec::new();
     let mut panes: HashMap<PaneId, PaneEntry> = HashMap::new();
+    let mut pending_browser_restores: Vec<(PaneId, String)> = Vec::new();
 
     for saved_ws in &session.workspaces {
         for (&pane_id, saved_pane) in &saved_ws.panes {
+            // Browser panes: defer creation until window handle is available
+            if saved_pane.panel_type == amux_session::PANEL_TYPE_BROWSER {
+                if let Some(ref browser_state) = saved_pane.browser {
+                    pending_browser_restores.push((pane_id, browser_state.url.clone()));
+                    // Insert a placeholder — will be replaced in create_pending_browser_panes
+                    continue;
+                }
+            }
+
             if saved_pane.panel_type != amux_session::PANEL_TYPE_TERMINAL {
                 tracing::warn!(
                     "Skipping pane {} with unsupported panel type {:?}",
@@ -334,8 +349,13 @@ pub(crate) fn restore_session(
         }
 
         // Verify all pane IDs in the tree were actually restored
+        // (browser panes are pending, so count them too)
         let tree_pane_ids = saved_ws.tree.iter_panes();
-        let all_panes_restored = tree_pane_ids.iter().all(|id| panes.contains_key(id));
+        let pending_ids: std::collections::HashSet<PaneId> =
+            pending_browser_restores.iter().map(|(id, _)| *id).collect();
+        let all_panes_restored = tree_pane_ids
+            .iter()
+            .all(|id| panes.contains_key(id) || pending_ids.contains(id));
         if !all_panes_restored {
             tracing::warn!(
                 "Skipping workspace {} (tree references missing panes)",
@@ -423,6 +443,7 @@ pub(crate) fn restore_session(
         next_surface_id: session.next_surface_id,
         sidebar,
         notifications: store,
+        pending_browser_restores,
     }
 }
 

@@ -152,6 +152,7 @@ name = "amux-browser"
 version = "0.1.0"
 dependencies = [
  "raw-window-handle",
+ "serde_json",
  "tracing",
  "wry",
 ]

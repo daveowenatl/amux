@@ -159,6 +159,8 @@ struct AmuxApp {
     /// Pending browser pane creation requests (URL). Processed in update()
     /// where the window handle is available.
     pending_browser_panes: Vec<String>,
+    /// Browser panes being restored from session (pane_id already in tree).
+    pending_browser_restores: Vec<(PaneId, String)>,
     /// Per-browser-pane omnibar editing state.
     omnibar_state: HashMap<PaneId, OmnibarState>,
 }
@@ -268,17 +270,18 @@ impl AmuxApp {
     /// Process pending browser pane creation requests.
     /// Must be called from update() where `frame` (with HasWindowHandle) is available.
     fn create_pending_browser_panes(&mut self, frame: &eframe::Frame) {
+        let bounds = amux_browser::BrowserRect {
+            x: 0.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+        };
+
+        // New browser panes (from IPC/CLI)
         let urls: Vec<String> = self.pending_browser_panes.drain(..).collect();
         for url in urls {
             let pane_id = self.next_pane_id;
             self.next_pane_id += 1;
-
-            let bounds = amux_browser::BrowserRect {
-                x: 0.0,
-                y: 0.0,
-                width: 800.0,
-                height: 600.0,
-            };
 
             match amux_browser::BrowserPane::new(frame, bounds, &url) {
                 Ok(browser) => {
@@ -291,6 +294,20 @@ impl AmuxApp {
                 }
                 Err(e) => {
                     tracing::error!("Failed to create browser pane: {}", e);
+                }
+            }
+        }
+
+        // Restored browser panes (pane_id already in tree)
+        let restores: Vec<(PaneId, String)> = self.pending_browser_restores.drain(..).collect();
+        for (pane_id, url) in restores {
+            match amux_browser::BrowserPane::new(frame, bounds, &url) {
+                Ok(browser) => {
+                    self.panes.insert(pane_id, PaneEntry::Browser(browser));
+                    tracing::info!("Restored browser pane {} with URL: {}", pane_id, url);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to restore browser pane {}: {}", pane_id, e);
                 }
             }
         }
@@ -316,57 +333,73 @@ impl AmuxApp {
         for ws in &self.workspaces {
             let mut saved_panes = std::collections::HashMap::new();
             for &pane_id in &ws.tree.iter_panes() {
-                if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
-                    let surfaces: Vec<amux_session::SavedSurface> = managed
-                        .surfaces
-                        .iter()
-                        .map(|sf| {
-                            // Prefer shell-reported CWD (metadata.cwd from set-cwd/OSC 7),
-                            // then fall back to pane.working_dir() and OS-level queries.
-                            let working_dir = sf.metadata.cwd.clone().or_else(|| {
-                                sf.pane
-                                    .working_dir()
-                                    .and_then(|url| url.to_file_path().ok())
-                                    .map(|p| p.to_string_lossy().to_string())
-                                    .or_else(|| sf.pane.child_pid().and_then(get_cwd_from_pid))
-                            });
-                            let raw_scrollback = sf
-                                .pane
-                                .read_scrollback_text(amux_session::MAX_SCROLLBACK_LINES);
-                            let truncated = amux_session::truncate_scrollback(
-                                &raw_scrollback,
-                                amux_session::MAX_SCROLLBACK_BYTES,
-                            );
-                            let scrollback = if truncated.len() == raw_scrollback.len() {
-                                raw_scrollback
-                            } else {
-                                truncated.to_string()
-                            };
-                            let (cols, rows) = sf.pane.dimensions();
-                            amux_session::SavedSurface {
-                                id: sf.id,
-                                title: sf.pane.title().to_string(),
-                                working_dir,
-                                scrollback,
-                                cols: cols as u16,
-                                rows: rows as u16,
-                                git_branch: sf.metadata.git_branch.clone(),
-                                git_dirty: sf.metadata.git_dirty,
-                                pr_number: sf.metadata.pr_number,
-                                pr_title: sf.metadata.pr_title.clone(),
-                                pr_state: sf.metadata.pr_state.clone(),
-                                user_title: sf.user_title.clone(),
-                            }
-                        })
-                        .collect();
-                    saved_panes.insert(
-                        pane_id,
-                        amux_session::SavedManagedPane {
-                            panel_type: managed.panel_type().to_string(),
-                            surfaces,
-                            active_surface_idx: managed.active_surface_idx,
-                        },
-                    );
+                match self.panes.get(&pane_id) {
+                    Some(PaneEntry::Terminal(managed)) => {
+                        let surfaces: Vec<amux_session::SavedSurface> = managed
+                            .surfaces
+                            .iter()
+                            .map(|sf| {
+                                let working_dir = sf.metadata.cwd.clone().or_else(|| {
+                                    sf.pane
+                                        .working_dir()
+                                        .and_then(|url| url.to_file_path().ok())
+                                        .map(|p| p.to_string_lossy().to_string())
+                                        .or_else(|| sf.pane.child_pid().and_then(get_cwd_from_pid))
+                                });
+                                let raw_scrollback = sf
+                                    .pane
+                                    .read_scrollback_text(amux_session::MAX_SCROLLBACK_LINES);
+                                let truncated = amux_session::truncate_scrollback(
+                                    &raw_scrollback,
+                                    amux_session::MAX_SCROLLBACK_BYTES,
+                                );
+                                let scrollback = if truncated.len() == raw_scrollback.len() {
+                                    raw_scrollback
+                                } else {
+                                    truncated.to_string()
+                                };
+                                let (cols, rows) = sf.pane.dimensions();
+                                amux_session::SavedSurface {
+                                    id: sf.id,
+                                    title: sf.pane.title().to_string(),
+                                    working_dir,
+                                    scrollback,
+                                    cols: cols as u16,
+                                    rows: rows as u16,
+                                    git_branch: sf.metadata.git_branch.clone(),
+                                    git_dirty: sf.metadata.git_dirty,
+                                    pr_number: sf.metadata.pr_number,
+                                    pr_title: sf.metadata.pr_title.clone(),
+                                    pr_state: sf.metadata.pr_state.clone(),
+                                    user_title: sf.user_title.clone(),
+                                }
+                            })
+                            .collect();
+                        saved_panes.insert(
+                            pane_id,
+                            amux_session::SavedManagedPane {
+                                panel_type: managed.panel_type().to_string(),
+                                surfaces,
+                                active_surface_idx: managed.active_surface_idx,
+                                browser: None,
+                            },
+                        );
+                    }
+                    Some(PaneEntry::Browser(browser)) => {
+                        saved_panes.insert(
+                            pane_id,
+                            amux_session::SavedManagedPane {
+                                panel_type: amux_session::PANEL_TYPE_BROWSER.to_string(),
+                                surfaces: vec![],
+                                active_surface_idx: 0,
+                                browser: Some(amux_session::SavedBrowserPane {
+                                    url: browser.url().unwrap_or_default(),
+                                    zoom_level: 1.0,
+                                }),
+                            },
+                        );
+                    }
+                    None => {}
                 }
             }
             saved_workspaces.push(amux_session::SavedWorkspace {

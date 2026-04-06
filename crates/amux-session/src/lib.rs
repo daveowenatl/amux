@@ -90,13 +90,30 @@ pub struct SavedManagedPane {
     pub panel_type: String,
     pub surfaces: Vec<SavedSurface>,
     pub active_surface_idx: usize,
+    /// Browser pane state (only set when panel_type == "browser").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<SavedBrowserPane>,
 }
 
 /// The panel type identifier for terminal panes.
 pub const PANEL_TYPE_TERMINAL: &str = "terminal";
+/// The panel type identifier for browser panes.
+pub const PANEL_TYPE_BROWSER: &str = "browser";
 
 fn default_panel_type() -> String {
     PANEL_TYPE_TERMINAL.to_string()
+}
+
+/// Saved state for a browser pane (URL, zoom, DevTools state).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SavedBrowserPane {
+    pub url: String,
+    #[serde(default = "default_zoom_level")]
+    pub zoom_level: f64,
+}
+
+fn default_zoom_level() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -267,6 +284,7 @@ mod tests {
                     user_title: None,
                 }],
                 active_surface_idx: 0,
+                browser: None,
             },
         );
 
