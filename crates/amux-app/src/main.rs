@@ -189,6 +189,23 @@ impl AmuxApp {
         (cell_width, cell_height)
     }
 
+    /// Like `cell_dimensions` but takes an `egui::Context` instead of `Ui`.
+    /// Used by code paths (IME, hyperlinks) that run outside a `Ui` scope.
+    pub(crate) fn cell_dimensions_from_ctx(&self, ctx: &egui::Context) -> (f32, f32) {
+        #[cfg(feature = "gpu-renderer")]
+        if let Some(gpu) = &self.gpu_renderer {
+            let cw = gpu.cell_width();
+            let ch = gpu.cell_height();
+            if cw > 0.0 && ch > 0.0 {
+                return (cw, ch);
+            }
+        }
+        ctx.fonts(|f| {
+            let fid = egui::FontId::monospace(self.font_size);
+            (f.glyph_width(&fid, 'M'), f.row_height(&fid))
+        })
+    }
+
     fn active_workspace(&self) -> &Workspace {
         &self.workspaces[self.active_workspace_idx]
     }
