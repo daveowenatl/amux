@@ -453,8 +453,10 @@ impl AmuxApp {
                         ) {
                             // Re-borrow managed after spawn_surface
                             if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
-                                m.surfaces.push(surface);
-                                m.active_surface_idx = m.surfaces.len() - 1;
+                                // Insert right after the active tab (cmux behavior).
+                                let insert_at = (m.active_surface_idx + 1).min(m.surfaces.len());
+                                m.surfaces.insert(insert_at, surface);
+                                m.active_surface_idx = insert_at;
                             }
                         }
                         return; // skip further rendering this frame

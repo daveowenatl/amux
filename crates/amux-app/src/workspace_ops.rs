@@ -129,8 +129,11 @@ impl AmuxApp {
         ) {
             Ok(surface) => {
                 if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused) {
-                    managed.surfaces.push(surface);
-                    managed.active_surface_idx = managed.surfaces.len() - 1;
+                    // Insert right after the active tab (cmux behavior).
+                    // If active is a browser tab, clamp to end of terminal list.
+                    let insert_at = (managed.active_surface_idx + 1).min(managed.surfaces.len());
+                    managed.surfaces.insert(insert_at, surface);
+                    managed.active_surface_idx = insert_at;
                     Some(sf_id)
                 } else {
                     None

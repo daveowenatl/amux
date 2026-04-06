@@ -337,12 +337,23 @@ impl AmuxApp {
                     browser.focus();
                     self.panes
                         .insert(browser_pane_id, PaneEntry::Browser(browser));
-                    // Add as a tab in the focused ManagedPane (not a tree split)
+                    // Add as a tab in the focused ManagedPane (not a tree split).
+                    // Insert right after the active tab (cmux behavior).
                     let focused = self.focused_pane_id();
                     if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused) {
-                        managed.browser_tab_ids.push(browser_pane_id);
-                        managed.active_surface_idx =
-                            managed.surfaces.len() + managed.browser_tab_ids.len() - 1;
+                        let browser_insert = if managed.active_surface_idx >= managed.surfaces.len()
+                        {
+                            // Active is a browser tab — insert right after it
+                            let browser_idx = managed.active_surface_idx - managed.surfaces.len();
+                            (browser_idx + 1).min(managed.browser_tab_ids.len())
+                        } else {
+                            // Active is a terminal tab — append to end of browser list
+                            managed.browser_tab_ids.len()
+                        };
+                        managed
+                            .browser_tab_ids
+                            .insert(browser_insert, browser_pane_id);
+                        managed.active_surface_idx = managed.surfaces.len() + browser_insert;
                     }
                     tracing::info!(
                         "Created browser tab {} in pane {} with URL: {}",
