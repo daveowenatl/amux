@@ -25,6 +25,11 @@ impl eframe::App for AmuxApp {
             self.menu_attached = menu_bar::attach_to_window(&self.menu, _frame);
         }
 
+        // Create any pending browser panes (needs window handle from frame)
+        if !self.pending_browser_panes.is_empty() {
+            self.create_pending_browser_panes(_frame);
+        }
+
         self.selection_changed = false;
         self.app_focused = ctx.input(|i| i.focused);
 

@@ -156,6 +156,9 @@ struct AmuxApp {
     menu_attached: bool,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
+    /// Pending browser pane creation requests (URL). Processed in update()
+    /// where the window handle is available.
+    pending_browser_panes: Vec<String>,
 }
 
 struct TabDragState {
@@ -224,6 +227,43 @@ impl AmuxApp {
 
     fn focused_pane_id(&self) -> PaneId {
         self.active_workspace().focused_pane
+    }
+
+    /// Queue a browser pane creation. Deferred to update() where the window handle
+    /// is available.
+    fn queue_browser_pane(&mut self, url: String) {
+        self.pending_browser_panes.push(url);
+    }
+
+    /// Process pending browser pane creation requests.
+    /// Must be called from update() where `frame` (with HasWindowHandle) is available.
+    fn create_pending_browser_panes(&mut self, frame: &eframe::Frame) {
+        let urls: Vec<String> = self.pending_browser_panes.drain(..).collect();
+        for url in urls {
+            let pane_id = self.next_pane_id;
+            self.next_pane_id += 1;
+
+            let bounds = amux_browser::BrowserRect {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+            };
+
+            match amux_browser::BrowserPane::new(frame, bounds, &url) {
+                Ok(browser) => {
+                    self.panes.insert(pane_id, PaneEntry::Browser(browser));
+                    let ws = self.active_workspace_mut();
+                    ws.tree
+                        .split(ws.focused_pane, SplitDirection::Vertical, pane_id);
+                    ws.focused_pane = pane_id;
+                    tracing::info!("Created browser pane {} with URL: {}", pane_id, url);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to create browser pane: {}", e);
+                }
+            }
+        }
     }
 
     /// Drain any pending PTY bytes into the terminal state machine so that

@@ -192,6 +192,19 @@ async fn main() -> anyhow::Result<()> {
                 print_response(&resp, false);
             }
         }
+        Command::Browser { url } => {
+            let url = url.unwrap_or_else(|| "https://google.com".to_string());
+            let resp = client
+                .call("pane.create-browser", serde_json::json!({"url": url}))
+                .await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("Browser pane opened: {}", url);
+            } else {
+                print_response(&resp, false);
+            }
+        }
         Command::FocusPane { pane_id } => {
             let resp = client
                 .call("pane.focus", serde_json::json!({"pane_id": pane_id}))

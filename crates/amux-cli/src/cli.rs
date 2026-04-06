@@ -67,6 +67,11 @@ pub(crate) enum Command {
         #[arg(long)]
         pane: Option<String>,
     },
+    /// Open a browser pane
+    Browser {
+        /// URL to open (defaults to Google)
+        url: Option<String>,
+    },
     /// Focus a specific pane
     FocusPane {
         /// Pane ID to focus

@@ -19,6 +19,34 @@ impl AmuxApp {
         rect: egui::Rect,
         is_focused: bool,
     ) {
+        // Handle browser panes: just update bounds, the webview renders itself
+        if let Some(PaneEntry::Browser(browser)) = self.panes.get(&pane_id) {
+            let content_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.min.x, rect.min.y + TAB_CONTENT_TOP_INSET),
+                rect.max,
+            );
+            browser.set_bounds(amux_browser::BrowserRect {
+                x: content_rect.min.x as f64,
+                y: content_rect.min.y as f64,
+                width: content_rect.width() as f64,
+                height: content_rect.height() as f64,
+            });
+            // Draw a simple tab bar for the browser pane
+            let tab_rect =
+                egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), TAB_BAR_HEIGHT));
+            ui.painter()
+                .rect_filled(tab_rect, 0.0, self.theme.tab_bar_bg());
+            let title = browser.url().unwrap_or_else(|| "Browser".to_string());
+            ui.painter().text(
+                tab_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                title,
+                egui::FontId::proportional(12.0),
+                egui::Color32::from_gray(200),
+            );
+            return;
+        }
+
         let managed = match self.panes.get_mut(&pane_id) {
             Some(PaneEntry::Terminal(m)) => m,
             _ => return,

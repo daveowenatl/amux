@@ -6,4 +6,4 @@
 
 mod pane;
 
-pub use pane::BrowserPane;
+pub use pane::{BrowserPane, BrowserRect};

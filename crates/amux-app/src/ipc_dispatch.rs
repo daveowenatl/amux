@@ -199,6 +199,23 @@ impl AmuxApp {
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
                 }
             }
+            "pane.create-browser" => {
+                #[derive(serde::Deserialize)]
+                struct BrowserParams {
+                    #[serde(default = "default_browser_url")]
+                    url: String,
+                }
+                fn default_browser_url() -> String {
+                    "https://google.com".to_string()
+                }
+                match serde_json::from_value::<BrowserParams>(req.params.clone()) {
+                    Ok(params) => {
+                        self.queue_browser_pane(params.url);
+                        Response::ok(req.id.clone(), serde_json::json!({"status": "queued"}))
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
             "pane.close" => {
                 #[derive(serde::Deserialize)]
                 struct CloseParams {
