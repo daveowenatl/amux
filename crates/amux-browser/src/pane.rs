@@ -5,9 +5,10 @@
 //! the pane's content area (below the tab bar).
 
 use raw_window_handle::HasWindowHandle;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use wry::dpi::{LogicalPosition, LogicalSize};
-use wry::{Rect, WebViewBuilder};
+use wry::{Rect, WebContext, WebViewBuilder};
 
 /// Shared state updated by webview callbacks (title changes, navigation).
 #[derive(Default)]
@@ -19,12 +20,17 @@ struct SharedState {
     eval_results: std::collections::HashMap<String, String>,
     /// Console messages captured from the page.
     console_messages: Vec<String>,
+    /// URLs requested via window.open() — queued for the app to handle.
+    popup_requests: Vec<String>,
 }
 
 /// A browser pane backed by a platform-native webview.
 pub struct BrowserPane {
     webview: wry::WebView,
     state: Arc<Mutex<SharedState>>,
+    profile: String,
+    #[allow(dead_code)]
+    web_context: Option<WebContext>,
 }
 
 /// Logical rectangle for positioning the webview within its parent window.
@@ -45,16 +51,81 @@ impl BrowserRect {
     }
 }
 
+/// Returns the base directory for browser profile data.
+fn profiles_base_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("Library/Application Support/amux/browser-profiles")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("amux/browser-profiles")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("amux/browser-profiles")
+    }
+}
+
+/// List available profile names by scanning the profiles directory.
+pub fn list_profiles() -> Vec<String> {
+    let base = profiles_base_dir();
+    let mut profiles = vec!["default".to_string()];
+    if let Ok(entries) = std::fs::read_dir(&base) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                if let Some(name) = entry.file_name().to_str() {
+                    if name != "default" {
+                        profiles.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    profiles.sort();
+    profiles.dedup();
+    profiles
+}
+
+/// Delete a profile's data directory.
+pub fn delete_profile(name: &str) -> std::io::Result<()> {
+    if name == "default" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "cannot delete default profile",
+        ));
+    }
+    let path = profiles_base_dir().join(name);
+    if path.exists() {
+        std::fs::remove_dir_all(path)?;
+    }
+    Ok(())
+}
+
 impl BrowserPane {
     /// Create a new browser pane as a child view of the given window.
     ///
     /// `bounds` specifies the logical position and size within the parent window.
     /// `url` is the initial URL to load (use "about:blank" for empty).
+    /// `profile` selects the data isolation directory (None = "default").
     pub fn new<W: HasWindowHandle>(
         parent: &W,
         bounds: BrowserRect,
         url: &str,
+        profile: Option<&str>,
     ) -> Result<Self, wry::Error> {
+        let profile_name = profile.unwrap_or("default").to_string();
+        let profile_dir = profiles_base_dir().join(&profile_name);
+        let _ = std::fs::create_dir_all(&profile_dir);
+
+        let mut web_context = WebContext::new(Some(profile_dir));
+
         let state = Arc::new(Mutex::new(SharedState {
             title: String::new(),
             url: url.to_string(),
@@ -64,8 +135,9 @@ impl BrowserPane {
         let title_state = state.clone();
         let nav_state = state.clone();
         let ipc_state = state.clone();
+        let popup_state = state.clone();
 
-        let webview = WebViewBuilder::new()
+        let webview = WebViewBuilder::new_with_web_context(&mut web_context)
             .with_bounds(bounds.to_wry_rect())
             .with_url(url)
             .with_visible(true)
@@ -83,7 +155,14 @@ impl BrowserPane {
                 }
                 true // allow all navigations
             })
-            .with_ipc_handler(move |msg| {
+            .with_new_window_req_handler(move |url, _req| {
+                // Queue popup URLs for the app to open as new browser panes
+                if let Ok(mut s) = popup_state.lock() {
+                    s.popup_requests.push(url);
+                }
+                wry::NewWindowResponse::Deny
+            })
+            .with_ipc_handler(move |msg: wry::http::Request<String>| {
                 // Messages from JS: JSON with {type, id, data}
                 let body = msg.body();
                 if let Ok(mut s) = ipc_state.lock() {
@@ -133,7 +212,26 @@ impl BrowserPane {
             })()"#,
         );
 
-        Ok(Self { webview, state })
+        Ok(Self {
+            webview,
+            state,
+            profile: profile_name,
+            web_context: Some(web_context),
+        })
+    }
+
+    /// Get the active profile name.
+    pub fn profile(&self) -> &str {
+        &self.profile
+    }
+
+    /// Drain pending popup URLs (from window.open() calls).
+    pub fn drain_popup_requests(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .ok()
+            .map(|mut s| std::mem::take(&mut s.popup_requests))
+            .unwrap_or_default()
     }
 
     /// Update the webview's position and size within the parent window.

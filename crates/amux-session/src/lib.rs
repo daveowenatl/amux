@@ -104,12 +104,18 @@ fn default_panel_type() -> String {
     PANEL_TYPE_TERMINAL.to_string()
 }
 
-/// Saved state for a browser pane (URL, zoom, DevTools state).
+/// Saved state for a browser pane (URL, zoom, profile).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SavedBrowserPane {
     pub url: String,
     #[serde(default = "default_zoom_level")]
     pub zoom_level: f64,
+    #[serde(default = "default_profile")]
+    pub profile: String,
+}
+
+fn default_profile() -> String {
+    "default".to_string()
 }
 
 fn default_zoom_level() -> f64 {

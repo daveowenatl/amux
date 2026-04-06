@@ -151,6 +151,7 @@ dependencies = [
 name = "amux-browser"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "raw-window-handle",
  "serde_json",
  "tracing",

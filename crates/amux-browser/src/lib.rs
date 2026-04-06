@@ -6,4 +6,4 @@
 
 mod pane;
 
-pub use pane::{BrowserPane, BrowserRect};
+pub use pane::{delete_profile, list_profiles, BrowserPane, BrowserRect};

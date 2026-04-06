@@ -9,3 +9,4 @@ wry = { version = "0.55", features = ["devtools"] }
 raw-window-handle.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+dirs.workspace = true

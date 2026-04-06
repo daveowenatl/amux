@@ -485,6 +485,33 @@ impl AmuxApp {
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
                 }
             }
+            "browser.list-profiles" => {
+                let profiles = amux_browser::list_profiles();
+                Response::ok(req.id.clone(), serde_json::json!({"profiles": profiles}))
+            }
+            "browser.delete-profile" => {
+                #[derive(serde::Deserialize)]
+                struct DeleteProfileParams {
+                    name: String,
+                }
+                match serde_json::from_value::<DeleteProfileParams>(req.params.clone()) {
+                    Ok(params) => match amux_browser::delete_profile(&params.name) {
+                        Ok(()) => Response::ok(req.id.clone(), serde_json::json!({})),
+                        Err(e) => Response::err(req.id.clone(), "delete_failed", &e.to_string()),
+                    },
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "browser.get-profile" => {
+                let pane_id_str = Self::pane_id_param(&req.params);
+                match self.resolve_browser_pane_ref(pane_id_str.as_deref()) {
+                    Some(browser) => Response::ok(
+                        req.id.clone(),
+                        serde_json::json!({"profile": browser.profile()}),
+                    ),
+                    None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                }
+            }
             "pane.close" => {
                 #[derive(serde::Deserialize)]
                 struct CloseParams {

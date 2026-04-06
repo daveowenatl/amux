@@ -283,7 +283,7 @@ impl AmuxApp {
             let pane_id = self.next_pane_id;
             self.next_pane_id += 1;
 
-            match amux_browser::BrowserPane::new(frame, bounds, &url) {
+            match amux_browser::BrowserPane::new(frame, bounds, &url, None) {
                 Ok(browser) => {
                     self.panes.insert(pane_id, PaneEntry::Browser(browser));
                     let ws = self.active_workspace_mut();
@@ -301,7 +301,7 @@ impl AmuxApp {
         // Restored browser panes (pane_id already in tree)
         let restores: Vec<(PaneId, String)> = self.pending_browser_restores.drain(..).collect();
         for (pane_id, url) in restores {
-            match amux_browser::BrowserPane::new(frame, bounds, &url) {
+            match amux_browser::BrowserPane::new(frame, bounds, &url, None) {
                 Ok(browser) => {
                     self.panes.insert(pane_id, PaneEntry::Browser(browser));
                     tracing::info!("Restored browser pane {} with URL: {}", pane_id, url);
@@ -395,6 +395,7 @@ impl AmuxApp {
                                 browser: Some(amux_session::SavedBrowserPane {
                                     url: browser.url().unwrap_or_default(),
                                     zoom_level: 1.0,
+                                    profile: browser.profile().to_string(),
                                 }),
                             },
                         );

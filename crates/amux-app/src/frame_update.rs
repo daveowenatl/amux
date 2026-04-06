@@ -26,8 +26,19 @@ impl eframe::App for AmuxApp {
         }
 
         // Create any pending browser panes (needs window handle from frame)
-        if !self.pending_browser_panes.is_empty() {
+        if !self.pending_browser_panes.is_empty() || !self.pending_browser_restores.is_empty() {
             self.create_pending_browser_panes(_frame);
+        }
+
+        // Drain popup requests from browser panes → queue as new browser panes
+        let popup_urls: Vec<String> = self
+            .panes
+            .values()
+            .filter_map(|e| e.as_browser())
+            .flat_map(|b| b.drain_popup_requests())
+            .collect();
+        for url in popup_urls {
+            self.queue_browser_pane(url);
         }
 
         self.selection_changed = false;
