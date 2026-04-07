@@ -474,9 +474,9 @@ impl AmuxApp {
             for btn in &toolbar_buttons {
                 let hovered = hover_pos.is_some_and(|p| btn.rect.contains(p));
                 let color = if hovered {
-                    egui::Color32::from_gray(200)
+                    egui::Color32::from_gray(240)
                 } else {
-                    egui::Color32::from_gray(100)
+                    egui::Color32::from_gray(180)
                 };
                 match btn.action {
                     ToolbarAction::NewTerminal => {
