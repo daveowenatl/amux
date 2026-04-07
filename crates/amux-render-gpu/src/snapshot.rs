@@ -142,8 +142,7 @@ impl TerminalSnapshot {
             // Backend manages viewport scrolling internally (e.g., libghostty).
             // read_screen_cells returns the already-scrolled viewport.
             let total = backend.scrollback_rows();
-            let vp_rows = backend.dimensions().1;
-            let vp_start = total.saturating_sub(vp_rows);
+            let vp_start = total.saturating_sub(rows);
             (backend.read_screen_cells(0), vp_start)
         } else {
             let total = backend.scrollback_rows();
