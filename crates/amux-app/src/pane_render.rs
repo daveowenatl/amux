@@ -20,19 +20,14 @@ impl AmuxApp {
         is_focused: bool,
     ) {
         // Collect info we need before borrowing panes mutably
-        let (active_is_browser, active_surface_idx, browser_tab_ids, active_browser_id) =
+        let (active_is_browser, active_browser_id, browser_pane_ids) =
             match self.panes.get(&pane_id) {
                 Some(PaneEntry::Terminal(m)) => {
                     let active_bid = match m.active_tab() {
                         managed_pane::ActiveTab::Browser(bid) => Some(bid),
                         _ => None,
                     };
-                    (
-                        m.active_is_browser(),
-                        m.active_surface_idx,
-                        m.browser_tab_ids.clone(),
-                        active_bid,
-                    )
+                    (m.active_is_browser(), active_bid, m.browser_pane_ids())
                 }
                 _ => return,
             };
@@ -44,14 +39,15 @@ impl AmuxApp {
         let overlay_open = self.show_notification_panel
             || self.rename_modal.is_some()
             || self.find_state.is_some();
-        for &bid in &browser_tab_ids {
+        for &bid in &browser_pane_ids {
             if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
                 b.set_visible(active_browser_id == Some(bid) && !overlay_open);
             }
         }
 
-        // Pre-collect browser tab info and favicon textures before mutable borrow
-        let browser_tab_info: Vec<(String, Option<egui::TextureId>)> = browser_tab_ids
+        // Pre-collect browser tab info and favicon textures before mutable borrow.
+        // Build a map from browser PaneId to (title, icon_tex) for tab rendering.
+        let browser_tab_info: HashMap<PaneId, (String, Option<egui::TextureId>)> = browser_pane_ids
             .iter()
             .map(|&bid| {
                 let (title, favicon_url) = self
@@ -69,7 +65,7 @@ impl AmuxApp {
                     })
                     .unwrap_or_else(|| ("Browser".to_string(), None));
                 let icon_tex = favicon_url.and_then(|url| self.get_favicon(ui.ctx(), &url, bid));
-                (title, icon_tex)
+                (bid, (title, icon_tex))
             })
             .collect();
 
@@ -77,7 +73,6 @@ impl AmuxApp {
             Some(PaneEntry::Terminal(m)) => m,
             _ => return,
         };
-        let _ = active_surface_idx; // used later in tab rendering
 
         // Always show tab bar
         let tab_rect =
@@ -103,7 +98,7 @@ impl AmuxApp {
             painter.hline(tab_rect.x_range(), tab_rect.min.y, bar_stroke);
             painter.hline(tab_rect.x_range(), tab_rect.max.y, bar_stroke);
 
-            let active_idx = managed.active_surface_idx;
+            let active_idx = managed.active_tab_idx;
             let tab_font = egui::FontId::proportional(11.5);
             let mut x = tab_rect.min.x + 2.0;
 
@@ -123,11 +118,7 @@ impl AmuxApp {
             let mut drag_start: Option<usize> = None;
             let mut start_rename_tab: Option<usize> = None;
 
-            // Build unified tab list: terminal surfaces + browser tabs
-            let terminal_count = managed.surfaces.len();
-            let total_tabs = managed.tab_count();
-
-            // Collect tab info for unified iteration
+            // Build tab info for rendering from the unified tab list
             enum TabIcon {
                 Terminal,
                 Favicon(egui::TextureId),
@@ -137,51 +128,62 @@ impl AmuxApp {
                 icon: TabIcon,
                 title: String,
                 is_dead: bool,
+                is_browser: bool,
             }
-            let mut tabs: Vec<TabInfo> = Vec::with_capacity(total_tabs);
-            for surface in &managed.surfaces {
-                let raw_title = surface
-                    .user_title
-                    .as_deref()
-                    .unwrap_or_else(|| surface.pane.title());
-                let raw = if raw_title.is_empty() || raw_title == "?" {
-                    surface
-                        .metadata
-                        .cwd
-                        .as_deref()
-                        .map(|p| {
-                            if let Some(home) = dirs::home_dir() {
-                                let path = std::path::Path::new(p);
-                                if let Ok(rest) = path.strip_prefix(&home) {
-                                    if rest.as_os_str().is_empty() {
-                                        return "~".to_string();
+            let tabs: Vec<TabInfo> = managed
+                .tabs
+                .iter()
+                .map(|tab| match tab {
+                    managed_pane::TabEntry::Terminal(surface) => {
+                        let raw_title = surface
+                            .user_title
+                            .as_deref()
+                            .unwrap_or_else(|| surface.pane.title());
+                        let raw = if raw_title.is_empty() || raw_title == "?" {
+                            surface
+                                .metadata
+                                .cwd
+                                .as_deref()
+                                .map(|p| {
+                                    if let Some(home) = dirs::home_dir() {
+                                        let path = std::path::Path::new(p);
+                                        if let Ok(rest) = path.strip_prefix(&home) {
+                                            if rest.as_os_str().is_empty() {
+                                                return "~".to_string();
+                                            }
+                                            return format!("~/{}", rest.to_string_lossy());
+                                        }
                                     }
-                                    return format!("~/{}", rest.to_string_lossy());
-                                }
-                            }
-                            p.to_string()
-                        })
-                        .unwrap_or_else(|| "Tab".to_string())
-                } else {
-                    raw_title.to_string()
-                };
-                tabs.push(TabInfo {
-                    icon: TabIcon::Terminal,
-                    title: raw,
-                    is_dead: surface.exited.is_some(),
-                });
-            }
-            // Browser tabs: use pre-collected titles and favicon textures
-            for (title, icon_texture) in &browser_tab_info {
-                tabs.push(TabInfo {
-                    icon: match icon_texture {
-                        Some(tex) => TabIcon::Favicon(*tex),
-                        None => TabIcon::None,
-                    },
-                    title: title.clone(),
-                    is_dead: false,
-                });
-            }
+                                    p.to_string()
+                                })
+                                .unwrap_or_else(|| "Tab".to_string())
+                        } else {
+                            raw_title.to_string()
+                        };
+                        TabInfo {
+                            icon: TabIcon::Terminal,
+                            title: raw,
+                            is_dead: surface.exited.is_some(),
+                            is_browser: false,
+                        }
+                    }
+                    managed_pane::TabEntry::Browser(bid) => {
+                        let (title, icon_tex) = browser_tab_info
+                            .get(bid)
+                            .cloned()
+                            .unwrap_or_else(|| ("Browser".to_string(), None));
+                        TabInfo {
+                            icon: match icon_tex {
+                                Some(tex) => TabIcon::Favicon(tex),
+                                None => TabIcon::None,
+                            },
+                            title,
+                            is_dead: false,
+                            is_browser: true,
+                        }
+                    }
+                })
+                .collect();
 
             for (idx, tab) in tabs.iter().enumerate() {
                 let is_active = idx == active_idx;
@@ -325,9 +327,8 @@ impl AmuxApp {
                 // Right-click context menu
                 let tab_id = ui.id().with("tab_ctx").with(pane_id).with(idx);
                 let tab_response = ui.interact(this_tab, tab_id, egui::Sense::click());
-                let is_browser_tab = idx >= terminal_count;
                 tab_response.context_menu(|ui| {
-                    if !is_browser_tab && ui.button("Rename Tab").clicked() {
+                    if !tab.is_browser && ui.button("Rename Tab").clicked() {
                         start_rename_tab = Some(idx);
                         ui.close_menu();
                     }
@@ -375,27 +376,24 @@ impl AmuxApp {
                         self.tab_drag = None;
                         if from != to {
                             if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
-                                // Only reorder within terminal tabs
-                                if from >= m.surfaces.len() || to >= m.surfaces.len() {
+                                if from >= m.tabs.len() || to >= m.tabs.len() {
                                     return;
                                 }
-                                let surface = m.surfaces.remove(from);
+                                let tab = m.tabs.remove(from);
                                 let insert_idx = if from < to {
-                                    (to - 1).min(m.surfaces.len())
+                                    (to - 1).min(m.tabs.len())
                                 } else {
-                                    to.min(m.surfaces.len())
+                                    to.min(m.tabs.len())
                                 };
-                                m.surfaces.insert(insert_idx, surface);
-                                if m.active_surface_idx == from {
-                                    m.active_surface_idx = insert_idx;
-                                } else if from < m.active_surface_idx
-                                    && insert_idx >= m.active_surface_idx
+                                m.tabs.insert(insert_idx, tab);
+                                if m.active_tab_idx == from {
+                                    m.active_tab_idx = insert_idx;
+                                } else if from < m.active_tab_idx && insert_idx >= m.active_tab_idx
                                 {
-                                    m.active_surface_idx -= 1;
-                                } else if from > m.active_surface_idx
-                                    && insert_idx <= m.active_surface_idx
+                                    m.active_tab_idx -= 1;
+                                } else if from > m.active_tab_idx && insert_idx <= m.active_tab_idx
                                 {
-                                    m.active_surface_idx += 1;
+                                    m.active_tab_idx += 1;
                                 }
                             }
                             return;
@@ -534,9 +532,12 @@ impl AmuxApp {
                             None,
                         ) {
                             if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
-                                let insert_at = (m.active_surface_idx + 1).min(m.surfaces.len());
-                                m.surfaces.insert(insert_at, surface);
-                                m.active_surface_idx = insert_at;
+                                let insert_at = (m.active_tab_idx + 1).min(m.tabs.len());
+                                m.tabs.insert(
+                                    insert_at,
+                                    managed_pane::TabEntry::Terminal(Box::new(surface)),
+                                );
+                                m.active_tab_idx = insert_at;
                             }
                         }
                         return;
@@ -563,47 +564,33 @@ impl AmuxApp {
                     .get(&pane_id)
                     .and_then(|e| e.as_terminal())
                     .unwrap();
-                let tc = managed.tab_count();
-                let tcount = managed.surfaces.len();
-                if tc <= 1 {
+                if managed.tabs.len() <= 1 {
                     self.close_pane(pane_id);
                     return;
                 }
-                if idx < tcount {
-                    // Close terminal tab
-                    let managed = self
-                        .panes
-                        .get_mut(&pane_id)
-                        .unwrap()
-                        .as_terminal_mut()
-                        .unwrap();
-                    managed.surfaces.remove(idx);
-                    if idx < managed.active_surface_idx {
-                        managed.active_surface_idx -= 1;
-                    } else if managed.active_surface_idx >= managed.tab_count() {
-                        managed.active_surface_idx = managed.tab_count() - 1;
-                    }
-                } else {
-                    // Close browser tab
-                    let browser_idx = idx - tcount;
-                    let managed = self
-                        .panes
-                        .get_mut(&pane_id)
-                        .unwrap()
-                        .as_terminal_mut()
-                        .unwrap();
-                    let browser_pane_id = managed.browser_tab_ids.remove(browser_idx);
-                    self.panes.remove(&browser_pane_id);
-                    self.omnibar_state.remove(&browser_pane_id);
-                    let managed = self
-                        .panes
-                        .get_mut(&pane_id)
-                        .unwrap()
-                        .as_terminal_mut()
-                        .unwrap();
-                    if managed.active_surface_idx >= managed.tab_count() {
-                        managed.active_surface_idx = managed.tab_count() - 1;
-                    }
+                // Get the browser pane ID before removing (if it's a browser tab)
+                let browser_pane_id = managed.tabs[idx].browser_pane_id();
+                let managed = self
+                    .panes
+                    .get_mut(&pane_id)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap();
+                managed.tabs.remove(idx);
+                if let Some(bid) = browser_pane_id {
+                    self.panes.remove(&bid);
+                    self.omnibar_state.remove(&bid);
+                }
+                let managed = self
+                    .panes
+                    .get_mut(&pane_id)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap();
+                if idx < managed.active_tab_idx {
+                    managed.active_tab_idx -= 1;
+                } else if managed.active_tab_idx >= managed.tabs.len() {
+                    managed.active_tab_idx = managed.tabs.len() - 1;
                 }
             } else if let Some(idx) = switch_to {
                 // Determine old and new browser tab IDs for visibility management
@@ -621,7 +608,7 @@ impl AmuxApp {
                     .unwrap()
                     .as_terminal_mut()
                     .unwrap();
-                managed.active_surface_idx = idx;
+                managed.active_tab_idx = idx;
                 let new_browser = match managed.active_tab() {
                     managed_pane::ActiveTab::Browser(bid) => Some(bid),
                     _ => None,
@@ -643,11 +630,10 @@ impl AmuxApp {
                 }
             }
 
-            // Open rename modal for tab
+            // Open rename modal for tab (terminal tabs only)
             if let Some(idx) = start_rename_tab {
                 if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
-                    if idx < managed.surfaces.len() {
-                        let surface = &managed.surfaces[idx];
+                    if let Some(surface) = managed.tabs[idx].as_surface() {
                         let current_title = surface
                             .user_title
                             .clone()

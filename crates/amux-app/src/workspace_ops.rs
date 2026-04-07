@@ -16,7 +16,7 @@ impl AmuxApp {
             .panes
             .get(&pane_id)
             .and_then(|e| e.as_terminal())
-            .map(|m| m.browser_tab_ids.clone())
+            .map(|m| m.browser_pane_ids())
             .unwrap_or_default();
         for bid in browser_ids {
             self.panes.remove(&bid);
@@ -48,9 +48,8 @@ impl AmuxApp {
                 self.panes.insert(
                     pane_id,
                     PaneEntry::Terminal(ManagedPane {
-                        surfaces: vec![surface],
-                        browser_tab_ids: Vec::new(),
-                        active_surface_idx: 0,
+                        tabs: vec![managed_pane::TabEntry::Terminal(Box::new(surface))],
+                        active_tab_idx: 0,
                         selection: None,
                     }),
                 );
@@ -88,9 +87,8 @@ impl AmuxApp {
                 self.panes.insert(
                     pane_id,
                     PaneEntry::Terminal(ManagedPane {
-                        surfaces: vec![surface],
-                        browser_tab_ids: Vec::new(),
-                        active_surface_idx: 0,
+                        tabs: vec![managed_pane::TabEntry::Terminal(Box::new(surface))],
+                        active_tab_idx: 0,
                         selection: None,
                     }),
                 );
@@ -137,10 +135,12 @@ impl AmuxApp {
             Ok(surface) => {
                 if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused) {
                     // Insert right after the active tab (cmux behavior).
-                    // If active is a browser tab, clamp to end of terminal list.
-                    let insert_at = (managed.active_surface_idx + 1).min(managed.surfaces.len());
-                    managed.surfaces.insert(insert_at, surface);
-                    managed.active_surface_idx = insert_at;
+                    let insert_at = (managed.active_tab_idx + 1).min(managed.tabs.len());
+                    managed.tabs.insert(
+                        insert_at,
+                        managed_pane::TabEntry::Terminal(Box::new(surface)),
+                    );
+                    managed.active_tab_idx = insert_at;
                     Some(sf_id)
                 } else {
                     None
@@ -296,10 +296,28 @@ impl AmuxApp {
 
         // First check: close a tab if >1 tab in focused pane
         if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused_id) {
-            if managed.surfaces.len() > 1 {
-                managed.surfaces.remove(managed.active_surface_idx);
-                if managed.active_surface_idx >= managed.surfaces.len() {
-                    managed.active_surface_idx = managed.surfaces.len() - 1;
+            if managed.tabs.len() > 1 {
+                // If closing a browser tab, also remove it from the panes map
+                if let Some(bid) = managed.tabs[managed.active_tab_idx].browser_pane_id() {
+                    managed.tabs.remove(managed.active_tab_idx);
+                    self.panes.remove(&bid);
+                } else {
+                    let managed = self
+                        .panes
+                        .get_mut(&focused_id)
+                        .unwrap()
+                        .as_terminal_mut()
+                        .unwrap();
+                    managed.tabs.remove(managed.active_tab_idx);
+                }
+                let managed = self
+                    .panes
+                    .get_mut(&focused_id)
+                    .unwrap()
+                    .as_terminal_mut()
+                    .unwrap();
+                if managed.active_tab_idx >= managed.tabs.len() {
+                    managed.active_tab_idx = managed.tabs.len() - 1;
                 }
                 return true;
             }
@@ -341,8 +359,8 @@ impl AmuxApp {
             None,
         ) {
             Ok(new_surface) => {
-                let idx = managed.active_surface_idx;
-                managed.surfaces[idx] = new_surface;
+                let idx = managed.active_tab_idx;
+                managed.tabs[idx] = managed_pane::TabEntry::Terminal(Box::new(new_surface));
             }
             Err(e) => {
                 tracing::warn!("Failed to restart surface: {e}");
