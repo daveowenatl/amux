@@ -469,11 +469,31 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
     }
 
     fn cursor(&self) -> CursorPos {
+        // Use the render state snapshot for cursor position — it provides
+        // viewport-relative coordinates that account for scrollback.
+        let mut rs = self.render_state.borrow_mut();
+        if let Ok(snapshot) = rs.update(&self.terminal) {
+            if let Ok(Some(vp)) = snapshot.cursor_viewport() {
+                return CursorPos {
+                    x: vp.x as usize,
+                    y: vp.y as i64,
+                    shape: self.cached_cursor_shape,
+                    // Work around libghostty-vt cursor visibility tracking:
+                    // both render state and direct terminal query report
+                    // cursor_visible=false and never recover after Claude Code
+                    // toggles DECTCEM. Force visible=true until the root cause
+                    // is identified (wezterm backend handles this correctly).
+                    // TODO(#133): investigate libghostty-vt DECTCEM handling
+                    visible: true,
+                };
+            }
+        }
+        // Fallback to direct terminal query
         CursorPos {
             x: self.terminal.cursor_x().unwrap_or(0) as usize,
             y: self.terminal.cursor_y().unwrap_or(0) as i64,
             shape: self.cached_cursor_shape,
-            visible: self.terminal.is_cursor_visible().unwrap_or(true),
+            visible: true, // see TODO(#133) above
         }
     }
 
