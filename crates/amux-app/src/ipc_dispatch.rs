@@ -715,6 +715,11 @@ impl AmuxApp {
 
                             let sf_id = self.next_surface_id;
                             self.next_surface_id += 1;
+                            let cwd = self
+                                .panes
+                                .get(&target_pane)
+                                .and_then(|e| e.as_terminal())
+                                .and_then(|m| m.active_surface().metadata.cwd.clone());
 
                             match startup::spawn_surface(
                                 80,
@@ -724,7 +729,7 @@ impl AmuxApp {
                                 &self.config,
                                 ws_id,
                                 sf_id,
-                                None,
+                                cwd.as_deref(),
                                 None,
                             ) {
                                 Ok(surface) => {

@@ -520,6 +520,11 @@ impl AmuxApp {
                         let ws_id = self.active_workspace().id;
                         let sf_id = self.next_surface_id;
                         self.next_surface_id += 1;
+                        let cwd = self
+                            .panes
+                            .get(&pane_id)
+                            .and_then(|e| e.as_terminal())
+                            .and_then(|m| m.active_surface().metadata.cwd.clone());
                         if let Ok(surface) = startup::spawn_surface(
                             80,
                             24,
@@ -528,7 +533,7 @@ impl AmuxApp {
                             &self.config,
                             ws_id,
                             sf_id,
-                            None,
+                            cwd.as_deref(),
                             None,
                         ) {
                             if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {

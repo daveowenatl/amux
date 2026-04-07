@@ -26,7 +26,8 @@ impl AmuxApp {
     }
 
     /// Returns the CWD of the focused pane's active terminal surface, if available.
-    fn focused_cwd(&self) -> Option<String> {
+    /// When a browser tab is active, falls back to the last terminal surface's CWD.
+    pub(crate) fn focused_cwd(&self) -> Option<String> {
         let focused = self.focused_pane_id();
         self.panes
             .get(&focused)
