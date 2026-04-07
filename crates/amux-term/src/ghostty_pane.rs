@@ -469,6 +469,22 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
     }
 
     fn cursor(&self) -> CursorPos {
+        // Use the render state snapshot for consistent cursor info — it accounts
+        // for scrollback position and DEC mode tracking more reliably than
+        // querying the terminal directly (fixes #133).
+        let mut rs = self.render_state.borrow_mut();
+        if let Ok(snapshot) = rs.update(&self.terminal) {
+            let visible = snapshot.cursor_visible().unwrap_or(true);
+            if let Ok(Some(vp)) = snapshot.cursor_viewport() {
+                return CursorPos {
+                    x: vp.x as usize,
+                    y: vp.y as i64,
+                    shape: self.cached_cursor_shape,
+                    visible,
+                };
+            }
+        }
+        // Fallback to direct terminal query
         CursorPos {
             x: self.terminal.cursor_x().unwrap_or(0) as usize,
             y: self.terminal.cursor_y().unwrap_or(0) as i64,
