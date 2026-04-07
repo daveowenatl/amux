@@ -255,16 +255,20 @@ impl AmuxApp {
                 }
                 let text_color = if is_dead {
                     egui::Color32::from_gray(80)
+                } else if is_active {
+                    egui::Color32::from_gray(220)
                 } else {
-                    egui::Color32::from_gray(180)
+                    egui::Color32::from_gray(160)
                 };
 
                 // Draw icon + title text
                 let mut text_x = x + 6.0;
                 let icon_color = if is_dead {
                     egui::Color32::from_gray(80)
+                } else if is_active {
+                    egui::Color32::from_gray(200)
                 } else {
-                    egui::Color32::from_gray(160)
+                    egui::Color32::from_gray(140)
                 };
                 match &tab.icon {
                     TabIcon::Terminal => {
