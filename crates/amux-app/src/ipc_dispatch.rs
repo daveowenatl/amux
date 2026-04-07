@@ -783,7 +783,9 @@ impl AmuxApp {
                                         self.close_pane(pane_id);
                                     } else {
                                         managed.tabs.remove(idx);
-                                        if managed.active_tab_idx >= managed.tabs.len() {
+                                        if idx < managed.active_tab_idx {
+                                            managed.active_tab_idx -= 1;
+                                        } else if managed.active_tab_idx >= managed.tabs.len() {
                                             managed.active_tab_idx = managed.tabs.len() - 1;
                                         }
                                     }

@@ -568,6 +568,13 @@ impl AmuxApp {
                     self.close_pane(pane_id);
                     return;
                 }
+                // Don't remove the last terminal tab — close the whole pane instead
+                // to preserve the "at least one terminal surface" invariant.
+                let is_browser = managed.tabs[idx].is_browser();
+                if !is_browser && managed.tabs.iter().filter(|t| !t.is_browser()).count() <= 1 {
+                    self.close_pane(pane_id);
+                    return;
+                }
                 // Get the browser pane ID before removing (if it's a browser tab)
                 let browser_pane_id = managed.tabs[idx].browser_pane_id();
                 let managed = self

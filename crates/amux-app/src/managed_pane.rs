@@ -222,7 +222,7 @@ impl ManagedPane {
         if let TabEntry::Terminal(s) = &self.tabs[self.active_tab_idx] {
             return s;
         }
-        // Fallback: find nearest terminal surface
+        // Fallback: find the last terminal surface
         self.tabs
             .iter()
             .filter_map(|t| t.as_surface())
@@ -231,7 +231,7 @@ impl ManagedPane {
     }
 
     /// Returns the active terminal surface mutably.
-    /// When a browser tab is active, returns the nearest terminal surface as a
+    /// When a browser tab is active, returns the last terminal surface as a
     /// safe fallback (callers should check `active_is_browser()` first).
     ///
     /// # Panics
