@@ -190,7 +190,7 @@ impl AmuxApp {
                     self.add_surface_to_focused_pane();
                 }
                 menu_bar::MenuAction::NewBrowserTab => {
-                    self.queue_browser_pane("https://www.google.com".to_string());
+                    self.queue_browser_pane(DEFAULT_BROWSER_URL.to_string());
                 }
                 menu_bar::MenuAction::CloseTab => {
                     self.do_close_cascade();

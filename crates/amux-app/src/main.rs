@@ -86,6 +86,7 @@ fn get_cwd_from_pid(pid: u32) -> Option<String> {
     None
 }
 
+const DEFAULT_BROWSER_URL: &str = "https://www.google.com";
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
 const TAB_BAR_HEIGHT: f32 = 26.0;
 const TAB_MIN_WIDTH: f32 = 100.0;

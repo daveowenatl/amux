@@ -255,16 +255,20 @@ impl AmuxApp {
                 }
                 let text_color = if is_dead {
                     egui::Color32::from_gray(80)
+                } else if is_active {
+                    egui::Color32::from_gray(220)
                 } else {
-                    egui::Color32::from_gray(180)
+                    egui::Color32::from_gray(160)
                 };
 
                 // Draw icon + title text
                 let mut text_x = x + 6.0;
                 let icon_color = if is_dead {
                     egui::Color32::from_gray(80)
+                } else if is_active {
+                    egui::Color32::from_gray(200)
                 } else {
-                    egui::Color32::from_gray(160)
+                    egui::Color32::from_gray(140)
                 };
                 match &tab.icon {
                     TabIcon::Terminal => {
@@ -428,21 +432,93 @@ impl AmuxApp {
                 }
             }
 
-            // "+" button to add tab
-            let plus_rect = egui::Rect::from_min_size(
-                egui::pos2(x + 2.0, tab_rect.min.y),
-                egui::vec2(20.0, TAB_BAR_HEIGHT),
-            );
-            painter.text(
-                plus_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "+",
-                egui::FontId::proportional(14.0),
-                egui::Color32::from_gray(100),
-            );
-            if primary_pressed {
-                if let Some(pos) = interact_pos {
-                    if plus_rect.contains(pos) {
+            // Pane toolbar: new terminal, new browser, split vertical, split horizontal
+            let icon_size = tab_icons::ICON_SIZE;
+            let icon_pad = 6.0;
+            let button_count = 4.0;
+            let toolbar_width = button_count * icon_size + (button_count - 1.0) * icon_pad;
+            let toolbar_x = tab_rect.max.x - toolbar_width - 6.0;
+            let icon_y = tab_rect.min.y + (TAB_BAR_HEIGHT - icon_size) / 2.0;
+
+            struct ToolbarButton {
+                rect: egui::Rect,
+                action: ToolbarAction,
+            }
+            #[derive(Clone, Copy)]
+            enum ToolbarAction {
+                NewTerminal,
+                NewBrowser,
+                SplitVertical,
+                SplitHorizontal,
+            }
+
+            let buttons = [
+                ToolbarAction::NewTerminal,
+                ToolbarAction::NewBrowser,
+                ToolbarAction::SplitVertical,
+                ToolbarAction::SplitHorizontal,
+            ];
+            let toolbar_buttons: Vec<ToolbarButton> = buttons
+                .iter()
+                .enumerate()
+                .map(|(i, &action)| {
+                    let bx = toolbar_x + i as f32 * (icon_size + icon_pad);
+                    ToolbarButton {
+                        rect: egui::Rect::from_min_size(
+                            egui::pos2(bx, icon_y),
+                            egui::vec2(icon_size, icon_size),
+                        ),
+                        action,
+                    }
+                })
+                .collect();
+
+            let mut toolbar_action: Option<ToolbarAction> = None;
+
+            for btn in &toolbar_buttons {
+                let hovered = hover_pos.is_some_and(|p| btn.rect.contains(p));
+                let color = if hovered {
+                    egui::Color32::from_gray(240)
+                } else {
+                    egui::Color32::from_gray(180)
+                };
+                match btn.action {
+                    ToolbarAction::NewTerminal => {
+                        tab_icons::paint_terminal_icon(painter, btn.rect.min, icon_size, color);
+                    }
+                    ToolbarAction::NewBrowser => {
+                        tab_icons::paint_globe_icon(painter, btn.rect.min, icon_size, color);
+                    }
+                    ToolbarAction::SplitVertical => {
+                        tab_icons::paint_split_vertical_icon(
+                            painter,
+                            btn.rect.min,
+                            icon_size,
+                            color,
+                        );
+                    }
+                    ToolbarAction::SplitHorizontal => {
+                        tab_icons::paint_split_horizontal_icon(
+                            painter,
+                            btn.rect.min,
+                            icon_size,
+                            color,
+                        );
+                    }
+                }
+                if primary_pressed {
+                    if let Some(pos) = interact_pos {
+                        if btn.rect.contains(pos) {
+                            toolbar_action = Some(btn.action);
+                        }
+                    }
+                }
+            }
+
+            // Handle toolbar actions
+            if let Some(action) = toolbar_action {
+                match action {
+                    ToolbarAction::NewTerminal => {
                         let ws_id = self.active_workspace().id;
                         let sf_id = self.next_surface_id;
                         self.next_surface_id += 1;
@@ -457,15 +533,25 @@ impl AmuxApp {
                             None,
                             None,
                         ) {
-                            // Re-borrow managed after spawn_surface
                             if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
-                                // Insert right after the active tab (cmux behavior).
                                 let insert_at = (m.active_surface_idx + 1).min(m.surfaces.len());
                                 m.surfaces.insert(insert_at, surface);
                                 m.active_surface_idx = insert_at;
                             }
                         }
-                        return; // skip further rendering this frame
+                        return;
+                    }
+                    ToolbarAction::NewBrowser => {
+                        self.queue_browser_pane(DEFAULT_BROWSER_URL.to_string());
+                        return;
+                    }
+                    ToolbarAction::SplitVertical => {
+                        self.do_split(SplitDirection::Horizontal);
+                        return;
+                    }
+                    ToolbarAction::SplitHorizontal => {
+                        self.do_split(SplitDirection::Vertical);
+                        return;
                     }
                 }
             }

@@ -7,7 +7,7 @@ use amux_term::TerminalBackend;
 use crate::managed_pane;
 
 use crate::managed_pane::{PaneEntry, PaneSurface};
-use crate::{startup, AmuxApp};
+use crate::{startup, AmuxApp, DEFAULT_BROWSER_URL};
 
 impl AmuxApp {
     pub(crate) fn process_ipc_commands(&mut self) {
@@ -208,7 +208,7 @@ impl AmuxApp {
                     url: String,
                 }
                 fn default_browser_url() -> String {
-                    "https://google.com".to_string()
+                    DEFAULT_BROWSER_URL.to_string()
                 }
                 match serde_json::from_value::<BrowserParams>(req.params.clone()) {
                     Ok(params) => {
