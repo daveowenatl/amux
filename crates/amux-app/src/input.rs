@@ -736,8 +736,7 @@ impl AmuxApp {
         let focused_id = self.focused_pane_id();
         if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused_id) {
             let surface = managed.active_surface_mut();
-            surface.scroll_offset = 0;
-            surface.scroll_accum = 0.0;
+            surface.snap_scroll_to_bottom();
             if surface.pane.bracketed_paste_enabled() {
                 let _ = surface.pane.write_bytes(b"\x1b[200~");
                 let _ = surface.pane.write_bytes(text.as_bytes());
@@ -1010,8 +1009,7 @@ impl AmuxApp {
         for event in &events {
             match event {
                 egui::Event::Text(text) => {
-                    surface.scroll_offset = 0;
-                    surface.scroll_accum = 0.0;
+                    surface.snap_scroll_to_bottom();
                     let _ = surface.pane.write_bytes(text.as_bytes());
                 }
                 egui::Event::Key {
@@ -1021,14 +1019,12 @@ impl AmuxApp {
                     ..
                 } => {
                     if let Some(bytes) = key_encode::encode_egui_key(key, modifiers) {
-                        surface.scroll_offset = 0;
-                        surface.scroll_accum = 0.0;
+                        surface.snap_scroll_to_bottom();
                         let _ = surface.pane.write_bytes(&bytes);
                     }
                 }
                 egui::Event::Paste(text) => {
-                    surface.scroll_offset = 0;
-                    surface.scroll_accum = 0.0;
+                    surface.snap_scroll_to_bottom();
                     if surface.pane.bracketed_paste_enabled() {
                         let _ = surface.pane.write_bytes(b"\x1b[200~");
                         let _ = surface.pane.write_bytes(text.as_bytes());
@@ -1039,8 +1035,7 @@ impl AmuxApp {
                 }
                 egui::Event::Ime(ime_event) => match ime_event {
                     egui::ImeEvent::Commit(text) => {
-                        surface.scroll_offset = 0;
-                        surface.scroll_accum = 0.0;
+                        surface.snap_scroll_to_bottom();
                         self.ime_preedit = None;
                         let _ = surface.pane.write_bytes(text.as_bytes());
                     }
