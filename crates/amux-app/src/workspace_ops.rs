@@ -25,11 +25,22 @@ impl AmuxApp {
         self.panes.remove(&pane_id);
     }
 
+    /// Returns the CWD of the focused pane's active terminal surface, if available.
+    /// When a browser tab is active, falls back to the last terminal surface's CWD.
+    pub(crate) fn focused_cwd(&self) -> Option<String> {
+        let focused = self.focused_pane_id();
+        self.panes
+            .get(&focused)
+            .and_then(|e| e.as_terminal())
+            .and_then(|m| m.active_surface().metadata.cwd.clone())
+    }
+
     // --- Pane/Workspace management ---
 
     pub(crate) fn spawn_pane_with_surface(&mut self) -> Option<PaneId> {
         let ws_id = self.active_workspace().id;
         let sf_id = self.next_surface_id;
+        let cwd = self.focused_cwd();
 
         match startup::spawn_surface(
             80,
@@ -39,7 +50,7 @@ impl AmuxApp {
             &self.config,
             ws_id,
             sf_id,
-            None,
+            cwd.as_deref(),
             None,
         ) {
             Ok(surface) => {
@@ -68,6 +79,7 @@ impl AmuxApp {
         let title = title.unwrap_or_else(|| format!("Terminal {}", self.workspaces.len() + 1));
 
         let sf_id = self.next_surface_id;
+        let cwd = self.focused_cwd();
 
         match startup::spawn_surface(
             80,
@@ -77,7 +89,7 @@ impl AmuxApp {
             &self.config,
             ws_id,
             sf_id,
-            None,
+            cwd.as_deref(),
             None,
         ) {
             Ok(surface) => {
@@ -121,6 +133,7 @@ impl AmuxApp {
         self.next_surface_id += 1;
         let ws_id = self.active_workspace().id;
         let focused = self.focused_pane_id();
+        let cwd = self.focused_cwd();
 
         match startup::spawn_surface(
             80,
@@ -130,7 +143,7 @@ impl AmuxApp {
             &self.config,
             ws_id,
             sf_id,
-            None,
+            cwd.as_deref(),
             None,
         ) {
             Ok(surface) => {
