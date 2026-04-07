@@ -165,6 +165,18 @@ impl TerminalBackend for AnyBackend {
         delegate!(self, read_cells_range, start_row: usize, end_row: usize)
     }
 
+    fn manages_own_scroll(&self) -> bool {
+        delegate!(self, manages_own_scroll)
+    }
+
+    fn scroll_viewport(&mut self, delta: isize) {
+        delegate!(self, scroll_viewport, delta: isize)
+    }
+
+    fn scroll_to_bottom(&mut self) {
+        delegate!(self, scroll_to_bottom)
+    }
+
     fn erase_scrollback(&mut self) {
         delegate!(self, erase_scrollback)
     }

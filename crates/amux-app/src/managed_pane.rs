@@ -184,6 +184,19 @@ pub(crate) struct PaneSurface {
     pub(crate) exited: Option<ExitInfo>,
 }
 
+impl PaneSurface {
+    /// Snap the viewport to the bottom (most recent output).
+    /// For backends that manage their own scroll (e.g., libghostty), this
+    /// also tells the backend to jump to the bottom.
+    pub(crate) fn snap_scroll_to_bottom(&mut self) {
+        self.scroll_offset = 0;
+        self.scroll_accum = 0.0;
+        if self.pane.manages_own_scroll() {
+            self.pane.scroll_to_bottom();
+        }
+    }
+}
+
 /// A leaf in the split tree. Each pane has its own tab bar with
 /// terminal surfaces and browser tabs in a single ordered list.
 pub(crate) struct ManagedPane {

@@ -323,6 +323,25 @@ pub trait TerminalBackend {
     /// handle receiving fewer rows than requested.
     fn read_cells_range(&self, start_row: usize, end_row: usize) -> Vec<ScreenRow>;
 
+    // --- Scrolling ---
+
+    /// Whether this backend manages its own viewport scrolling.
+    /// When true, callers should use `scroll_viewport()` instead of tracking
+    /// `scroll_offset` externally. The render state / screen cells will
+    /// reflect the scrolled viewport automatically.
+    fn manages_own_scroll(&self) -> bool {
+        false
+    }
+
+    /// Scroll the viewport by `delta` lines (positive = scroll down / toward
+    /// bottom, negative = scroll up / toward history). Only meaningful when
+    /// `manages_own_scroll()` returns true.
+    fn scroll_viewport(&mut self, _delta: isize) {}
+
+    /// Snap the viewport to the bottom (most recent output). Only meaningful
+    /// when `manages_own_scroll()` returns true.
+    fn scroll_to_bottom(&mut self) {}
+
     // --- Terminal control ---
 
     /// Erase scrollback buffer, keeping visible screen.

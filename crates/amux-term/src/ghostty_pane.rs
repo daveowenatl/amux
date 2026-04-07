@@ -802,6 +802,20 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
         all_rows[rel_start..rel_end].to_vec()
     }
 
+    fn manages_own_scroll(&self) -> bool {
+        true
+    }
+
+    fn scroll_viewport(&mut self, delta: isize) {
+        use libghostty_vt::terminal::ScrollViewport;
+        self.terminal.scroll_viewport(ScrollViewport::Delta(delta));
+    }
+
+    fn scroll_to_bottom(&mut self) {
+        use libghostty_vt::terminal::ScrollViewport;
+        self.terminal.scroll_viewport(ScrollViewport::Bottom);
+    }
+
     fn erase_scrollback(&mut self) {
         // Send CSI 3 J (Erase Scrollback) to clear scrollback without
         // resetting the terminal. terminal.reset() would wipe screen too.

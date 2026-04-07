@@ -138,10 +138,19 @@ impl TerminalSnapshot {
         let cursor_bg = color_to_f32(palette.cursor_bg);
         let cursor_fg = color_to_f32(palette.cursor_fg);
 
-        let total = backend.scrollback_rows();
-        let end = total.saturating_sub(scroll_offset);
-        let start = end.saturating_sub(rows);
-        let screen_rows = backend.read_cells_range(start, end);
+        let (screen_rows, start) = if backend.manages_own_scroll() {
+            // Backend manages viewport scrolling internally (e.g., libghostty).
+            // read_screen_cells returns the already-scrolled viewport.
+            let total = backend.scrollback_rows();
+            let vp_rows = backend.dimensions().1;
+            let vp_start = total.saturating_sub(vp_rows);
+            (backend.read_screen_cells(0), vp_start)
+        } else {
+            let total = backend.scrollback_rows();
+            let end = total.saturating_sub(scroll_offset);
+            let start = end.saturating_sub(rows);
+            (backend.read_cells_range(start, end), start)
+        };
 
         let mut cells = Vec::with_capacity(cols * rows);
         let mut cursor_text = String::new();
