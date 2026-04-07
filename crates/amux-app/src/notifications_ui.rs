@@ -524,9 +524,6 @@ where
     // Expand the ui's min_rect to include this widget so egui's tooltip
     // system can position hover text correctly.
     ui.expand_to_include_rect(rect);
-    // NOTE: global style sets widget fg_stroke to TRANSPARENT (to hide panel
-    // resize handles), so default tooltip text would be invisible. Use an
-    // explicit color via RichText.
     let tooltip_text = egui::RichText::new(tooltip).color(egui::Color32::from_gray(220));
     let response = ui
         .interact(rect, id, egui::Sense::click())
