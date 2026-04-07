@@ -292,6 +292,29 @@ impl eframe::App for AmuxApp {
                 );
                 self.last_panel_rect = Some(panel_rect);
 
+                // Hide browser webviews that don't belong to the active workspace.
+                // Native webviews sit above egui, so they must be explicitly hidden
+                // when switching workspaces — render_single_pane only manages
+                // visibility for the pane it's rendering, not cross-workspace.
+                let active_pane_ids: std::collections::HashSet<PaneId> = self
+                    .active_workspace()
+                    .tree
+                    .iter_panes()
+                    .into_iter()
+                    .collect();
+                let active_browser_ids: std::collections::HashSet<PaneId> = active_pane_ids
+                    .iter()
+                    .filter_map(|&aid| self.panes.get(&aid).and_then(|e| e.as_terminal()))
+                    .flat_map(|m| m.browser_pane_ids())
+                    .collect();
+                for (&pid, entry) in &self.panes {
+                    if let PaneEntry::Browser(b) = entry {
+                        if !active_pane_ids.contains(&pid) && !active_browser_ids.contains(&pid) {
+                            b.set_visible(false);
+                        }
+                    }
+                }
+
                 // Handle divider dragging
                 self.handle_divider_drag(ui, panel_rect);
 
