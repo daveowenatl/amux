@@ -128,7 +128,7 @@ pub(crate) fn paint_globe_icon(
         ],
         stroke,
     );
-    // Vertical ellipse (simplified as vertical line + two arcs via line segments)
+    // Vertical ellipse (two arcs approximated via line segments)
     let inner_r = r * 0.5;
     // Left arc approximation
     let steps = 8;
