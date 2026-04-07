@@ -228,9 +228,8 @@ pub(crate) fn fresh_startup(
     let surface = spawn_surface(80, 24, ipc_addr, socket_token, config, 0, 0, None, None)?;
 
     let managed = PaneEntry::Terminal(ManagedPane {
-        surfaces: vec![surface],
-        browser_tab_ids: Vec::new(),
-        active_surface_idx: 0,
+        tabs: vec![managed_pane::TabEntry::Terminal(Box::new(surface))],
+        active_tab_idx: 0,
         selection: None,
     });
 
@@ -341,21 +340,24 @@ pub(crate) fn restore_session(
                 continue;
             }
 
-            // Queue browser tab restores for this pane
-            let mut browser_tab_ids = Vec::new();
+            // Build unified tab list: terminals first, then browser tabs
+            // (matches old layout order for backward compat with old sessions)
+            let mut tabs: Vec<TabEntry> = surfaces
+                .into_iter()
+                .map(|s| TabEntry::Terminal(Box::new(s)))
+                .collect();
             for bt in &saved_pane.browser_tabs {
                 pending_browser_restores.push((pane_id, bt.pane_id, bt.url.clone()));
-                browser_tab_ids.push(bt.pane_id);
+                tabs.push(TabEntry::Browser(bt.pane_id));
             }
 
-            let max_idx = (surfaces.len() + browser_tab_ids.len()).saturating_sub(1);
+            let max_idx = tabs.len().saturating_sub(1);
             let active_idx = saved_pane.active_surface_idx.min(max_idx);
             panes.insert(
                 pane_id,
                 PaneEntry::Terminal(ManagedPane {
-                    surfaces,
-                    browser_tab_ids,
-                    active_surface_idx: active_idx,
+                    tabs,
+                    active_tab_idx: active_idx,
                     selection: None,
                 }),
             );

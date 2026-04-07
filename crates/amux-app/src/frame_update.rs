@@ -85,7 +85,7 @@ impl eframe::App for AmuxApp {
             let PaneEntry::Terminal(managed) = entry else {
                 continue;
             };
-            for surface in &mut managed.surfaces {
+            for surface in managed.surfaces_mut() {
                 let mut bytes_this_frame = 0;
                 while bytes_this_frame < MAX_BYTES_PER_SURFACE_PER_FRAME {
                     match surface.byte_rx.try_recv() {

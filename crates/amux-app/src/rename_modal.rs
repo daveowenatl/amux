@@ -106,7 +106,7 @@ impl AmuxApp {
                     } => {
                         if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
                             if let Some(surface) =
-                                managed.surfaces.iter_mut().find(|s| s.id == surface_id)
+                                managed.surfaces_mut().find(|s| s.id == surface_id)
                             {
                                 surface.user_title = Some(new_name);
                             }

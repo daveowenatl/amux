@@ -47,18 +47,21 @@ impl AmuxApp {
                 for ws in &self.workspaces {
                     for pane_id in ws.tree.iter_panes() {
                         if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
-                            for (sf_idx, sf) in managed.surfaces.iter_mut().enumerate() {
-                                let (cols, rows) = sf.pane.dimensions();
-                                surfaces.push(serde_json::json!({
-                                    "id": sf.id.to_string(),
-                                    "pane_id": pane_id.to_string(),
-                                    "workspace_id": ws.id.to_string(),
-                                    "title": sf.pane.title(),
-                                    "cols": cols,
-                                    "rows": rows,
-                                    "alive": sf.pane.is_alive(),
-                                    "active": sf_idx == managed.active_surface_idx,
-                                }));
+                            let active_idx = managed.active_tab_idx;
+                            for (tab_idx, tab) in managed.tabs.iter_mut().enumerate() {
+                                if let managed_pane::TabEntry::Terminal(sf) = tab {
+                                    let (cols, rows) = sf.pane.dimensions();
+                                    surfaces.push(serde_json::json!({
+                                        "id": sf.id.to_string(),
+                                        "pane_id": pane_id.to_string(),
+                                        "workspace_id": ws.id.to_string(),
+                                        "title": sf.pane.title(),
+                                        "cols": cols,
+                                        "rows": rows,
+                                        "alive": sf.pane.is_alive(),
+                                        "active": tab_idx == active_idx,
+                                    }));
+                                }
                             }
                         }
                     }
@@ -583,7 +586,7 @@ impl AmuxApp {
                         let sf = managed.active_surface_mut();
                         let (cols, rows) = sf.pane.dimensions();
                         let alive = sf.pane.is_alive();
-                        let tab_count = managed.surfaces.len();
+                        let tab_count = managed.tab_count();
                         pane_list.push(serde_json::json!({
                             "id": id.to_string(),
                             "focused": *id == focused,
@@ -731,8 +734,10 @@ impl AmuxApp {
                                         .unwrap()
                                         .as_terminal_mut()
                                         .unwrap();
-                                    managed.surfaces.push(surface);
-                                    managed.active_surface_idx = managed.surfaces.len() - 1;
+                                    managed
+                                        .tabs
+                                        .push(managed_pane::TabEntry::Terminal(Box::new(surface)));
+                                    managed.active_tab_idx = managed.tabs.len() - 1;
                                     Response::ok(
                                         req.id.clone(),
                                         serde_json::json!({"surface_id": sf_id.to_string()}),
@@ -762,9 +767,9 @@ impl AmuxApp {
                                 // Find which pane owns this surface
                                 let target = self.panes.iter().find_map(|(&pid, entry)| {
                                     let m = entry.as_terminal()?;
-                                    m.surfaces
+                                    m.tabs
                                         .iter()
-                                        .position(|s| s.id == sf_id)
+                                        .position(|t| t.as_surface().is_some_and(|s| s.id == sf_id))
                                         .map(|idx| (pid, idx))
                                 });
                                 if let Some((pane_id, idx)) = target {
@@ -774,12 +779,14 @@ impl AmuxApp {
                                         .unwrap()
                                         .as_terminal_mut()
                                         .unwrap();
-                                    if managed.surfaces.len() <= 1 {
+                                    if managed.tabs.len() <= 1 {
                                         self.close_pane(pane_id);
                                     } else {
-                                        managed.surfaces.remove(idx);
-                                        if managed.active_surface_idx >= managed.surfaces.len() {
-                                            managed.active_surface_idx = managed.surfaces.len() - 1;
+                                        managed.tabs.remove(idx);
+                                        if idx < managed.active_tab_idx {
+                                            managed.active_tab_idx -= 1;
+                                        } else if managed.active_tab_idx >= managed.tabs.len() {
+                                            managed.active_tab_idx = managed.tabs.len() - 1;
                                         }
                                     }
                                     Response::ok(req.id.clone(), serde_json::json!({}))
@@ -797,12 +804,12 @@ impl AmuxApp {
                             // Close active surface in focused pane
                             if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused)
                             {
-                                if managed.surfaces.len() <= 1 {
+                                if managed.tabs.len() <= 1 {
                                     self.close_pane(focused);
                                 } else {
-                                    managed.surfaces.remove(managed.active_surface_idx);
-                                    if managed.active_surface_idx >= managed.surfaces.len() {
-                                        managed.active_surface_idx = managed.surfaces.len() - 1;
+                                    managed.tabs.remove(managed.active_tab_idx);
+                                    if managed.active_tab_idx >= managed.tabs.len() {
+                                        managed.active_tab_idx = managed.tabs.len() - 1;
                                     }
                                 }
                                 Response::ok(req.id.clone(), serde_json::json!({}))
@@ -826,15 +833,15 @@ impl AmuxApp {
                             let found = self.panes.iter_mut().find_map(|(pid, entry)| {
                                 let managed = entry.as_terminal_mut()?;
                                 managed
-                                    .surfaces
+                                    .tabs
                                     .iter()
-                                    .position(|s| s.id == sf_id)
+                                    .position(|t| t.as_surface().is_some_and(|s| s.id == sf_id))
                                     .map(|idx| (*pid, idx))
                             });
                             if let Some((pid, idx)) = found {
                                 let m =
                                     self.panes.get_mut(&pid).unwrap().as_terminal_mut().unwrap();
-                                m.active_surface_idx = idx;
+                                m.active_tab_idx = idx;
                                 // Switch to the owning workspace before setting focus
                                 if let Some(ws_idx) = self
                                     .workspaces
@@ -968,15 +975,21 @@ impl AmuxApp {
                 .panes
                 .iter()
                 .find(|(_, entry)| {
-                    entry
-                        .as_terminal()
-                        .is_some_and(|m| m.surfaces.iter().any(|s| s.id == sf_id))
+                    entry.as_terminal().is_some_and(|m| {
+                        m.tabs
+                            .iter()
+                            .any(|t| t.as_surface().is_some_and(|s| s.id == sf_id))
+                    })
                 })
                 .map(|(pid, _)| *pid);
 
             if let Some(pid) = target_pane {
                 let m = self.panes.get_mut(&pid)?.as_terminal_mut()?;
-                return m.surfaces.iter_mut().find(|s| s.id == sf_id);
+                return m
+                    .tabs
+                    .iter_mut()
+                    .filter_map(|t| t.as_surface_mut())
+                    .find(|s| s.id == sf_id);
             }
 
             // Fall back to treating it as a pane ID
@@ -1044,7 +1057,7 @@ impl AmuxApp {
         } else if let Ok(sf_id) = surface_id.parse::<u64>() {
             for entry in self.panes.values() {
                 if let PaneEntry::Terminal(managed) = entry {
-                    if let Some(sf) = managed.surfaces.iter().find(|s| s.id == sf_id) {
+                    if let Some(sf) = managed.surfaces().find(|s| s.id == sf_id) {
                         return Some(sf);
                     }
                 }

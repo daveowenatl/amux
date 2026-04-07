@@ -345,7 +345,7 @@ impl AmuxApp {
                     {
                         let total = managed.tab_count();
                         if total > 1 {
-                            managed.active_surface_idx = (managed.active_surface_idx + 1) % total;
+                            managed.active_tab_idx = (managed.active_tab_idx + 1) % total;
                         }
                     }
                     return true;
@@ -358,10 +358,10 @@ impl AmuxApp {
                     {
                         let total = managed.tab_count();
                         if total > 1 {
-                            managed.active_surface_idx = if managed.active_surface_idx == 0 {
+                            managed.active_tab_idx = if managed.active_tab_idx == 0 {
                                 total - 1
                             } else {
-                                managed.active_surface_idx - 1
+                                managed.active_tab_idx - 1
                             };
                         }
                     }
@@ -900,18 +900,16 @@ impl AmuxApp {
                     let col = col.min(cols.saturating_sub(1));
 
                     if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
+                        // Pre-fetch line text before mutably borrowing selection
+                        let line_text =
+                            selection::line_text_string(&m.active_surface().pane, stable_row, cols);
                         if let Some(ref mut sel) = m.selection {
                             match sel.mode {
                                 SelectionMode::Cell => {
                                     sel.end = (col, stable_row);
                                 }
                                 SelectionMode::Word => {
-                                    let text = selection::line_text_string(
-                                        &m.surfaces[m.active_surface_idx].pane,
-                                        stable_row,
-                                        cols,
-                                    );
-                                    let (_, wend) = selection::word_bounds_in_line(&text, col);
+                                    let (_, wend) = selection::word_bounds_in_line(&line_text, col);
                                     // Extend: keep anchor word start, update end word boundary
                                     if stable_row > sel.anchor.1
                                         || (stable_row == sel.anchor.1 && col >= sel.anchor.0)
@@ -919,7 +917,7 @@ impl AmuxApp {
                                         sel.end = (wend, stable_row);
                                     } else {
                                         let (wstart, _) =
-                                            selection::word_bounds_in_line(&text, col);
+                                            selection::word_bounds_in_line(&line_text, col);
                                         sel.end = (wstart, stable_row);
                                     }
                                 }

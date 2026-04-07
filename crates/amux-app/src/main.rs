@@ -294,7 +294,7 @@ impl AmuxApp {
         let pane_ids = ws.tree.iter_panes();
         let existing = pane_ids.iter().find_map(|&tree_pane_id| {
             let managed = self.panes.get(&tree_pane_id)?.as_terminal()?;
-            let browser_id = managed.browser_tab_ids.first().copied()?;
+            let browser_id = managed.browser_pane_ids().into_iter().next()?;
             Some((tree_pane_id, browser_id))
         });
 
@@ -305,11 +305,11 @@ impl AmuxApp {
             // Switch to the browser tab
             if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&tree_pane_id) {
                 if let Some(idx) = managed
-                    .browser_tab_ids
+                    .tabs
                     .iter()
-                    .position(|&id| id == browser_id)
+                    .position(|t| t.browser_pane_id() == Some(browser_id))
                 {
-                    managed.active_surface_idx = managed.surfaces.len() + idx;
+                    managed.active_tab_idx = idx;
                 }
             }
             self.set_focus(tree_pane_id);
@@ -350,19 +350,11 @@ impl AmuxApp {
                     // Insert right after the active tab (cmux behavior).
                     let focused = self.focused_pane_id();
                     if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused) {
-                        let browser_insert = if managed.active_surface_idx >= managed.surfaces.len()
-                        {
-                            // Active is a browser tab — insert right after it
-                            let browser_idx = managed.active_surface_idx - managed.surfaces.len();
-                            (browser_idx + 1).min(managed.browser_tab_ids.len())
-                        } else {
-                            // Active is a terminal tab — append to end of browser list
-                            managed.browser_tab_ids.len()
-                        };
+                        let insert_at = (managed.active_tab_idx + 1).min(managed.tabs.len());
                         managed
-                            .browser_tab_ids
-                            .insert(browser_insert, browser_pane_id);
-                        managed.active_surface_idx = managed.surfaces.len() + browser_insert;
+                            .tabs
+                            .insert(insert_at, managed_pane::TabEntry::Browser(browser_pane_id));
+                        managed.active_tab_idx = insert_at;
                     }
                     tracing::info!(
                         "Created browser tab {} in pane {} with URL: {}",
@@ -385,8 +377,8 @@ impl AmuxApp {
                 Ok(browser) => {
                     self.panes
                         .insert(browser_pane_id, PaneEntry::Browser(browser));
-                    // browser_tab_ids was already populated during session restore
-                    // in startup.rs — no need to push again here.
+                    // tabs list was already populated with Browser entries during
+                    // session restore in startup.rs — no need to push again here.
                     tracing::info!(
                         "Restored browser tab {} in pane {} with URL: {}",
                         browser_pane_id,
@@ -408,7 +400,7 @@ impl AmuxApp {
             let PaneEntry::Terminal(managed) = entry else {
                 continue;
             };
-            for surface in &mut managed.surfaces {
+            for surface in managed.surfaces_mut() {
                 while let Ok(bytes) = surface.byte_rx.try_recv() {
                     surface.pane.feed_bytes(&bytes);
                 }
@@ -424,8 +416,7 @@ impl AmuxApp {
                 match self.panes.get(&pane_id) {
                     Some(PaneEntry::Terminal(managed)) => {
                         let surfaces: Vec<amux_session::SavedSurface> = managed
-                            .surfaces
-                            .iter()
+                            .surfaces()
                             .map(|sf| {
                                 let working_dir = sf.metadata.cwd.clone().or_else(|| {
                                     sf.pane
@@ -465,7 +456,7 @@ impl AmuxApp {
                             .collect();
                         // Save browser tabs within this pane
                         let browser_tabs: Vec<amux_session::SavedBrowserTab> = managed
-                            .browser_tab_ids
+                            .browser_pane_ids()
                             .iter()
                             .filter_map(|&bid| {
                                 let b = self.panes.get(&bid)?.as_browser()?;
@@ -482,7 +473,7 @@ impl AmuxApp {
                             amux_session::SavedManagedPane {
                                 panel_type: managed.panel_type().to_string(),
                                 surfaces,
-                                active_surface_idx: managed.active_surface_idx,
+                                active_surface_idx: managed.active_tab_idx,
                                 browser: None,
                                 browser_tabs,
                             },

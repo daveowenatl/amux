@@ -44,7 +44,7 @@ impl AmuxApp {
                 continue;
             };
             let ws_id = self.workspace_for_pane(pane_id).unwrap_or(0);
-            for surface in &managed.surfaces {
+            for surface in managed.surfaces() {
                 for event in surface.pane.drain_notifications() {
                     events.push((ws_id, pane_id, surface.id, event));
                 }
@@ -65,7 +65,7 @@ impl AmuxApp {
                 NotificationEvent::WorkingDirectoryChanged => {
                     // Store the CWD from OSC 7 into surface metadata
                     if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
-                        for surface in &mut managed.surfaces {
+                        for surface in managed.surfaces_mut() {
                             if surface.id == surface_id {
                                 let cwd = surface
                                     .pane
