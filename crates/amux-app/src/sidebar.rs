@@ -220,7 +220,7 @@ pub(crate) fn render_sidebar(
                 });
         });
 
-    // Restore widget styles so context menus/popups use normal styling.
+    // Restore widget styles so UI rendered after the sidebar uses normal styling.
     ctx.style_mut(|style| {
         style.visuals.widgets = saved_styles;
     });
