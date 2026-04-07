@@ -111,6 +111,18 @@ pub(crate) fn render_sidebar(
 ) -> Vec<SidebarAction> {
     let mut actions = Vec::new();
 
+    // Hide the sidebar resize indicator (including hover/active states) by
+    // temporarily matching stroke colors to the sidebar background. egui draws
+    // the resize line using hovered.fg_stroke and active.fg_stroke even when
+    // show_separator_line(false) is set. Restored after the panel renders.
+    let saved_styles = ctx.style().visuals.widgets.clone();
+    let hide_color = theme.chrome.sidebar_bg;
+    ctx.style_mut(|style| {
+        style.visuals.widgets.noninteractive.bg_stroke.color = hide_color;
+        style.visuals.widgets.hovered.fg_stroke.color = hide_color;
+        style.visuals.widgets.active.fg_stroke.color = hide_color;
+    });
+
     egui::SidePanel::left("sidebar")
         .resizable(true)
         .show_separator_line(false)
@@ -207,6 +219,11 @@ pub(crate) fn render_sidebar(
                     }
                 });
         });
+
+    // Restore widget styles so UI rendered after the sidebar uses normal styling.
+    ctx.style_mut(|style| {
+        style.visuals.widgets = saved_styles;
+    });
 
     actions
 }

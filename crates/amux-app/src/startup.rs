@@ -132,14 +132,6 @@ pub(crate) fn run() -> anyhow::Result<()> {
             // Add system monospace font as fallback for braille/symbol coverage
             fonts::install_system_font_fallback(&_cc.egui_ctx);
 
-            // Hide the panel resize handle entirely (cursor still changes on hover).
-            _cc.egui_ctx.style_mut(|style| {
-                style.visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::TRANSPARENT;
-                style.visuals.widgets.inactive.fg_stroke.color = egui::Color32::TRANSPARENT;
-                style.visuals.widgets.hovered.fg_stroke.color = egui::Color32::TRANSPARENT;
-                style.visuals.widgets.active.fg_stroke.color = egui::Color32::TRANSPARENT;
-            });
-
             #[cfg(feature = "gpu-renderer")]
             let gpu_renderer = _cc.wgpu_render_state.as_ref().map(|rs| {
                 tracing::info!("GPU renderer initialized (wgpu backend)");
