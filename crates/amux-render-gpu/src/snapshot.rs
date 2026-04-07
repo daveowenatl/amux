@@ -162,8 +162,13 @@ impl TerminalSnapshot {
                     break;
                 }
 
-                let mut fg = color_to_f32(cell.fg);
-                let mut bg = color_to_f32(cell.bg);
+                let (fg_color, bg_color) = if cell.reverse {
+                    (cell.bg, cell.fg)
+                } else {
+                    (cell.fg, cell.bg)
+                };
+                let mut fg = color_to_f32(fg_color);
+                let mut bg = color_to_f32(bg_color);
 
                 // Apply selection highlighting (swap fg/bg)
                 let stable_row = start + row_idx;
