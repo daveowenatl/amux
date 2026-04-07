@@ -14,6 +14,18 @@ use amux_term::backend::TerminalBackend;
 use amux_term::ghostty_pane::GhosttyPane;
 use amux_term::pane::AdvanceResult;
 
+/// Helper: create a raw Terminal + RenderState pair for direct VT API tests.
+fn new_terminal_and_render_state() -> (libghostty_vt::Terminal, libghostty_vt::RenderState) {
+    let terminal = libghostty_vt::Terminal::new(libghostty_vt::TerminalOptions {
+        cols: 80,
+        rows: 24,
+        max_scrollback: 10000,
+    })
+    .expect("terminal creation failed");
+    let render_state = libghostty_vt::RenderState::new().expect("render state creation failed");
+    (terminal, render_state)
+}
+
 /// Helper: spawn a GhosttyPane running a bash script, advance until EOF or timeout.
 fn spawn_and_run(script: &str) -> Box<GhosttyPane<'static, 'static>> {
     let mut cmd = CommandBuilder::new("bash");
@@ -76,7 +88,7 @@ fn screen_text_contains_output() {
 #[test]
 fn feed_bytes_renders_to_screen() {
     let mut cmd = CommandBuilder::new("sleep");
-    cmd.arg("10");
+    cmd.arg("1");
     let mut pane = GhosttyPane::spawn(80, 24, cmd).expect("spawn failed");
 
     // Feed bytes directly into the VT state machine (bypass PTY)
@@ -185,7 +197,7 @@ fn search_scrollback_case_insensitive() {
 #[test]
 fn is_alive_while_running() {
     let mut cmd = CommandBuilder::new("sleep");
-    cmd.arg("10");
+    cmd.arg("1");
     let mut pane = GhosttyPane::spawn(80, 24, cmd).expect("spawn failed");
     assert!(pane.is_alive(), "expected process to be alive");
 }
@@ -193,7 +205,7 @@ fn is_alive_while_running() {
 #[test]
 fn cursor_visible_after_show_hide_sequence() {
     let mut cmd = CommandBuilder::new("sleep");
-    cmd.arg("10");
+    cmd.arg("1");
     let mut pane = GhosttyPane::spawn(80, 24, cmd).expect("spawn failed");
 
     // Cursor should be visible initially
@@ -220,7 +232,7 @@ fn cursor_visible_after_show_hide_sequence() {
 #[test]
 fn cursor_visible_after_rapid_toggle() {
     let mut cmd = CommandBuilder::new("sleep");
-    cmd.arg("10");
+    cmd.arg("1");
     let mut pane = GhosttyPane::spawn(80, 24, cmd).expect("spawn failed");
 
     // Simulate rapid DECTCEM toggling like Claude Code does
@@ -250,16 +262,7 @@ fn cursor_visible_after_rapid_toggle() {
 #[test]
 fn cursor_visible_raw_api_after_rapid_toggle() {
     // Test the raw libghostty-vt API directly, bypassing the workaround
-    use libghostty_vt::{RenderState, Terminal, TerminalOptions};
-
-    let mut terminal = Terminal::new(TerminalOptions {
-        cols: 80,
-        rows: 24,
-        max_scrollback: 10000,
-    })
-    .expect("terminal creation failed");
-
-    let mut render_state = RenderState::new().expect("render state creation failed");
+    let (mut terminal, mut render_state) = new_terminal_and_render_state();
 
     // Initial state: cursor should be visible
     let snap = render_state.update(&terminal).expect("update failed");
@@ -330,16 +333,7 @@ fn cursor_visible_raw_api_after_rapid_toggle() {
 #[test]
 fn cursor_visible_split_sequence() {
     // Test if splitting an escape sequence across two vt_write calls causes issues
-    use libghostty_vt::{RenderState, Terminal, TerminalOptions};
-
-    let mut terminal = Terminal::new(TerminalOptions {
-        cols: 80,
-        rows: 24,
-        max_scrollback: 10000,
-    })
-    .expect("terminal creation failed");
-
-    let mut render_state = RenderState::new().expect("render state creation failed");
+    let (mut terminal, mut render_state) = new_terminal_and_render_state();
 
     // Hide cursor with complete sequence
     terminal.vt_write(b"\x1b[?25l");
@@ -363,16 +357,7 @@ fn cursor_visible_split_sequence() {
 #[test]
 fn cursor_visible_truncated_in_buffer() {
     // Test if a truncated escape sequence at buffer boundary causes permanent state corruption
-    use libghostty_vt::{RenderState, Terminal, TerminalOptions};
-
-    let mut terminal = Terminal::new(TerminalOptions {
-        cols: 80,
-        rows: 24,
-        max_scrollback: 10000,
-    })
-    .expect("terminal creation failed");
-
-    let mut render_state = RenderState::new().expect("render state creation failed");
+    let (mut terminal, mut render_state) = new_terminal_and_render_state();
 
     // Simulate a buffer read that cuts the escape sequence mid-way:
     // "\x1b[?25l" followed by text, then "\x1b[?25" cut off, then "h" in next buffer
