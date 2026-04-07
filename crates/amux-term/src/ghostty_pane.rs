@@ -483,17 +483,18 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
                     // cursor_visible=false and never recover after Claude Code
                     // toggles DECTCEM. Force visible=true until the root cause
                     // is identified (wezterm backend handles this correctly).
-                    // TODO(#133): investigate libghostty-vt DECTCEM handling
+                    // TODO(#135): investigate libghostty-vt DECTCEM handling
                     visible: true,
                 };
             }
         }
-        // Fallback to direct terminal query
+        // cursor_viewport() returned None — cursor is outside the visible
+        // viewport (e.g., scrolled into history). Hide it.
         CursorPos {
-            x: self.terminal.cursor_x().unwrap_or(0) as usize,
-            y: self.terminal.cursor_y().unwrap_or(0) as i64,
+            x: 0,
+            y: 0,
             shape: self.cached_cursor_shape,
-            visible: true, // see TODO(#133) above
+            visible: false,
         }
     }
 
@@ -809,11 +810,14 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
     fn scroll_viewport(&mut self, delta: isize) {
         use libghostty_vt::terminal::ScrollViewport;
         self.terminal.scroll_viewport(ScrollViewport::Delta(delta));
+        // Bump seqno so the GPU renderer's dirty check triggers a redraw.
+        self.seqno += 1;
     }
 
     fn scroll_to_bottom(&mut self) {
         use libghostty_vt::terminal::ScrollViewport;
         self.terminal.scroll_viewport(ScrollViewport::Bottom);
+        self.seqno += 1;
     }
 
     fn erase_scrollback(&mut self) {
