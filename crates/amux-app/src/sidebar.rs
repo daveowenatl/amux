@@ -111,6 +111,14 @@ pub(crate) fn render_sidebar(
 ) -> Vec<SidebarAction> {
     let mut actions = Vec::new();
 
+    // Hide the sidebar resize indicator by temporarily matching its stroke
+    // color to the sidebar background. Restored after the panel renders so
+    // context menus and other widgets keep their default stroke colors.
+    let saved_bg_stroke = ctx.style().visuals.widgets.noninteractive.bg_stroke.color;
+    ctx.style_mut(|style| {
+        style.visuals.widgets.noninteractive.bg_stroke.color = theme.chrome.sidebar_bg;
+    });
+
     egui::SidePanel::left("sidebar")
         .resizable(true)
         .show_separator_line(false)
@@ -207,6 +215,11 @@ pub(crate) fn render_sidebar(
                     }
                 });
         });
+
+    // Restore default stroke color so context menus/popups use normal styling.
+    ctx.style_mut(|style| {
+        style.visuals.widgets.noninteractive.bg_stroke.color = saved_bg_stroke;
+    });
 
     actions
 }
