@@ -77,6 +77,10 @@ pub fn is_url_like(input: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
+    // Reject any whitespace (spaces, tabs, newlines)
+    if trimmed.chars().any(|c| c.is_whitespace()) {
+        return false;
+    }
     // Already has a scheme
     if trimmed.starts_with("http://")
         || trimmed.starts_with("https://")
@@ -84,8 +88,15 @@ pub fn is_url_like(input: &str) -> bool {
     {
         return true;
     }
-    // Has a dot and no spaces → likely a domain
-    trimmed.contains('.') && !trimmed.contains(' ')
+    // localhost or 127.0.0.1 with optional port/path
+    if let Some(rest) = trimmed
+        .strip_prefix("localhost")
+        .or_else(|| trimmed.strip_prefix("127.0.0.1"))
+    {
+        return rest.is_empty() || rest.starts_with(':') || rest.starts_with('/');
+    }
+    // Has a dot → likely a domain
+    trimmed.contains('.')
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -176,5 +187,45 @@ pub fn validate_font_size(size: f32) -> f32 {
         DEFAULT_FONT_SIZE
     } else {
         size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_url_like_schemes() {
+        assert!(is_url_like("http://example.com"));
+        assert!(is_url_like("https://example.com"));
+        assert!(is_url_like("file:///tmp/test.html"));
+    }
+
+    #[test]
+    fn is_url_like_domains() {
+        assert!(is_url_like("example.com"));
+        assert!(is_url_like("docs.rs"));
+    }
+
+    #[test]
+    fn is_url_like_localhost() {
+        assert!(is_url_like("localhost:3000"));
+        assert!(is_url_like("localhost:8080/api"));
+        assert!(is_url_like("127.0.0.1:9090"));
+    }
+
+    #[test]
+    fn is_url_like_rejects_search() {
+        assert!(!is_url_like("how to write rust"));
+        assert!(!is_url_like("hello world"));
+        assert!(!is_url_like(""));
+        assert!(!is_url_like("   "));
+    }
+
+    #[test]
+    fn is_url_like_rejects_whitespace() {
+        assert!(!is_url_like("example\t.com"));
+        assert!(!is_url_like("example\n.com"));
+        assert!(!is_url_like("hello\tworld"));
     }
 }

@@ -33,7 +33,10 @@ impl AmuxApp {
             if managed.active_is_browser() {
                 return;
             }
-            let surface = managed.active_surface();
+            let surface = match managed.active_surface() {
+                Some(s) => s,
+                None => return,
+            };
             let cursor = surface.pane.cursor();
             let (dim_cols, dim_rows) = surface.pane.dimensions();
             let cols = dim_cols.max(1) as f32;
@@ -74,7 +77,10 @@ impl AmuxApp {
             if managed.active_is_browser() {
                 return;
             }
-            let surface = managed.active_surface();
+            let surface = match managed.active_surface() {
+                Some(s) => s,
+                None => return,
+            };
             let cursor = surface.pane.cursor();
             let (dim_cols, dim_rows) = surface.pane.dimensions();
             let cols = dim_cols.max(1) as f32;

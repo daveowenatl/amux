@@ -38,6 +38,8 @@ pub const METHODS: &[&str] = &[
     "browser.evaluate",
     "browser.get-text",
     "browser.snapshot",
+    "browser.get-eval-result",
+    "browser.screenshot",
     "browser.click",
     "browser.type",
     "browser.scroll",

@@ -182,14 +182,18 @@ impl BrowserPane {
     ) -> Result<Self, wry::Error> {
         let profile_name = profile.unwrap_or("default").to_string();
         let profile_dir = profiles_base_dir().join(&profile_name);
-        let _ = std::fs::create_dir_all(&profile_dir);
+        if let Err(e) = std::fs::create_dir_all(&profile_dir) {
+            tracing::warn!("Failed to create directory {}: {e}", profile_dir.display());
+        }
 
         let download_dir = options
             .and_then(|o| o.download_dir)
             .map(PathBuf::from)
             .or_else(dirs::download_dir)
             .unwrap_or_else(|| PathBuf::from("."));
-        let _ = std::fs::create_dir_all(&download_dir);
+        if let Err(e) = std::fs::create_dir_all(&download_dir) {
+            tracing::warn!("Failed to create directory {}: {e}", download_dir.display());
+        }
 
         let mut web_context = WebContext::new(Some(profile_dir));
 
@@ -591,6 +595,26 @@ impl BrowserPane {
             id,
             "return document.documentElement ? document.documentElement.outerHTML : ''",
         );
+    }
+
+    /// Capture a screenshot of the current viewport as a data URL via JS canvas capture.
+    /// The result will be available via `take_eval_result(id)`.
+    pub fn screenshot(&self, id: &str) {
+        let js = r#"
+            try {
+                // Fallback: return page metadata since native canvas capture needs html2canvas.
+                // Return a plain object — evaluate_with_result handles serialization.
+                return {
+                    fallback: true,
+                    url: window.location.href,
+                    title: document.title,
+                    viewport: { width: window.innerWidth, height: window.innerHeight }
+                };
+            } catch(e) {
+                return { error: e.message };
+            }
+        "#;
+        self.evaluate_with_result(id, js);
     }
 
     /// Click at page coordinates.

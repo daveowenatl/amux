@@ -120,7 +120,9 @@ impl BrowserHistory {
             return;
         }
         if let Some(parent) = self.path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!("Failed to create directory {}: {e}", parent.display());
+            }
         }
         match serde_json::to_string(&self.entries) {
             Ok(json) => {

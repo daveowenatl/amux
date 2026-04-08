@@ -158,11 +158,11 @@ struct AmuxApp {
     menu_attached: bool,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
-    /// Pending browser pane creation requests (URL). Processed in update()
-    /// where the window handle is available.
-    pending_browser_panes: Vec<String>,
-    /// Browser panes being restored: (parent_pane_id, browser_pane_id, url).
-    pending_browser_restores: Vec<(PaneId, PaneId, String)>,
+    /// Pending browser pane creation requests (originating_pane_id, URL).
+    /// Processed in update() where the window handle is available.
+    pending_browser_panes: Vec<(PaneId, String)>,
+    /// Browser panes being restored: (parent_pane_id, saved_tab).
+    pending_browser_restores: Vec<(PaneId, amux_session::SavedBrowserTab)>,
     /// Per-browser-pane omnibar editing state.
     omnibar_state: HashMap<PaneId, OmnibarState>,
     /// Browser URL history for omnibar autocomplete.
@@ -234,7 +234,9 @@ impl AmuxApp {
                 match managed.active_tab() {
                     managed_pane::ActiveTab::Terminal(_) => {
                         if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&old_id) {
-                            m.active_surface_mut().pane.focus_changed(false);
+                            if let Some(sf) = m.active_surface_mut() {
+                                sf.pane.focus_changed(false);
+                            }
                         }
                     }
                     managed_pane::ActiveTab::Browser(bid) => {
@@ -249,7 +251,9 @@ impl AmuxApp {
                 match managed.active_tab() {
                     managed_pane::ActiveTab::Terminal(_) => {
                         if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
-                            m.active_surface_mut().pane.focus_changed(true);
+                            if let Some(sf) = m.active_surface_mut() {
+                                sf.pane.focus_changed(true);
+                            }
                         }
                     }
                     managed_pane::ActiveTab::Browser(bid) => {
@@ -282,9 +286,11 @@ impl AmuxApp {
     }
 
     /// Queue a browser pane creation. Deferred to update() where the window handle
-    /// is available.
-    fn queue_browser_pane(&mut self, url: String) {
-        self.pending_browser_panes.push(url);
+    /// is available. `pane_id` is the originating pane — captured now so that
+    /// deferred processing attaches the new browser tab to the correct pane even
+    /// if focus changes before `create_pending_browser_panes` runs.
+    fn queue_browser_pane(&mut self, pane_id: PaneId, url: String) {
+        self.pending_browser_panes.push((pane_id, url));
     }
 
     /// Open a URL in an existing browser tab, or queue creation of a new one.
@@ -314,7 +320,8 @@ impl AmuxApp {
             }
             self.set_focus(tree_pane_id);
         } else {
-            self.queue_browser_pane(url.to_string());
+            let pane_id = self.focused_pane_id();
+            self.queue_browser_pane(pane_id, url.to_string());
         }
     }
 
@@ -335,9 +342,9 @@ impl AmuxApp {
             download_dir: dl_dir.as_deref(),
         };
 
-        // New browser panes (from IPC/CLI) — added as tabs in the focused pane
-        let urls: Vec<String> = self.pending_browser_panes.drain(..).collect();
-        for url in urls {
+        // New browser panes — added as tabs in their originating pane
+        let pending: Vec<(PaneId, String)> = self.pending_browser_panes.drain(..).collect();
+        for (originating_pane_id, url) in pending {
             let browser_pane_id = self.next_pane_id;
             self.next_pane_id += 1;
 
@@ -345,11 +352,12 @@ impl AmuxApp {
                 Ok(browser) => {
                     browser.focus();
                     self.panes
-                        .insert(browser_pane_id, PaneEntry::Browser(browser));
-                    // Add as a tab in the focused ManagedPane (not a tree split).
+                        .insert(browser_pane_id, PaneEntry::Browser(Box::new(browser)));
+                    // Add as a tab in the originating ManagedPane (not a tree split).
                     // Insert right after the active tab (cmux behavior).
-                    let focused = self.focused_pane_id();
-                    if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused) {
+                    if let Some(PaneEntry::Terminal(managed)) =
+                        self.panes.get_mut(&originating_pane_id)
+                    {
                         let insert_at = (managed.active_tab_idx + 1).min(managed.tabs.len());
                         managed
                             .tabs
@@ -359,7 +367,7 @@ impl AmuxApp {
                     tracing::info!(
                         "Created browser tab {} in pane {} with URL: {}",
                         browser_pane_id,
-                        self.focused_pane_id(),
+                        originating_pane_id,
                         url
                     );
                 }
@@ -370,20 +378,35 @@ impl AmuxApp {
         }
 
         // Restored browser panes — added as tabs in their parent pane
-        let restores: Vec<(PaneId, PaneId, String)> =
+        let restores: Vec<(PaneId, amux_session::SavedBrowserTab)> =
             self.pending_browser_restores.drain(..).collect();
-        for (parent_pane_id, browser_pane_id, url) in restores {
-            match amux_browser::BrowserPane::new(frame, bounds, &url, None, Some(&options)) {
+        for (parent_pane_id, saved_tab) in restores {
+            let browser_pane_id = saved_tab.pane_id;
+            let profile = if saved_tab.profile == "default" {
+                None
+            } else {
+                Some(saved_tab.profile.as_str())
+            };
+            match amux_browser::BrowserPane::new(
+                frame,
+                bounds,
+                &saved_tab.url,
+                profile,
+                Some(&options),
+            ) {
                 Ok(browser) => {
+                    if saved_tab.zoom_level != 1.0 {
+                        browser.zoom(saved_tab.zoom_level);
+                    }
                     self.panes
-                        .insert(browser_pane_id, PaneEntry::Browser(browser));
+                        .insert(browser_pane_id, PaneEntry::Browser(Box::new(browser)));
                     // tabs list was already populated with Browser entries during
                     // session restore in startup.rs — no need to push again here.
                     tracing::info!(
                         "Restored browser tab {} in pane {} with URL: {}",
                         browser_pane_id,
                         parent_pane_id,
-                        url
+                        saved_tab.url
                     );
                 }
                 Err(e) => {

@@ -72,7 +72,10 @@ impl AmuxApp {
                         let query = find.query.clone();
                         let pane_id = find.pane_id;
                         if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
-                            let matches = managed.active_surface().pane.search_scrollback(&query);
+                            let matches = managed
+                                .active_surface()
+                                .map(|sf| sf.pane.search_scrollback(&query))
+                                .unwrap_or_default();
                             let find = self.find_state.as_mut().unwrap();
                             find.matches = matches;
                             find.current_match = 0;
@@ -127,13 +130,14 @@ impl AmuxApp {
                     let (phys_row, _, _) = find.matches[find.current_match];
                     let pane_id = find.pane_id;
                     if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
-                        let surface = managed.active_surface_mut();
-                        let (_, rows) = surface.pane.dimensions();
-                        let total_rows = surface.pane.scrollback_rows();
-                        // Calculate scroll offset to center the match
-                        let target_end = phys_row + rows / 2;
-                        let actual_end = target_end.min(total_rows);
-                        surface.scroll_offset = total_rows.saturating_sub(actual_end);
+                        if let Some(surface) = managed.active_surface_mut() {
+                            let (_, rows) = surface.pane.dimensions();
+                            let total_rows = surface.pane.scrollback_rows();
+                            // Calculate scroll offset to center the match
+                            let target_end = phys_row + rows / 2;
+                            let actual_end = target_end.min(total_rows);
+                            surface.scroll_offset = total_rows.saturating_sub(actual_end);
+                        }
                     }
                 }
             }

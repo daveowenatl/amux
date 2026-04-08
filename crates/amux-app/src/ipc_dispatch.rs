@@ -32,7 +32,8 @@ impl AmuxApp {
                     .panes
                     .get(&focused)
                     .and_then(|e| e.as_terminal())
-                    .map(|m| m.active_surface().id)
+                    .and_then(|m| m.active_surface())
+                    .map(|sf| sf.id)
                     .unwrap_or(0);
                 Response::ok(
                     req.id.clone(),
@@ -215,7 +216,8 @@ impl AmuxApp {
                 }
                 match serde_json::from_value::<BrowserParams>(req.params.clone()) {
                     Ok(params) => {
-                        self.queue_browser_pane(params.url);
+                        let pane_id = self.focused_pane_id();
+                        self.queue_browser_pane(pane_id, params.url);
                         Response::ok(req.id.clone(), serde_json::json!({"status": "queued"}))
                     }
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
@@ -371,6 +373,48 @@ impl AmuxApp {
                         )
                     }
                     None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                }
+            }
+            "browser.screenshot" => {
+                let eval_id = format!("screenshot_{}", req.id);
+                let pane_id_str = Self::pane_id_param(&req.params);
+                match self.resolve_browser_pane(pane_id_str.as_deref()) {
+                    Some(browser) => {
+                        browser.screenshot(&eval_id);
+                        Response::ok(
+                            req.id.clone(),
+                            serde_json::json!({"eval_id": eval_id, "status": "pending"}),
+                        )
+                    }
+                    None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                }
+            }
+            "browser.get-eval-result" => {
+                #[derive(serde::Deserialize)]
+                struct GetEvalResultParams {
+                    eval_id: String,
+                    #[serde(default)]
+                    pane_id: Option<String>,
+                }
+                match serde_json::from_value::<GetEvalResultParams>(req.params.clone()) {
+                    Ok(params) => match self.resolve_browser_pane_ref(params.pane_id.as_deref()) {
+                        Some(browser) => match browser.take_eval_result(&params.eval_id) {
+                            Some(result) => {
+                                let value: serde_json::Value = serde_json::from_str(&result)
+                                    .unwrap_or(serde_json::Value::String(result));
+                                Response::ok(
+                                    req.id.clone(),
+                                    serde_json::json!({"status": "complete", "result": value}),
+                                )
+                            }
+                            None => Response::ok(
+                                req.id.clone(),
+                                serde_json::json!({"status": "pending"}),
+                            ),
+                        },
+                        None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                    },
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
                 }
             }
             "browser.click" => {
@@ -583,10 +627,13 @@ impl AmuxApp {
                 let mut pane_list = Vec::new();
                 for id in &pane_ids {
                     if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(id) {
-                        let sf = managed.active_surface_mut();
-                        let (cols, rows) = sf.pane.dimensions();
-                        let alive = sf.pane.is_alive();
                         let tab_count = managed.tab_count();
+                        let (cols, rows, alive) = if let Some(sf) = managed.active_surface_mut() {
+                            let (c, r) = sf.pane.dimensions();
+                            (c, r, sf.pane.is_alive())
+                        } else {
+                            (80, 24, false)
+                        };
                         pane_list.push(serde_json::json!({
                             "id": id.to_string(),
                             "focused": *id == focused,
@@ -719,7 +766,8 @@ impl AmuxApp {
                                 .panes
                                 .get(&target_pane)
                                 .and_then(|e| e.as_terminal())
-                                .and_then(|m| m.active_surface().metadata.cwd.clone());
+                                .and_then(|m| m.active_surface())
+                                .and_then(|sf| sf.metadata.cwd.clone());
 
                             match startup::spawn_surface(
                                 80,
@@ -972,7 +1020,7 @@ impl AmuxApp {
         if surface_id == "default" || surface_id.is_empty() {
             let focused = self.focused_pane_id();
             let m = self.panes.get_mut(&focused)?.as_terminal_mut()?;
-            return Some(m.active_surface_mut());
+            return m.active_surface_mut();
         }
 
         // Try as surface ID first: find which pane contains it
@@ -1001,7 +1049,7 @@ impl AmuxApp {
             // Fall back to treating it as a pane ID
             if let Ok(pane_id) = surface_id.parse::<PaneId>() {
                 let m = self.panes.get_mut(&pane_id)?.as_terminal_mut()?;
-                return Some(m.active_surface_mut());
+                return m.active_surface_mut();
             }
         }
 
@@ -1059,7 +1107,7 @@ impl AmuxApp {
         if surface_id == "default" || surface_id.is_empty() {
             let focused = self.focused_pane_id();
             let m = self.panes.get(&focused)?.as_terminal()?;
-            Some(m.active_surface())
+            m.active_surface()
         } else if let Ok(sf_id) = surface_id.parse::<u64>() {
             for entry in self.panes.values() {
                 if let PaneEntry::Terminal(managed) = entry {
@@ -1070,7 +1118,7 @@ impl AmuxApp {
             }
             if let Ok(pane_id) = surface_id.parse::<PaneId>() {
                 let m = self.panes.get(&pane_id)?.as_terminal()?;
-                Some(m.active_surface())
+                m.active_surface()
             } else {
                 None
             }

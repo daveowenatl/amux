@@ -225,6 +225,13 @@ impl AmuxApp {
                     egui::TextureOptions::LINEAR,
                 );
                 self.favicon_cache.insert(url, tex);
+
+                // Cap cache at 256 entries
+                while self.favicon_cache.len() > 256 {
+                    if let Some(key) = self.favicon_cache.keys().next().cloned() {
+                        self.favicon_cache.remove(&key);
+                    }
+                }
             }
         }
     }

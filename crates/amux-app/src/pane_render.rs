@@ -20,7 +20,7 @@ impl AmuxApp {
         is_focused: bool,
     ) {
         // Collect info we need before borrowing panes mutably
-        let (active_is_browser, active_browser_id, browser_pane_ids) =
+        let (_active_is_browser_initial, active_browser_id, browser_pane_ids) =
             match self.panes.get(&pane_id) {
                 Some(PaneEntry::Terminal(m)) => {
                     let active_bid = match m.active_tab() {
@@ -524,7 +524,8 @@ impl AmuxApp {
                             .panes
                             .get(&pane_id)
                             .and_then(|e| e.as_terminal())
-                            .and_then(|m| m.active_surface().metadata.cwd.clone());
+                            .and_then(|m| m.active_surface())
+                            .and_then(|sf| sf.metadata.cwd.clone());
                         if let Ok(surface) = startup::spawn_surface(
                             80,
                             24,
@@ -549,7 +550,7 @@ impl AmuxApp {
                         return;
                     }
                     ToolbarAction::NewBrowser => {
-                        self.queue_browser_pane(DEFAULT_BROWSER_URL.to_string());
+                        self.queue_browser_pane(pane_id, DEFAULT_BROWSER_URL.to_string());
                         return;
                     }
                     ToolbarAction::SplitVertical => {
@@ -664,6 +665,13 @@ impl AmuxApp {
             }
         }
 
+        // Recompute after tab mutation (switch_to or close_tab may have changed the active tab)
+        let active_is_browser = self
+            .panes
+            .get(&pane_id)
+            .and_then(|e| e.as_terminal())
+            .is_some_and(|m| m.active_is_browser());
+
         // If active tab is a browser, render browser content and return
         if active_is_browser {
             if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
@@ -717,7 +725,10 @@ impl AmuxApp {
             .as_ref()
             .or(managed.selection.as_ref())
             .cloned();
-        let surface = managed.active_surface_mut();
+        let surface = match managed.active_surface_mut() {
+            Some(s) => s,
+            None => return,
+        };
         // Cursor blink: 500ms on, 500ms off cycle, reset on input.
         let blink_elapsed_ms = self.cursor_blink_since.elapsed().as_millis();
         let cursor_blink_on = (blink_elapsed_ms % 1000) < 500;
@@ -747,7 +758,10 @@ impl AmuxApp {
         if let Some(cm) = self.copy_mode.as_ref().filter(|cm| cm.pane_id == pane_id) {
             let (cell_w, cell_h) = self.cell_dimensions(ui);
             if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
-                let surface = managed.active_surface();
+                let surface = match managed.active_surface() {
+                    Some(s) => s,
+                    None => return,
+                };
                 let (_, rows) = surface.pane.dimensions();
                 let total = surface.pane.scrollback_rows();
                 let end = total.saturating_sub(surface.scroll_offset);

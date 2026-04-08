@@ -319,27 +319,129 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::BrowserEval { script, pane } => {
             let mut params = serde_json::json!({"script": script});
-            if let Some(p) = pane {
+            if let Some(p) = &pane {
                 params["pane_id"] = serde_json::json!(p);
             }
             let resp = client.call("browser.evaluate", params).await?;
-            print_response(&resp, cli.json);
+            let resp = poll_eval_result(&mut client, resp, pane.as_deref(), 5000).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                if let Some(result) = resp.result.as_ref().and_then(|r| r.get("result")) {
+                    // Print strings without JSON quotes
+                    if let Some(s) = result.as_str() {
+                        println!("{}", s);
+                    } else {
+                        println!("{}", result);
+                    }
+                } else {
+                    eprintln!("Timed out waiting for eval result");
+                    std::process::exit(1);
+                }
+            } else {
+                print_response(&resp, false);
+            }
         }
         Command::BrowserText { pane } => {
-            let params = match pane {
+            let params = match &pane {
                 Some(p) => serde_json::json!({"pane_id": p}),
                 None => serde_json::json!({}),
             };
             let resp = client.call("browser.get-text", params).await?;
-            print_response(&resp, cli.json);
+            let resp = poll_eval_result(&mut client, resp, pane.as_deref(), 5000).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                if let Some(text) = resp
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.get("result"))
+                    .and_then(|v| v.as_str())
+                {
+                    println!("{}", text);
+                } else {
+                    eprintln!("Timed out waiting for result");
+                    std::process::exit(1);
+                }
+            } else {
+                print_response(&resp, false);
+            }
         }
         Command::BrowserSnapshot { pane } => {
-            let params = match pane {
+            let params = match &pane {
                 Some(p) => serde_json::json!({"pane_id": p}),
                 None => serde_json::json!({}),
             };
             let resp = client.call("browser.snapshot", params).await?;
-            print_response(&resp, cli.json);
+            let resp = poll_eval_result(&mut client, resp, pane.as_deref(), 5000).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                if let Some(text) = resp
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.get("result"))
+                    .and_then(|v| v.as_str())
+                {
+                    println!("{}", text);
+                } else {
+                    eprintln!("Timed out waiting for result");
+                    std::process::exit(1);
+                }
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::BrowserScreenshot { pane, output } => {
+            let params = match &pane {
+                Some(p) => serde_json::json!({"pane_id": p}),
+                None => serde_json::json!({}),
+            };
+            let resp = client.call("browser.screenshot", params).await?;
+            let resp = poll_eval_result(&mut client, resp, pane.as_deref(), 10000).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                if let Some(result) = resp
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.get("result"))
+                    .and_then(|v| v.as_str())
+                {
+                    if let Some(path) = output {
+                        // If result is a data URL, decode base64 and write to file
+                        if result.starts_with("data:image") {
+                            if let Some(comma_pos) = result.find(',') {
+                                let b64 = &result[comma_pos + 1..];
+                                use base64::Engine;
+                                match base64::engine::general_purpose::STANDARD.decode(b64) {
+                                    Ok(bytes) => {
+                                        std::fs::write(&path, &bytes)?;
+                                        println!("Screenshot written to {}", path);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Failed to decode screenshot: {}", e);
+                                        std::process::exit(1);
+                                    }
+                                }
+                            } else {
+                                eprintln!("Unexpected data URL format");
+                                std::process::exit(1);
+                            }
+                        } else {
+                            eprintln!(
+                                "Screenshot not available (got metadata instead of image data)"
+                            );
+                            eprintln!("{}", result);
+                            std::process::exit(1);
+                        }
+                    } else {
+                        println!("{}", result);
+                    }
+                }
+            } else {
+                print_response(&resp, false);
+            }
         }
         Command::BrowserDevtools { pane, open } => {
             let mut params = serde_json::json!({});
@@ -742,6 +844,70 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Poll `browser.get-eval-result` until the result is complete or timeout is reached.
+///
+/// If the initial response is not ok, already complete, or has no `eval_id`, it is
+/// returned immediately. Otherwise we poll every 50 ms until the result is ready or the
+/// timeout elapses, at which point the last response is returned as-is.
+async fn poll_eval_result(
+    client: &mut IpcClient,
+    initial: amux_ipc::Response,
+    pane_id: Option<&str>,
+    timeout_ms: u64,
+) -> anyhow::Result<amux_ipc::Response> {
+    if !initial.ok {
+        return Ok(initial);
+    }
+
+    // Extract eval_id; if absent the call is already synchronous — return as-is.
+    let eval_id = match initial
+        .result
+        .as_ref()
+        .and_then(|r| r.get("eval_id"))
+        .and_then(|v| v.as_str())
+    {
+        Some(id) => id.to_string(),
+        None => return Ok(initial),
+    };
+
+    // Already complete on the first response (unlikely but handle it).
+    if initial
+        .result
+        .as_ref()
+        .and_then(|r| r.get("status"))
+        .and_then(|v| v.as_str())
+        == Some("complete")
+    {
+        return Ok(initial);
+    }
+
+    let started = std::time::Instant::now();
+    let mut last = initial;
+    loop {
+        if started.elapsed().as_millis() as u64 >= timeout_ms {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let mut params = serde_json::json!({"eval_id": eval_id});
+        if let Some(p) = pane_id {
+            params["pane_id"] = serde_json::json!(p);
+        }
+        let resp = client.call("browser.get-eval-result", params).await?;
+        let complete = resp
+            .result
+            .as_ref()
+            .and_then(|r| r.get("status"))
+            .and_then(|v| v.as_str())
+            == Some("complete");
+        last = resp;
+        if complete {
+            break;
+        }
+    }
+    Ok(last)
 }
 
 fn resolve_addr(cli: &Cli) -> anyhow::Result<IpcAddr> {

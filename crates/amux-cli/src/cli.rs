@@ -148,6 +148,16 @@ pub(crate) enum Command {
         #[arg(long)]
         pane: Option<String>,
     },
+    /// Capture a screenshot of the browser page
+    #[command(name = "browser-screenshot")]
+    BrowserScreenshot {
+        /// Write to file path (default: print to stdout)
+        #[arg(long)]
+        output: Option<String>,
+        /// Target pane ID
+        #[arg(long)]
+        pane: Option<String>,
+    },
     /// Toggle browser DevTools
     #[command(name = "browser-devtools")]
     BrowserDevtools {

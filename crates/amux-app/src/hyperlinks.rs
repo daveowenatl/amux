@@ -91,7 +91,10 @@ impl AmuxApp {
             if managed.active_is_browser() {
                 return;
             }
-            let surface = managed.active_surface();
+            let surface = match managed.active_surface() {
+                Some(s) => s,
+                None => return,
+            };
             let (cols, rows) = surface.pane.dimensions();
             if col >= cols || row >= rows {
                 return;

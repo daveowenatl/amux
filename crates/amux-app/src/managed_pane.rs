@@ -24,7 +24,7 @@ pub(crate) use amux_core::model::{
 #[allow(dead_code)]
 pub(crate) enum PaneEntry {
     Terminal(ManagedPane),
-    Browser(amux_browser::BrowserPane),
+    Browser(Box<amux_browser::BrowserPane>),
 }
 
 #[allow(dead_code)]
@@ -225,31 +225,21 @@ impl ManagedPane {
         self.tabs[self.active_tab_idx].is_browser()
     }
 
-    /// Returns the active terminal surface.
+    /// Returns the active terminal surface, or `None` if there are no terminal surfaces.
     /// When a browser tab is active, returns the nearest terminal surface as a
     /// safe fallback (callers should check `active_is_browser()` first).
-    ///
-    /// # Panics
-    /// Panics if there are no terminal surfaces.
-    pub(crate) fn active_surface(&self) -> &PaneSurface {
+    pub(crate) fn active_surface(&self) -> Option<&PaneSurface> {
         if let TabEntry::Terminal(s) = &self.tabs[self.active_tab_idx] {
-            return s;
+            return Some(s);
         }
         // Fallback: find the last terminal surface
-        self.tabs
-            .iter()
-            .filter_map(|t| t.as_surface())
-            .next_back()
-            .expect("active_surface() called with no terminal surfaces")
+        self.tabs.iter().filter_map(|t| t.as_surface()).next_back()
     }
 
-    /// Returns the active terminal surface mutably.
+    /// Returns the active terminal surface mutably, or `None` if there are no terminal surfaces.
     /// When a browser tab is active, returns the last terminal surface as a
     /// safe fallback (callers should check `active_is_browser()` first).
-    ///
-    /// # Panics
-    /// Panics if there are no terminal surfaces.
-    pub(crate) fn active_surface_mut(&mut self) -> &mut PaneSurface {
+    pub(crate) fn active_surface_mut(&mut self) -> Option<&mut PaneSurface> {
         // Try active tab first
         let idx = if matches!(self.tabs[self.active_tab_idx], TabEntry::Terminal(_)) {
             self.active_tab_idx
@@ -257,11 +247,10 @@ impl ManagedPane {
             // Fallback: find last terminal tab index
             self.tabs
                 .iter()
-                .rposition(|t| matches!(t, TabEntry::Terminal(_)))
-                .expect("active_surface_mut() called with no terminal surfaces")
+                .rposition(|t| matches!(t, TabEntry::Terminal(_)))?
         };
         match &mut self.tabs[idx] {
-            TabEntry::Terminal(s) => s,
+            TabEntry::Terminal(s) => Some(s),
             TabEntry::Browser(_) => unreachable!(),
         }
     }
@@ -289,14 +278,17 @@ impl ManagedPane {
         if self.active_is_browser() {
             return "Browser".to_string();
         }
-        let surface = self.active_surface();
-        if let Some(ref t) = surface.user_title {
-            return t.clone();
+        if let Some(surface) = self.active_surface() {
+            if let Some(ref t) = surface.user_title {
+                return t.clone();
+            }
+            if let Some(ref t) = surface.metadata.surface_title {
+                return t.clone();
+            }
+            surface.pane.title().to_string()
+        } else {
+            String::new()
         }
-        if let Some(ref t) = surface.metadata.surface_title {
-            return t.clone();
-        }
-        surface.pane.title().to_string()
     }
 
     /// Whether the active surface's PTY process is still alive.
@@ -304,7 +296,9 @@ impl ManagedPane {
         if self.active_is_browser() {
             return true;
         }
-        self.active_surface_mut().pane.is_alive()
+        self.active_surface_mut()
+            .map(|sf| sf.pane.is_alive())
+            .unwrap_or(false)
     }
 
     /// Current dimensions (cols, rows) of the active surface.
@@ -312,7 +306,9 @@ impl ManagedPane {
         if self.active_is_browser() {
             return (80, 24);
         }
-        self.active_surface().pane.dimensions()
+        self.active_surface()
+            .map(|sf| sf.pane.dimensions())
+            .unwrap_or((80, 24))
     }
 
     /// Panel type identifier for future multi-panel support.
