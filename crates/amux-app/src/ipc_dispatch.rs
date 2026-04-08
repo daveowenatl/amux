@@ -373,6 +373,20 @@ impl AmuxApp {
                     None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
                 }
             }
+            "browser.screenshot" => {
+                let eval_id = format!("screenshot_{}", req.id);
+                let pane_id_str = Self::pane_id_param(&req.params);
+                match self.resolve_browser_pane(pane_id_str.as_deref()) {
+                    Some(browser) => {
+                        browser.screenshot(&eval_id);
+                        Response::ok(
+                            req.id.clone(),
+                            serde_json::json!({"eval_id": eval_id, "status": "pending"}),
+                        )
+                    }
+                    None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                }
+            }
             "browser.get-eval-result" => {
                 #[derive(serde::Deserialize)]
                 struct GetEvalResultParams {

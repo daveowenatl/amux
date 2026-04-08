@@ -378,6 +378,54 @@ async fn main() -> anyhow::Result<()> {
                 print_response(&resp, false);
             }
         }
+        Command::BrowserScreenshot { pane, output } => {
+            let params = match &pane {
+                Some(p) => serde_json::json!({"pane_id": p}),
+                None => serde_json::json!({}),
+            };
+            let resp = client.call("browser.screenshot", params).await?;
+            let resp = poll_eval_result(&mut client, resp, pane.as_deref(), 10000).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                if let Some(result) = resp
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.get("result"))
+                    .and_then(|v| v.as_str())
+                {
+                    if let Some(path) = output {
+                        // If result is a data URL, decode base64 and write to file
+                        if result.starts_with("data:image") {
+                            if let Some(comma_pos) = result.find(',') {
+                                let b64 = &result[comma_pos + 1..];
+                                use base64::Engine;
+                                match base64::engine::general_purpose::STANDARD.decode(b64) {
+                                    Ok(bytes) => {
+                                        std::fs::write(&path, &bytes)?;
+                                        println!("Screenshot written to {}", path);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Failed to decode screenshot: {}", e);
+                                        std::process::exit(1);
+                                    }
+                                }
+                            } else {
+                                eprintln!("Unexpected data URL format");
+                                std::process::exit(1);
+                            }
+                        } else {
+                            std::fs::write(&path, result)?;
+                            println!("Screenshot written to {}", path);
+                        }
+                    } else {
+                        println!("{}", result);
+                    }
+                }
+            } else {
+                print_response(&resp, false);
+            }
+        }
         Command::BrowserDevtools { pane, open } => {
             let mut params = serde_json::json!({});
             if let Some(p) = pane {

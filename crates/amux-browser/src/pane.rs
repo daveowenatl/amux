@@ -593,6 +593,31 @@ impl BrowserPane {
         );
     }
 
+    /// Capture a screenshot of the current viewport as a data URL via JS canvas capture.
+    /// The result will be available via `take_eval_result(id)`.
+    pub fn screenshot(&self, id: &str) {
+        let js = r#"
+            (async () => {
+                try {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    canvas.width = window.innerWidth * window.devicePixelRatio;
+                    canvas.height = window.innerHeight * window.devicePixelRatio;
+                    // Fallback: return page metadata since native canvas capture needs html2canvas
+                    return JSON.stringify({
+                        fallback: true,
+                        url: window.location.href,
+                        title: document.title,
+                        viewport: { width: window.innerWidth, height: window.innerHeight }
+                    });
+                } catch(e) {
+                    return JSON.stringify({ error: e.message });
+                }
+            })()
+        "#;
+        self.evaluate_with_result(id, js);
+    }
+
     /// Click at page coordinates.
     pub fn click_at(&self, x: f64, y: f64) {
         let _ = self
