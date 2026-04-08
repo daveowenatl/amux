@@ -2,19 +2,24 @@
 
 use crate::*;
 
-/// Remove reverse-video (SGR 7) from VT byte sequences.
+/// Strip zsh PROMPT_SP artifacts from VT byte sequences.
 ///
-/// Zsh's PROMPT_SP draws a reverse-video `%` as a partial-line indicator.
-/// These get captured in VT state snapshots and appear as ghost artifacts
-/// on restore. This function strips `7` from CSI SGR parameter lists,
-/// handling both standalone `\x1b[7m` and compound forms like `\x1b[1;7;32m`.
-fn strip_reverse_video(bytes: &[u8]) -> Vec<u8> {
+/// Zsh's PROMPT_SP draws a reverse-video `%` as a partial-line indicator
+/// at the cursor position each time Enter is pressed. The VT formatter
+/// captures these cells faithfully. On restore, they appear as ghost
+/// artifacts. This function removes:
+/// 1. SGR 7 (reverse-video on) from all SGR parameter lists
+/// 2. The `%` character immediately following a stripped SGR 7 sequence
+///    (the PROMPT_SP indicator character itself)
+/// 3. Trailing spaces to end-of-line after the stripped `%` (the fill
+///    that zsh writes after PROMPT_SP)
+fn strip_prompt_sp(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
+    let mut just_stripped_reverse = false;
     while i < bytes.len() {
         // Look for CSI: ESC [
         if i + 2 < bytes.len() && bytes[i] == 0x1b && bytes[i + 1] == b'[' {
-            // Find the end of the CSI sequence (final byte in 0x40..=0x7E)
             let start = i;
             let param_start = i + 2;
             let mut end = param_start;
@@ -22,16 +27,22 @@ fn strip_reverse_video(bytes: &[u8]) -> Vec<u8> {
                 end += 1;
             }
             if end < bytes.len() && bytes[end] == b'm' {
-                // This is an SGR sequence — parse parameters and remove `7`
+                // This is an SGR sequence — check if it contains `7`
                 let params = &bytes[param_start..end];
                 let param_str = std::str::from_utf8(params).unwrap_or("");
-                let filtered: Vec<&str> = param_str.split(';').filter(|p| *p != "7").collect();
-                if filtered.is_empty() || (filtered.len() == 1 && filtered[0].is_empty()) {
-                    // All parameters were `7` — skip the entire sequence
+                let has_reverse = param_str.split(';').any(|p| p == "7");
+                if has_reverse {
+                    // Remove `7` from parameters
+                    let filtered: Vec<&str> = param_str.split(';').filter(|p| *p != "7").collect();
+                    if !(filtered.is_empty() || filtered.len() == 1 && filtered[0].is_empty()) {
+                        out.extend_from_slice(b"\x1b[");
+                        out.extend_from_slice(filtered.join(";").as_bytes());
+                        out.push(b'm');
+                    }
+                    just_stripped_reverse = true;
                 } else {
-                    out.extend_from_slice(b"\x1b[");
-                    out.extend_from_slice(filtered.join(";").as_bytes());
-                    out.push(b'm');
+                    out.extend_from_slice(&bytes[start..=end]);
+                    just_stripped_reverse = false;
                 }
                 i = end + 1;
             } else {
@@ -39,8 +50,18 @@ fn strip_reverse_video(bytes: &[u8]) -> Vec<u8> {
                 let copy_end = if end < bytes.len() { end + 1 } else { end };
                 out.extend_from_slice(&bytes[start..copy_end]);
                 i = copy_end;
+                just_stripped_reverse = false;
             }
+        } else if just_stripped_reverse && bytes[i] == b'%' {
+            // This is the PROMPT_SP indicator character — skip it.
+            // Also skip trailing spaces until newline/CR or next ESC sequence.
+            i += 1;
+            while i < bytes.len() && bytes[i] == b' ' {
+                i += 1;
+            }
+            just_stripped_reverse = false;
         } else {
+            just_stripped_reverse = false;
             out.push(bytes[i]);
             i += 1;
         }
@@ -643,7 +664,7 @@ pub(crate) fn spawn_surface(
             use base64::Engine;
             match base64::engine::general_purpose::STANDARD.decode(vt_b64) {
                 Ok(bytes) => {
-                    let cleaned = strip_reverse_video(&bytes);
+                    let cleaned = strip_prompt_sp(&bytes);
                     pane.feed_bytes(&cleaned);
                     restored = true;
                 }
@@ -717,49 +738,66 @@ mod tests {
     use super::*;
 
     #[test]
-    fn strip_reverse_video_standalone() {
-        // \x1b[7m → stripped entirely
-        let input = b"hello \x1b[7m%\x1b[27m world";
-        let result = strip_reverse_video(input);
-        assert_eq!(result, b"hello %\x1b[27m world");
+    fn strip_prompt_sp_removes_reverse_percent_and_trailing_spaces() {
+        // \x1b[7m% followed by spaces → all removed
+        let input = b"prompt % \x1b[7m%   \x1b[27mnext";
+        let result = strip_prompt_sp(input);
+        assert_eq!(result, b"prompt % \x1b[27mnext");
     }
 
     #[test]
-    fn strip_reverse_video_compound() {
-        // \x1b[1;7;32m → \x1b[1;32m (remove the 7)
-        let input = b"\x1b[1;7;32mtext\x1b[0m";
-        let result = strip_reverse_video(input);
+    fn strip_prompt_sp_compound_sgr() {
+        // \x1b[1;7;32m → \x1b[1;32m, then % eaten
+        let input = b"\x1b[1;7;32m%text\x1b[0m";
+        let result = strip_prompt_sp(input);
+        // 7 stripped from SGR, % after it eaten, "text" preserved
         assert_eq!(result, b"\x1b[1;32mtext\x1b[0m");
     }
 
     #[test]
-    fn strip_reverse_video_only_param() {
-        // \x1b[7m alone → removed entirely
-        let input = b"\x1b[7m";
-        let result = strip_reverse_video(input);
+    fn strip_prompt_sp_only_reverse() {
+        // \x1b[7m% → both removed
+        let input = b"\x1b[7m%";
+        let result = strip_prompt_sp(input);
         assert!(result.is_empty());
     }
 
     #[test]
-    fn strip_reverse_video_preserves_other_sgr() {
+    fn strip_prompt_sp_preserves_normal_percent() {
+        // % without preceding SGR 7 → preserved
+        let input = b"100% done";
+        let result = strip_prompt_sp(input);
+        assert_eq!(result, input.as_slice());
+    }
+
+    #[test]
+    fn strip_prompt_sp_preserves_other_sgr() {
         // \x1b[1;32m → unchanged (no 7 parameter)
         let input = b"\x1b[1;32mbold green\x1b[0m";
-        let result = strip_reverse_video(input);
+        let result = strip_prompt_sp(input);
         assert_eq!(result, input.as_slice());
     }
 
     #[test]
-    fn strip_reverse_video_preserves_non_sgr_csi() {
+    fn strip_prompt_sp_preserves_non_sgr_csi() {
         // \x1b[2J (erase display) → unchanged
         let input = b"\x1b[2J\x1b[H";
-        let result = strip_reverse_video(input);
+        let result = strip_prompt_sp(input);
         assert_eq!(result, input.as_slice());
     }
 
     #[test]
-    fn strip_reverse_video_no_escape() {
+    fn strip_prompt_sp_no_escape() {
         let input = b"plain text";
-        let result = strip_reverse_video(input);
+        let result = strip_prompt_sp(input);
         assert_eq!(result, input.as_slice());
+    }
+
+    #[test]
+    fn strip_prompt_sp_reverse_on_non_percent_preserved() {
+        // \x1b[7m followed by non-% char → SGR 7 stripped but char preserved
+        let input = b"\x1b[7mX\x1b[27m";
+        let result = strip_prompt_sp(input);
+        assert_eq!(result, b"X\x1b[27m");
     }
 }
