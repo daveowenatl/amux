@@ -602,15 +602,16 @@ impl BrowserPane {
     pub fn screenshot(&self, id: &str) {
         let js = r#"
             try {
-                // Fallback: return page metadata since native canvas capture needs html2canvas
-                return JSON.stringify({
+                // Fallback: return page metadata since native canvas capture needs html2canvas.
+                // Return a plain object — evaluate_with_result handles serialization.
+                return {
                     fallback: true,
                     url: window.location.href,
                     title: document.title,
                     viewport: { width: window.innerWidth, height: window.innerHeight }
-                });
+                };
             } catch(e) {
-                return JSON.stringify({ error: e.message });
+                return { error: e.message };
             }
         "#;
         self.evaluate_with_result(id, js);
