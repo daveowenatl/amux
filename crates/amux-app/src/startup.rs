@@ -598,6 +598,9 @@ pub(crate) fn spawn_surface(
             match base64::engine::general_purpose::STANDARD.decode(vt_b64) {
                 Ok(bytes) => {
                     pane.feed_bytes(&bytes);
+                    // Move cursor to column 0 on a new line so the shell's
+                    // PROMPT_SP doesn't overwrite the last restored line.
+                    pane.feed_bytes(b"\r\n");
                     restored = true;
                 }
                 Err(e) => {
