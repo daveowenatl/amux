@@ -2,6 +2,52 @@
 
 use crate::*;
 
+/// Remove reverse-video (SGR 7) from VT byte sequences.
+///
+/// Zsh's PROMPT_SP draws a reverse-video `%` as a partial-line indicator.
+/// These get captured in VT state snapshots and appear as ghost artifacts
+/// on restore. This function strips `7` from CSI SGR parameter lists,
+/// handling both standalone `\x1b[7m` and compound forms like `\x1b[1;7;32m`.
+fn strip_reverse_video(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // Look for CSI: ESC [
+        if i + 2 < bytes.len() && bytes[i] == 0x1b && bytes[i + 1] == b'[' {
+            // Find the end of the CSI sequence (final byte in 0x40..=0x7E)
+            let start = i;
+            let param_start = i + 2;
+            let mut end = param_start;
+            while end < bytes.len() && !(0x40..=0x7E).contains(&bytes[end]) {
+                end += 1;
+            }
+            if end < bytes.len() && bytes[end] == b'm' {
+                // This is an SGR sequence — parse parameters and remove `7`
+                let params = &bytes[param_start..end];
+                let param_str = std::str::from_utf8(params).unwrap_or("");
+                let filtered: Vec<&str> = param_str.split(';').filter(|p| *p != "7").collect();
+                if filtered.is_empty() || (filtered.len() == 1 && filtered[0].is_empty()) {
+                    // All parameters were `7` — skip the entire sequence
+                } else {
+                    out.extend_from_slice(b"\x1b[");
+                    out.extend_from_slice(filtered.join(";").as_bytes());
+                    out.push(b'm');
+                }
+                i = end + 1;
+            } else {
+                // Not an SGR sequence — copy as-is
+                let copy_end = if end < bytes.len() { end + 1 } else { end };
+                out.extend_from_slice(&bytes[start..copy_end]);
+                i = copy_end;
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Strip ANSI escape sequences from a string, returning only visible text.
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -597,7 +643,8 @@ pub(crate) fn spawn_surface(
             use base64::Engine;
             match base64::engine::general_purpose::STANDARD.decode(vt_b64) {
                 Ok(bytes) => {
-                    pane.feed_bytes(&bytes);
+                    let cleaned = strip_reverse_video(&bytes);
+                    pane.feed_bytes(&cleaned);
                     restored = true;
                 }
                 Err(e) => {
@@ -663,4 +710,56 @@ pub(crate) fn spawn_surface(
         user_title: None,
         exited: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_reverse_video_standalone() {
+        // \x1b[7m → stripped entirely
+        let input = b"hello \x1b[7m%\x1b[27m world";
+        let result = strip_reverse_video(input);
+        assert_eq!(result, b"hello %\x1b[27m world");
+    }
+
+    #[test]
+    fn strip_reverse_video_compound() {
+        // \x1b[1;7;32m → \x1b[1;32m (remove the 7)
+        let input = b"\x1b[1;7;32mtext\x1b[0m";
+        let result = strip_reverse_video(input);
+        assert_eq!(result, b"\x1b[1;32mtext\x1b[0m");
+    }
+
+    #[test]
+    fn strip_reverse_video_only_param() {
+        // \x1b[7m alone → removed entirely
+        let input = b"\x1b[7m";
+        let result = strip_reverse_video(input);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn strip_reverse_video_preserves_other_sgr() {
+        // \x1b[1;32m → unchanged (no 7 parameter)
+        let input = b"\x1b[1;32mbold green\x1b[0m";
+        let result = strip_reverse_video(input);
+        assert_eq!(result, input.as_slice());
+    }
+
+    #[test]
+    fn strip_reverse_video_preserves_non_sgr_csi() {
+        // \x1b[2J (erase display) → unchanged
+        let input = b"\x1b[2J\x1b[H";
+        let result = strip_reverse_video(input);
+        assert_eq!(result, input.as_slice());
+    }
+
+    #[test]
+    fn strip_reverse_video_no_escape() {
+        let input = b"plain text";
+        let result = strip_reverse_video(input);
+        assert_eq!(result, input.as_slice());
+    }
 }
