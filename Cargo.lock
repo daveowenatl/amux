@@ -124,6 +124,7 @@ dependencies = [
  "amux-term",
  "anyhow",
  "arboard",
+ "base64 0.22.1",
  "chrono",
  "dirs",
  "eframe",

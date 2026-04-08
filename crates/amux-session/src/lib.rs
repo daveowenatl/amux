@@ -144,6 +144,11 @@ pub struct SavedSurface {
     pub working_dir: Option<String>,
     #[serde(default)]
     pub scrollback: String,
+    /// VT state snapshot (base64-encoded byte stream from ghostty formatter).
+    /// When present, preferred over `scrollback` for session restore — produces
+    /// an exact reconstruction of terminal state without trailing blank lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scrollback_vt: Option<String>,
     pub cols: u16,
     pub rows: u16,
     #[serde(default)]
@@ -302,6 +307,7 @@ mod tests {
                     pr_title: None,
                     pr_state: None,
                     user_title: None,
+                    scrollback_vt: None,
                 }],
                 active_surface_idx: 0,
                 browser: None,

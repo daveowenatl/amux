@@ -2,6 +2,40 @@
 
 use crate::*;
 
+/// Strip ANSI escape sequences from a string, returning only visible text.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip CSI sequences (\x1b[...m etc.) and OSC sequences
+            if let Some(next) = chars.next() {
+                if next == '[' {
+                    // CSI: consume until a letter in @-~ range
+                    for c2 in chars.by_ref() {
+                        if c2.is_ascii_alphabetic() || c2 == '~' || c2 == '@' {
+                            break;
+                        }
+                    }
+                } else if next == ']' {
+                    // OSC: consume until ST (\x1b\\) or BEL (\x07)
+                    let mut prev = next;
+                    for c2 in chars.by_ref() {
+                        if c2 == '\x07' || (prev == '\x1b' && c2 == '\\') {
+                            break;
+                        }
+                        prev = c2;
+                    }
+                }
+                // else: two-char escape like \x1b( — already consumed
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 pub(crate) fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
@@ -217,7 +251,18 @@ pub(crate) fn fresh_startup(
     config: &Arc<AmuxTermConfig>,
 ) -> anyhow::Result<StartupState> {
     let initial_pane_id: PaneId = 0;
-    let surface = spawn_surface(80, 24, ipc_addr, socket_token, config, 0, 0, None, None)?;
+    let surface = spawn_surface(
+        80,
+        24,
+        ipc_addr,
+        socket_token,
+        config,
+        0,
+        0,
+        None,
+        None,
+        None,
+    )?;
 
     let managed = PaneEntry::Terminal(ManagedPane {
         tabs: vec![managed_pane::TabEntry::Terminal(Box::new(surface))],
@@ -294,6 +339,7 @@ pub(crate) fn restore_session(
                 } else {
                     Some(saved_sf.scrollback.as_str())
                 };
+                let scrollback_vt = saved_sf.scrollback_vt.as_deref();
 
                 match spawn_surface(
                     saved_sf.cols,
@@ -305,6 +351,7 @@ pub(crate) fn restore_session(
                     saved_sf.id,
                     cwd,
                     scrollback,
+                    scrollback_vt,
                 ) {
                     Ok(mut surface) => {
                         // Restore git/PR metadata from session
@@ -471,6 +518,7 @@ pub(crate) fn spawn_surface(
     surface_id: u64,
     cwd: Option<&str>,
     scrollback: Option<&str>,
+    scrollback_vt: Option<&str>,
 ) -> anyhow::Result<PaneSurface> {
     let shell = shell::default_shell();
     let mut cmd = CommandBuilder::new(&shell);
@@ -541,17 +589,38 @@ pub(crate) fn spawn_surface(
         }
     };
 
-    // Inject scrollback text before starting the reader thread.
+    // Inject saved terminal state before starting the reader thread.
     // feed_bytes writes directly to the terminal state machine, not through the PTY.
-    if let Some(text) = scrollback {
-        if !text.is_empty() {
-            // Convert \n to \r\n for terminal processing, avoiding extra trailing blank line.
-            let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-            let trimmed = normalized.trim_end_matches('\n');
-            let buffer = trimmed.replace('\n', "\r\n");
-            if !buffer.is_empty() {
-                pane.feed_bytes(buffer.as_bytes());
-                pane.feed_bytes(b"\r\n");
+    let mut restored = false;
+    if let Some(vt_b64) = scrollback_vt {
+        if !vt_b64.is_empty() {
+            use base64::Engine;
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(vt_b64) {
+                pane.feed_bytes(&bytes);
+                restored = true;
+            }
+        }
+    }
+    if !restored {
+        if let Some(text) = scrollback {
+            if !text.is_empty() {
+                // Strip trailing lines whose visible text (after removing ANSI
+                // escape sequences) is empty or whitespace-only.
+                let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+                let lines: Vec<&str> = normalized.split('\n').collect();
+                let trimmed: Vec<&str> = lines
+                    .into_iter()
+                    .rev()
+                    .skip_while(|line| strip_ansi(line).trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                let buffer = trimmed.join("\r\n");
+                if !buffer.is_empty() {
+                    pane.feed_bytes(buffer.as_bytes());
+                    pane.feed_bytes(b"\r\n");
+                }
             }
         }
     }
