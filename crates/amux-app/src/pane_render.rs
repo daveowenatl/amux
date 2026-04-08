@@ -20,7 +20,7 @@ impl AmuxApp {
         is_focused: bool,
     ) {
         // Collect info we need before borrowing panes mutably
-        let (active_is_browser, active_browser_id, browser_pane_ids) =
+        let (_active_is_browser_initial, active_browser_id, browser_pane_ids) =
             match self.panes.get(&pane_id) {
                 Some(PaneEntry::Terminal(m)) => {
                     let active_bid = match m.active_tab() {
@@ -664,6 +664,13 @@ impl AmuxApp {
                 }
             }
         }
+
+        // Recompute after tab mutation (switch_to or close_tab may have changed the active tab)
+        let active_is_browser = self
+            .panes
+            .get(&pane_id)
+            .and_then(|e| e.as_terminal())
+            .is_some_and(|m| m.active_is_browser());
 
         // If active tab is a browser, render browser content and return
         if active_is_browser {

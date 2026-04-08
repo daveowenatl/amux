@@ -182,14 +182,18 @@ impl BrowserPane {
     ) -> Result<Self, wry::Error> {
         let profile_name = profile.unwrap_or("default").to_string();
         let profile_dir = profiles_base_dir().join(&profile_name);
-        let _ = std::fs::create_dir_all(&profile_dir);
+        if let Err(e) = std::fs::create_dir_all(&profile_dir) {
+            tracing::warn!("Failed to create directory {}: {e}", profile_dir.display());
+        }
 
         let download_dir = options
             .and_then(|o| o.download_dir)
             .map(PathBuf::from)
             .or_else(dirs::download_dir)
             .unwrap_or_else(|| PathBuf::from("."));
-        let _ = std::fs::create_dir_all(&download_dir);
+        if let Err(e) = std::fs::create_dir_all(&download_dir) {
+            tracing::warn!("Failed to create directory {}: {e}", download_dir.display());
+        }
 
         let mut web_context = WebContext::new(Some(profile_dir));
 
