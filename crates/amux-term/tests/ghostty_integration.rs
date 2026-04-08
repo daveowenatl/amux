@@ -14,6 +14,18 @@ use amux_term::backend::TerminalBackend;
 use amux_term::ghostty_pane::GhosttyPane;
 use amux_term::pane::AdvanceResult;
 
+/// Helper: create a raw Terminal + RenderState pair for direct VT API tests.
+fn new_terminal_and_render_state() -> (libghostty_vt::Terminal, libghostty_vt::RenderState) {
+    let terminal = libghostty_vt::Terminal::new(libghostty_vt::TerminalOptions {
+        cols: 80,
+        rows: 24,
+        max_scrollback: 10000,
+    })
+    .expect("terminal creation failed");
+    let render_state = libghostty_vt::RenderState::new().expect("render state creation failed");
+    (terminal, render_state)
+}
+
 /// Helper: spawn a GhosttyPane running a bash script, advance until EOF or timeout.
 fn spawn_and_run(script: &str) -> Box<GhosttyPane<'static, 'static>> {
     let mut cmd = CommandBuilder::new("bash");
@@ -76,7 +88,7 @@ fn screen_text_contains_output() {
 #[test]
 fn feed_bytes_renders_to_screen() {
     let mut cmd = CommandBuilder::new("sleep");
-    cmd.arg("10");
+    cmd.arg("1");
     let mut pane = GhosttyPane::spawn(80, 24, cmd).expect("spawn failed");
 
     // Feed bytes directly into the VT state machine (bypass PTY)
@@ -185,9 +197,191 @@ fn search_scrollback_case_insensitive() {
 #[test]
 fn is_alive_while_running() {
     let mut cmd = CommandBuilder::new("sleep");
-    cmd.arg("10");
+    cmd.arg("1");
     let mut pane = GhosttyPane::spawn(80, 24, cmd).expect("spawn failed");
     assert!(pane.is_alive(), "expected process to be alive");
+}
+
+#[test]
+fn cursor_visible_after_show_hide_sequence() {
+    let mut cmd = CommandBuilder::new("sleep");
+    cmd.arg("1");
+    let mut pane = GhosttyPane::spawn(80, 24, cmd).expect("spawn failed");
+
+    // Cursor should be visible initially
+    let cursor = pane.cursor();
+    assert!(cursor.visible, "cursor should be visible initially");
+
+    // Send DECTCEM hide: CSI ? 25 l
+    pane.feed_bytes(b"\x1b[?25l");
+    let cursor = pane.cursor();
+    assert!(
+        !cursor.visible,
+        "cursor should be hidden after hide sequence"
+    );
+
+    // Send DECTCEM show: CSI ? 25 h
+    pane.feed_bytes(b"\x1b[?25h");
+    let cursor = pane.cursor();
+    assert!(
+        cursor.visible,
+        "cursor should be visible after show sequence"
+    );
+}
+
+#[test]
+fn cursor_visible_after_rapid_toggle() {
+    let mut cmd = CommandBuilder::new("sleep");
+    cmd.arg("1");
+    let mut pane = GhosttyPane::spawn(80, 24, cmd).expect("spawn failed");
+
+    // Simulate rapid DECTCEM toggling like Claude Code does
+    for _ in 0..50 {
+        pane.feed_bytes(b"\x1b[?25l"); // hide
+        pane.feed_bytes(b"\x1b[?25h"); // show
+    }
+
+    let cursor = pane.cursor();
+    assert!(
+        cursor.visible,
+        "cursor should be visible after rapid show/hide toggling"
+    );
+
+    // Now test: hide, then do some output, then show
+    pane.feed_bytes(b"\x1b[?25l");
+    pane.feed_bytes(b"some output here\r\n");
+    pane.feed_bytes(b"\x1b[?25h");
+
+    let cursor = pane.cursor();
+    assert!(
+        cursor.visible,
+        "cursor should be visible after hide-output-show pattern"
+    );
+}
+
+#[test]
+fn cursor_visible_raw_api_after_rapid_toggle() {
+    // Test the raw libghostty-vt API directly, bypassing the workaround
+    let (mut terminal, mut render_state) = new_terminal_and_render_state();
+
+    // Initial state: cursor should be visible
+    let snap = render_state.update(&terminal).expect("update failed");
+    let visible = snap.cursor_visible().expect("cursor_visible failed");
+    assert!(visible, "cursor should be visible initially (raw API)");
+
+    // Simple hide
+    terminal.vt_write(b"\x1b[?25l");
+    let snap = render_state.update(&terminal).expect("update failed");
+    let visible = snap.cursor_visible().expect("cursor_visible failed");
+    assert!(!visible, "cursor should be hidden after hide (raw API)");
+
+    // Simple show
+    terminal.vt_write(b"\x1b[?25h");
+    let snap = render_state.update(&terminal).expect("update failed");
+    let visible = snap.cursor_visible().expect("cursor_visible failed");
+    assert!(
+        visible,
+        "cursor should be visible after show (raw API) — FAILS if DECTCEM bug exists"
+    );
+
+    // Rapid toggling
+    for _ in 0..100 {
+        terminal.vt_write(b"\x1b[?25l");
+        terminal.vt_write(b"\x1b[?25h");
+    }
+    let snap = render_state.update(&terminal).expect("update failed");
+    let visible = snap.cursor_visible().expect("cursor_visible failed");
+    assert!(
+        visible,
+        "cursor should be visible after 100 rapid toggles (raw API)"
+    );
+
+    // Rapid toggling with interleaved output (closer to Claude Code pattern)
+    for i in 0..50 {
+        terminal.vt_write(b"\x1b[?25l");
+        let line = format!("line {i}\r\n");
+        terminal.vt_write(line.as_bytes());
+        terminal.vt_write(b"\x1b[?25h");
+    }
+    let snap = render_state.update(&terminal).expect("update failed");
+    let visible = snap.cursor_visible().expect("cursor_visible failed");
+    assert!(
+        visible,
+        "cursor should be visible after toggle-with-output pattern (raw API)"
+    );
+
+    // Batched writes — multiple sequences in one vt_write call
+    for _ in 0..50 {
+        terminal.vt_write(b"\x1b[?25lwriting stuff\r\n\x1b[?25h");
+    }
+    let snap = render_state.update(&terminal).expect("update failed");
+    let visible = snap.cursor_visible().expect("cursor_visible failed");
+    assert!(
+        visible,
+        "cursor should be visible after batched toggle-with-output (raw API)"
+    );
+
+    // Test: what does terminal.is_cursor_visible() say vs render state?
+    let terminal_visible = terminal
+        .is_cursor_visible()
+        .expect("is_cursor_visible failed");
+    assert_eq!(
+        visible, terminal_visible,
+        "render state and terminal should agree on cursor visibility"
+    );
+}
+
+#[test]
+fn cursor_visible_split_sequence() {
+    // Test if splitting an escape sequence across two vt_write calls causes issues
+    let (mut terminal, mut render_state) = new_terminal_and_render_state();
+
+    // Hide cursor with complete sequence
+    terminal.vt_write(b"\x1b[?25l");
+    let snap = render_state.update(&terminal).expect("update failed");
+    assert!(
+        !snap.cursor_visible().expect("cursor_visible failed"),
+        "cursor should be hidden"
+    );
+
+    // Show cursor with SPLIT sequence — ESC[ in one call, ?25h in another
+    terminal.vt_write(b"\x1b[");
+    terminal.vt_write(b"?25h");
+    let snap = render_state.update(&terminal).expect("update failed");
+    let visible = snap.cursor_visible().expect("cursor_visible failed");
+    assert!(
+        visible,
+        "cursor should be visible after split show sequence — FAILS if split causes bug"
+    );
+}
+
+#[test]
+fn cursor_visible_truncated_in_buffer() {
+    // Test if a truncated escape sequence at buffer boundary causes permanent state corruption
+    let (mut terminal, mut render_state) = new_terminal_and_render_state();
+
+    // Simulate a buffer read that cuts the escape sequence mid-way:
+    // "\x1b[?25l" followed by text, then "\x1b[?25" cut off, then "h" in next buffer
+    terminal.vt_write(b"\x1b[?25l");
+    terminal.vt_write(b"some text\r\n");
+    terminal.vt_write(b"\x1b[?25"); // truncated — missing 'h'
+    terminal.vt_write(b"h"); // rest of sequence in next buffer
+
+    let snap = render_state.update(&terminal).expect("update failed");
+    let visible = snap.cursor_visible().expect("cursor_visible failed");
+    assert!(
+        visible,
+        "cursor should be visible after truncated-then-completed sequence"
+    );
+
+    // Verify terminal agrees
+    let terminal_visible = terminal
+        .is_cursor_visible()
+        .expect("is_cursor_visible failed");
+    assert!(
+        terminal_visible,
+        "terminal should also report visible after truncated-then-completed sequence"
+    );
 }
 
 #[test]

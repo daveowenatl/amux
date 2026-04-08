@@ -474,22 +474,15 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
         let mut rs = self.render_state.borrow_mut();
         if let Ok(snapshot) = rs.update(&self.terminal) {
             if let Ok(Some(vp)) = snapshot.cursor_viewport() {
+                let visible = snapshot.cursor_visible().unwrap_or(true);
                 return CursorPos {
                     x: vp.x as usize,
                     y: vp.y as i64,
                     shape: self.cached_cursor_shape,
-                    // Work around libghostty-vt cursor visibility tracking:
-                    // both render state and direct terminal query report
-                    // cursor_visible=false and never recover after Claude Code
-                    // toggles DECTCEM. Force visible=true until the root cause
-                    // is identified (wezterm backend handles this correctly).
-                    // TODO(#135): investigate libghostty-vt DECTCEM handling
-                    visible: true,
+                    visible,
                 };
             }
         }
-        // cursor_viewport() returned None — cursor is outside the visible
-        // viewport (e.g., scrolled into history). Hide it.
         CursorPos {
             x: 0,
             y: 0,

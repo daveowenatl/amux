@@ -16,3 +16,6 @@ tracing = { workspace = true }
 image = { workspace = true }
 wezterm-surface = { workspace = true }
 amux-term = { workspace = true }
+
+[dev-dependencies]
+url = { workspace = true }
