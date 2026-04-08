@@ -299,7 +299,8 @@ fn cursor_visible_raw_api_after_rapid_toggle() {
     // Rapid toggling with interleaved output (closer to Claude Code pattern)
     for i in 0..50 {
         terminal.vt_write(b"\x1b[?25l");
-        terminal.vt_write(format!("line {i}\r\n").as_bytes());
+        let line = format!("line {i}\r\n");
+        terminal.vt_write(line.as_bytes());
         terminal.vt_write(b"\x1b[?25h");
     }
     let snap = render_state.update(&terminal).expect("update failed");

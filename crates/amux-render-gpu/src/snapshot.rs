@@ -551,3 +551,150 @@ fn decode_images(seen: HashMap<[u8; 32], Arc<ImageData>>) -> Vec<DecodedImage> {
 fn dim_color(c: [f32; 4], factor: f32) -> [f32; 4] {
     [c[0] * factor, c[1] * factor, c[2] * factor, c[3]]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use amux_term::backend::*;
+    use amux_term::osc::NotificationEvent;
+    use amux_term::pane::{AdvanceResult, SequenceNo, TermError};
+    use std::io::Read as IoRead;
+    use url::Url;
+
+    /// Minimal mock backend for snapshot tests.
+    struct MockBackend {
+        cells: Vec<ScreenRow>,
+        palette: Palette,
+    }
+
+    impl TerminalBackend for MockBackend {
+        fn advance(&mut self) -> AdvanceResult {
+            AdvanceResult::Eof
+        }
+        fn resize(&mut self, _cols: u16, _rows: u16) -> Result<(), TermError> {
+            Ok(())
+        }
+        fn write_bytes(&mut self, _data: &[u8]) -> Result<(), TermError> {
+            Ok(())
+        }
+        fn feed_bytes(&mut self, _data: &[u8]) {}
+        fn take_reader(&mut self) -> Option<Box<dyn IoRead + Send>> {
+            None
+        }
+        fn title(&self) -> &str {
+            ""
+        }
+        fn working_dir(&self) -> Option<&Url> {
+            None
+        }
+        fn dimensions(&self) -> (usize, usize) {
+            (80, 1)
+        }
+        fn cursor(&self) -> CursorPos {
+            CursorPos::default()
+        }
+        fn palette(&self) -> Palette {
+            self.palette.clone()
+        }
+        fn is_alt_screen_active(&self) -> bool {
+            false
+        }
+        fn bracketed_paste_enabled(&self) -> bool {
+            false
+        }
+        fn child_pid(&self) -> Option<u32> {
+            None
+        }
+        fn is_alive(&mut self) -> bool {
+            false
+        }
+        fn exit_status(&mut self) -> Option<ProcessExit> {
+            None
+        }
+        fn changed_lines(&self) -> Vec<StableRow> {
+            Vec::new()
+        }
+        fn mark_rendered(&mut self) {}
+        fn current_seqno(&self) -> SequenceNo {
+            0
+        }
+        fn rendered_seqno(&self) -> SequenceNo {
+            0
+        }
+        fn scrollback_rows(&self) -> usize {
+            self.cells.len()
+        }
+        fn read_screen_lines(&self, _spec: &str, _ansi: bool) -> String {
+            String::new()
+        }
+        fn read_screen_text(&self) -> String {
+            String::new()
+        }
+        fn read_scrollback_text(&self, _max: usize) -> String {
+            String::new()
+        }
+        fn read_scrollback_text_range(&self, _start: usize, _end: usize) -> String {
+            String::new()
+        }
+        fn search_scrollback(&self, _query: &str) -> Vec<(usize, usize, usize)> {
+            Vec::new()
+        }
+        fn read_screen_cells(&self, _offset: usize) -> Vec<ScreenRow> {
+            self.cells.clone()
+        }
+        fn read_cells_range(&self, start: usize, end: usize) -> Vec<ScreenRow> {
+            self.cells[start..end.min(self.cells.len())].to_vec()
+        }
+        fn erase_scrollback(&mut self) {}
+        fn focus_changed(&mut self, _focused: bool) {}
+        fn drain_notifications(&self) -> Vec<NotificationEvent> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn from_backend_swaps_fg_bg_when_reverse() {
+        let fg = Color(1.0, 0.0, 0.0, 1.0); // red
+        let bg = Color(0.0, 0.0, 1.0, 1.0); // blue
+
+        let normal_cell = ScreenCell {
+            text: "A".to_string(),
+            fg,
+            bg,
+            bold: false,
+            italic: false,
+            underline: UnderlineStyle::None,
+            underline_color: None,
+            strikethrough: false,
+            faint: false,
+            reverse: false,
+            hyperlink_url: None,
+        };
+        let reverse_cell = ScreenCell {
+            text: "B".to_string(),
+            fg,
+            bg,
+            reverse: true,
+            ..normal_cell.clone()
+        };
+        let row = ScreenRow {
+            cells: vec![normal_cell, reverse_cell],
+            wrapped: false,
+        };
+        let backend = MockBackend {
+            cells: vec![row],
+            palette: Palette::default(),
+        };
+
+        let snap =
+            TerminalSnapshot::from_backend(&backend, 2, 1, 0, true, None, 0, 0, Vec::new(), None);
+
+        // Normal cell: fg=red, bg=blue (unchanged)
+        assert_eq!(snap.cells[0].fg, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(snap.cells[0].bg, [0.0, 0.0, 1.0, 1.0]);
+
+        // Reverse cell: fg and bg should be swapped
+        assert_eq!(snap.cells[1].fg, [0.0, 0.0, 1.0, 1.0]); // was bg (blue)
+        assert_eq!(snap.cells[1].bg, [1.0, 0.0, 0.0, 1.0]); // was fg (red)
+    }
+}
