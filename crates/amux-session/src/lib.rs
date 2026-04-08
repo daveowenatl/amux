@@ -355,6 +355,26 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_serde_with_scrollback_vt() {
+        let mut session = minimal_session();
+        session.workspaces[0].panes.get_mut(&0).unwrap().surfaces[0].scrollback_vt =
+            Some("dGVzdA==".to_string()); // base64("test")
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("scrollback_vt"));
+        let restored: SessionData = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            restored.workspaces[0].panes[&0].surfaces[0].scrollback_vt,
+            Some("dGVzdA==".to_string())
+        );
+
+        // Verify skip_serializing_if works: None should not appear in JSON
+        let mut session2 = minimal_session();
+        session2.workspaces[0].panes.get_mut(&0).unwrap().surfaces[0].scrollback_vt = None;
+        let json2 = serde_json::to_string(&session2).unwrap();
+        assert!(!json2.contains("scrollback_vt"));
+    }
+
+    #[test]
     fn load_missing_file_returns_none() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("session.json");

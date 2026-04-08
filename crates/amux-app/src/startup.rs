@@ -11,9 +11,9 @@ fn strip_ansi(s: &str) -> String {
             // Skip CSI sequences (\x1b[...m etc.) and OSC sequences
             if let Some(next) = chars.next() {
                 if next == '[' {
-                    // CSI: consume until a letter in @-~ range
+                    // CSI: consume until final byte in 0x40..=0x7E range
                     for c2 in chars.by_ref() {
-                        if c2.is_ascii_alphabetic() || c2 == '~' || c2 == '@' {
+                        if ('@'..='~').contains(&c2) {
                             break;
                         }
                     }
@@ -595,9 +595,14 @@ pub(crate) fn spawn_surface(
     if let Some(vt_b64) = scrollback_vt {
         if !vt_b64.is_empty() {
             use base64::Engine;
-            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(vt_b64) {
-                pane.feed_bytes(&bytes);
-                restored = true;
+            match base64::engine::general_purpose::STANDARD.decode(vt_b64) {
+                Ok(bytes) => {
+                    pane.feed_bytes(&bytes);
+                    restored = true;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to decode scrollback_vt base64: {e}");
+                }
             }
         }
     }

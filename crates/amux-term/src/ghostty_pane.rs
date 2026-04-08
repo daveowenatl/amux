@@ -653,14 +653,20 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
         use libghostty_vt::ffi;
 
         // SAFETY: Terminal's first field is Object<GhosttyTerminal> whose first
-        // field is NonNull<GhosttyTerminal>. Both are #[repr(Rust)] but NonNull
-        // is guaranteed to have the same layout as *mut T. We read the pointer
-        // without taking ownership. This is sound as long as libghostty-vt's
-        // Terminal struct layout doesn't change (pinned to 0.1.1).
+        // field is NonNull<GhosttyTerminal>. NonNull<T> is guaranteed to have
+        // the same layout as *mut T. We read the pointer without taking ownership.
+        //
+        // WARNING: Terminal is #[repr(Rust)] so this relies on the current field
+        // ordering in libghostty-vt 0.1.x. If the crate is updated, verify the
+        // layout hasn't changed (or request a public `as_raw()` accessor upstream).
         let terminal_ptr: ffi::GhosttyTerminal_ptr = unsafe {
             let ptr_to_terminal = &*self.terminal as *const _ as *const *mut ffi::GhosttyTerminal;
             *ptr_to_terminal
         };
+        if terminal_ptr.is_null() {
+            tracing::warn!("vt_state_snapshot: terminal_ptr is null — layout may have changed");
+            return None;
+        }
 
         let mut formatter: ffi::GhosttyFormatter_ptr = std::ptr::null_mut();
         let screen_extra = ffi::GhosttyFormatterScreenExtra {
@@ -700,6 +706,10 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
         };
         if result != ffi::GhosttyResult_GHOSTTY_SUCCESS {
             tracing::warn!("ghostty_formatter_terminal_new failed: {result}");
+            // On failure the out-param is unset, but guard against partial init.
+            if !formatter.is_null() {
+                unsafe { ffi::ghostty_formatter_free(formatter) };
+            }
             return None;
         }
 

@@ -427,10 +427,16 @@ impl AmuxApp {
                                 });
                                 // Prefer VT state snapshot (exact terminal state
                                 // reconstruction) over text-based scrollback.
-                                let scrollback_vt = sf.pane.vt_state_snapshot().map(|bytes| {
-                                    use base64::Engine;
-                                    base64::engine::general_purpose::STANDARD.encode(&bytes)
-                                });
+                                let scrollback_vt = sf
+                                    .pane
+                                    .vt_state_snapshot()
+                                    .filter(|bytes| {
+                                        bytes.len() <= amux_session::MAX_SCROLLBACK_BYTES
+                                    })
+                                    .map(|bytes| {
+                                        use base64::Engine;
+                                        base64::engine::general_purpose::STANDARD.encode(&bytes)
+                                    });
                                 let scrollback = if scrollback_vt.is_none() {
                                     let raw = sf
                                         .pane
