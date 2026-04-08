@@ -216,8 +216,8 @@ impl AmuxApp {
         self.panes
             .get(&workspace.focused_pane)
             .and_then(|e| e.as_terminal())
-            .map(|mp| {
-                let sf = mp.active_surface();
+            .and_then(|mp| mp.active_surface())
+            .map(|sf| {
                 let mut meta = sf.metadata.clone();
                 // Capture the surface's OSC title for sidebar display
                 let title = sf.pane.title();

@@ -524,7 +524,8 @@ impl AmuxApp {
                             .panes
                             .get(&pane_id)
                             .and_then(|e| e.as_terminal())
-                            .and_then(|m| m.active_surface().metadata.cwd.clone());
+                            .and_then(|m| m.active_surface())
+                            .and_then(|sf| sf.metadata.cwd.clone());
                         if let Ok(surface) = startup::spawn_surface(
                             80,
                             24,
@@ -717,7 +718,10 @@ impl AmuxApp {
             .as_ref()
             .or(managed.selection.as_ref())
             .cloned();
-        let surface = managed.active_surface_mut();
+        let surface = match managed.active_surface_mut() {
+            Some(s) => s,
+            None => return,
+        };
         // Cursor blink: 500ms on, 500ms off cycle, reset on input.
         let blink_elapsed_ms = self.cursor_blink_since.elapsed().as_millis();
         let cursor_blink_on = (blink_elapsed_ms % 1000) < 500;
@@ -747,7 +751,10 @@ impl AmuxApp {
         if let Some(cm) = self.copy_mode.as_ref().filter(|cm| cm.pane_id == pane_id) {
             let (cell_w, cell_h) = self.cell_dimensions(ui);
             if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
-                let surface = managed.active_surface();
+                let surface = match managed.active_surface() {
+                    Some(s) => s,
+                    None => return,
+                };
                 let (_, rows) = surface.pane.dimensions();
                 let total = surface.pane.scrollback_rows();
                 let end = total.saturating_sub(surface.scroll_offset);

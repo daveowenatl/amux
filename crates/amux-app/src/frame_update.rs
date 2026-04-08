@@ -412,9 +412,10 @@ impl eframe::App for AmuxApp {
         let focused_id = self.focused_pane_id();
         if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&focused_id) {
             let title = match managed.active_tab() {
-                managed_pane::ActiveTab::Terminal(_) => {
-                    managed.active_surface().pane.title().to_string()
-                }
+                managed_pane::ActiveTab::Terminal(_) => managed
+                    .active_surface()
+                    .map(|sf| sf.pane.title().to_string())
+                    .unwrap_or_default(),
                 managed_pane::ActiveTab::Browser(bid) => {
                     self.panes.get(&bid).map(|e| e.title()).unwrap_or_default()
                 }

@@ -234,7 +234,9 @@ impl AmuxApp {
                 match managed.active_tab() {
                     managed_pane::ActiveTab::Terminal(_) => {
                         if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&old_id) {
-                            m.active_surface_mut().pane.focus_changed(false);
+                            if let Some(sf) = m.active_surface_mut() {
+                                sf.pane.focus_changed(false);
+                            }
                         }
                     }
                     managed_pane::ActiveTab::Browser(bid) => {
@@ -249,7 +251,9 @@ impl AmuxApp {
                 match managed.active_tab() {
                     managed_pane::ActiveTab::Terminal(_) => {
                         if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
-                            m.active_surface_mut().pane.focus_changed(true);
+                            if let Some(sf) = m.active_surface_mut() {
+                                sf.pane.focus_changed(true);
+                            }
                         }
                     }
                     managed_pane::ActiveTab::Browser(bid) => {

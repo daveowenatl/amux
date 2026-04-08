@@ -492,15 +492,16 @@ impl AmuxApp {
             });
             if let Some(pane_id) = target_pane {
                 if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
-                    let surface = managed.active_surface_mut();
-                    let font_id = egui::FontId::monospace(self.font_size);
-                    let cell_height = ctx.fonts(|f| f.row_height(&font_id));
+                    if let Some(surface) = managed.active_surface_mut() {
+                        let font_id = egui::FontId::monospace(self.font_size);
+                        let cell_height = ctx.fonts(|f| f.row_height(&font_id));
 
-                    surface.scroll_accum += -scroll_delta / cell_height;
-                    let whole_lines = surface.scroll_accum.trunc() as isize;
-                    if whole_lines != 0 {
-                        surface.scroll_accum -= whole_lines as f32;
-                        self.do_scroll_lines_for(pane_id, whole_lines);
+                        surface.scroll_accum += -scroll_delta / cell_height;
+                        let whole_lines = surface.scroll_accum.trunc() as isize;
+                        if whole_lines != 0 {
+                            surface.scroll_accum -= whole_lines as f32;
+                            self.do_scroll_lines_for(pane_id, whole_lines);
+                        }
                     }
                 }
             }
@@ -512,20 +513,21 @@ impl AmuxApp {
     pub(crate) fn enter_copy_mode(&mut self) {
         let pane_id = self.focused_pane_id();
         if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
-            let surface = managed.active_surface();
-            let cursor = surface.pane.cursor();
-            let (_, rows) = surface.pane.dimensions();
-            let total = surface.pane.scrollback_rows();
-            let end = total.saturating_sub(surface.scroll_offset);
-            let start = end.saturating_sub(rows);
-            // Place copy mode cursor at terminal cursor position in phys coords
-            let phys_row = start + (cursor.y.max(0) as usize).min(rows.saturating_sub(1));
-            self.copy_mode = Some(CopyModeState {
-                pane_id,
-                cursor: (cursor.x, phys_row),
-                visual_anchor: None,
-                line_visual: false,
-            });
+            if let Some(surface) = managed.active_surface() {
+                let cursor = surface.pane.cursor();
+                let (_, rows) = surface.pane.dimensions();
+                let total = surface.pane.scrollback_rows();
+                let end = total.saturating_sub(surface.scroll_offset);
+                let start = end.saturating_sub(rows);
+                // Place copy mode cursor at terminal cursor position in phys coords
+                let phys_row = start + (cursor.y.max(0) as usize).min(rows.saturating_sub(1));
+                self.copy_mode = Some(CopyModeState {
+                    pane_id,
+                    cursor: (cursor.x, phys_row),
+                    visual_anchor: None,
+                    line_visual: false,
+                });
+            }
         }
     }
 
@@ -542,12 +544,17 @@ impl AmuxApp {
 
         // Get dimensions for bounds checking
         let (cols, rows, total_rows) = match self.panes.get(&pane_id) {
-            Some(PaneEntry::Terminal(m)) => {
-                let s = m.active_surface();
-                let (c, r) = s.pane.dimensions();
-                let t = s.pane.scrollback_rows();
-                (c, r, t)
-            }
+            Some(PaneEntry::Terminal(m)) => match m.active_surface() {
+                Some(s) => {
+                    let (c, r) = s.pane.dimensions();
+                    let t = s.pane.scrollback_rows();
+                    (c, r, t)
+                }
+                None => {
+                    self.copy_mode = None;
+                    return true;
+                }
+            },
             _ => {
                 self.copy_mode = None;
                 return true;
@@ -638,13 +645,14 @@ impl AmuxApp {
         // Scroll viewport to keep cursor visible
         if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
             let cm = self.copy_mode.as_ref().unwrap();
-            let surface = managed.active_surface_mut();
-            let end = total_rows.saturating_sub(surface.scroll_offset);
-            let start = end.saturating_sub(rows);
-            if cm.cursor.1 < start {
-                surface.scroll_offset = total_rows.saturating_sub(cm.cursor.1 + rows);
-            } else if cm.cursor.1 >= end {
-                surface.scroll_offset = total_rows.saturating_sub(cm.cursor.1 + 1);
+            if let Some(surface) = managed.active_surface_mut() {
+                let end = total_rows.saturating_sub(surface.scroll_offset);
+                let start = end.saturating_sub(rows);
+                if cm.cursor.1 < start {
+                    surface.scroll_offset = total_rows.saturating_sub(cm.cursor.1 + rows);
+                } else if cm.cursor.1 >= end {
+                    surface.scroll_offset = total_rows.saturating_sub(cm.cursor.1 + 1);
+                }
             }
         }
 
@@ -660,7 +668,7 @@ impl AmuxApp {
     ) -> Option<String> {
         let cm = self.copy_mode.as_ref()?;
         let managed = self.panes.get(&pane_id)?.as_terminal()?;
-        let surface = managed.active_surface();
+        let surface = managed.active_surface()?;
         let (start, end) =
             if anchor.1 < cm.cursor.1 || (anchor.1 == cm.cursor.1 && anchor.0 <= cm.cursor.0) {
                 (anchor, cm.cursor)
@@ -710,10 +718,13 @@ impl AmuxApp {
             None => return false,
         };
 
-        let (cols, _) = managed.active_surface().pane.dimensions();
+        let surface = match managed.active_surface() {
+            Some(s) => s,
+            None => return false,
+        };
+        let (cols, _) = surface.pane.dimensions();
         let (start, end) = sel.normalized();
-        let text =
-            selection::extract_selection_text(&managed.active_surface().pane, start, end, cols);
+        let text = selection::extract_selection_text(&surface.pane, start, end, cols);
 
         if text.is_empty() {
             return false;
@@ -735,14 +746,15 @@ impl AmuxApp {
     pub(crate) fn do_paste(&mut self, text: &str) {
         let focused_id = self.focused_pane_id();
         if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused_id) {
-            let surface = managed.active_surface_mut();
-            surface.snap_scroll_to_bottom();
-            if surface.pane.bracketed_paste_enabled() {
-                let _ = surface.pane.write_bytes(b"\x1b[200~");
-                let _ = surface.pane.write_bytes(text.as_bytes());
-                let _ = surface.pane.write_bytes(b"\x1b[201~");
-            } else {
-                let _ = surface.pane.write_bytes(text.as_bytes());
+            if let Some(surface) = managed.active_surface_mut() {
+                surface.snap_scroll_to_bottom();
+                if surface.pane.bracketed_paste_enabled() {
+                    let _ = surface.pane.write_bytes(b"\x1b[200~");
+                    let _ = surface.pane.write_bytes(text.as_bytes());
+                    let _ = surface.pane.write_bytes(b"\x1b[201~");
+                } else {
+                    let _ = surface.pane.write_bytes(text.as_bytes());
+                }
             }
         }
     }
@@ -753,19 +765,20 @@ impl AmuxApp {
             Some(PaneEntry::Terminal(m)) => m,
             _ => return,
         };
-        let surface = managed.active_surface();
-        let (cols, visible_rows) = surface.pane.dimensions();
-        let total = surface.pane.scrollback_rows();
-        let scroll_offset = surface.scroll_offset;
-        let end_row = total.saturating_sub(scroll_offset);
-        let start_row = end_row.saturating_sub(visible_rows);
+        if let Some(surface) = managed.active_surface() {
+            let (cols, visible_rows) = surface.pane.dimensions();
+            let total = surface.pane.scrollback_rows();
+            let scroll_offset = surface.scroll_offset;
+            let end_row = total.saturating_sub(scroll_offset);
+            let start_row = end_row.saturating_sub(visible_rows);
 
-        managed.selection = Some(SelectionState {
-            anchor: (0, start_row),
-            end: (cols.saturating_sub(1), end_row.saturating_sub(1)),
-            mode: SelectionMode::Cell,
-            active: false,
-        });
+            managed.selection = Some(SelectionState {
+                anchor: (0, start_row),
+                end: (cols.saturating_sub(1), end_row.saturating_sub(1)),
+                mode: SelectionMode::Cell,
+                active: false,
+            });
+        }
     }
 
     pub(crate) fn clear_selection_on_focused(&mut self) {
@@ -789,7 +802,10 @@ impl AmuxApp {
             Some(PaneEntry::Terminal(m)) => m,
             _ => return false,
         };
-        let surface = managed.active_surface();
+        let surface = match managed.active_surface() {
+            Some(s) => s,
+            None => return false,
+        };
         let (cols, visible_rows) = surface.pane.dimensions();
         let total_rows = surface.pane.scrollback_rows();
         let scroll_offset = surface.scroll_offset;
@@ -840,8 +856,12 @@ impl AmuxApp {
                 let (anchor, end, mode) = match self.click_count {
                     2 => {
                         // Word selection
+                        // `surface` borrow ends at the match guard so this borrow is safe
                         let text = selection::line_text_string(
-                            &managed.active_surface().pane,
+                            &managed
+                                .active_surface()
+                                .expect("surface disappeared mid-click")
+                                .pane,
                             stable_row,
                             cols,
                         );
@@ -900,8 +920,10 @@ impl AmuxApp {
 
                     if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
                         // Pre-fetch line text before mutably borrowing selection
-                        let line_text =
-                            selection::line_text_string(&m.active_surface().pane, stable_row, cols);
+                        let line_text = m
+                            .active_surface()
+                            .map(|sf| selection::line_text_string(&sf.pane, stable_row, cols))
+                            .unwrap_or_default();
                         if let Some(ref mut sel) = m.selection {
                             match sel.mode {
                                 SelectionMode::Cell => {
@@ -974,7 +996,10 @@ impl AmuxApp {
         if managed.active_is_browser() {
             return has_input;
         }
-        let surface = managed.active_surface_mut();
+        let surface = match managed.active_surface_mut() {
+            Some(s) => s,
+            None => return has_input,
+        };
 
         // When the process has exited, intercept Enter (close) and R (restart)
         if surface.exited.is_some() {

@@ -26,10 +26,11 @@ impl AmuxApp {
             if managed.active_is_browser() {
                 return;
             }
-            let surface = managed.active_surface_mut();
-            let (cur_cols, cur_rows) = surface.pane.dimensions();
-            if cur_cols != cols || cur_rows != rows {
-                let _ = surface.pane.resize(cols as u16, rows as u16);
+            if let Some(surface) = managed.active_surface_mut() {
+                let (cur_cols, cur_rows) = surface.pane.dimensions();
+                if cur_cols != cols || cur_rows != rows {
+                    let _ = surface.pane.resize(cols as u16, rows as u16);
+                }
             }
         }
     }

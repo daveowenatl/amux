@@ -32,7 +32,8 @@ impl AmuxApp {
         self.panes
             .get(&focused)
             .and_then(|e| e.as_terminal())
-            .and_then(|m| m.active_surface().metadata.cwd.clone())
+            .and_then(|m| m.active_surface())
+            .and_then(|sf| sf.metadata.cwd.clone())
     }
 
     // --- Pane/Workspace management ---
@@ -370,9 +371,14 @@ impl AmuxApp {
         if managed.active_is_browser() {
             return;
         }
-        let old_surface = managed.active_surface_mut();
-        let cwd = old_surface.metadata.cwd.clone();
-        let (cols, rows) = old_surface.pane.dimensions();
+        let (cwd, cols, rows) = match managed.active_surface_mut() {
+            Some(sf) => (
+                sf.metadata.cwd.clone(),
+                sf.pane.dimensions().0,
+                sf.pane.dimensions().1,
+            ),
+            None => return,
+        };
         let sf_id = self.next_surface_id;
         self.next_surface_id += 1;
 
@@ -456,20 +462,21 @@ impl AmuxApp {
     pub(crate) fn do_scroll(&mut self, pages: isize) -> bool {
         let focused_id = self.focused_pane_id();
         if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused_id) {
-            let surface = managed.active_surface_mut();
-            let (_, rows) = surface.pane.dimensions();
-            let page_size = rows.saturating_sub(1).max(1);
-            let lines = pages * page_size as isize;
-            if surface.pane.manages_own_scroll() {
-                // Delegate to backend (e.g., libghostty manages its own viewport).
-                // Delta convention: positive = toward bottom, negative = toward top.
-                // `lines` from pages: positive pages = scroll down (toward bottom).
-                surface.pane.scroll_viewport(lines);
-            } else {
-                let total = surface.pane.scrollback_rows();
-                let max_offset = total.saturating_sub(rows);
-                let new_offset = surface.scroll_offset as isize - lines;
-                surface.scroll_offset = (new_offset.max(0) as usize).min(max_offset);
+            if let Some(surface) = managed.active_surface_mut() {
+                let (_, rows) = surface.pane.dimensions();
+                let page_size = rows.saturating_sub(1).max(1);
+                let lines = pages * page_size as isize;
+                if surface.pane.manages_own_scroll() {
+                    // Delegate to backend (e.g., libghostty manages its own viewport).
+                    // Delta convention: positive = toward bottom, negative = toward top.
+                    // `lines` from pages: positive pages = scroll down (toward bottom).
+                    surface.pane.scroll_viewport(lines);
+                } else {
+                    let total = surface.pane.scrollback_rows();
+                    let max_offset = total.saturating_sub(rows);
+                    let new_offset = surface.scroll_offset as isize - lines;
+                    surface.scroll_offset = (new_offset.max(0) as usize).min(max_offset);
+                }
             }
         }
         true
@@ -477,15 +484,16 @@ impl AmuxApp {
 
     pub(crate) fn do_scroll_lines_for(&mut self, pane_id: PaneId, lines: isize) {
         if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
-            let surface = managed.active_surface_mut();
-            if surface.pane.manages_own_scroll() {
-                surface.pane.scroll_viewport(lines);
-            } else {
-                let (_, rows) = surface.pane.dimensions();
-                let total = surface.pane.scrollback_rows();
-                let max_offset = total.saturating_sub(rows);
-                let new_offset = surface.scroll_offset as isize - lines;
-                surface.scroll_offset = (new_offset.max(0) as usize).min(max_offset);
+            if let Some(surface) = managed.active_surface_mut() {
+                if surface.pane.manages_own_scroll() {
+                    surface.pane.scroll_viewport(lines);
+                } else {
+                    let (_, rows) = surface.pane.dimensions();
+                    let total = surface.pane.scrollback_rows();
+                    let max_offset = total.saturating_sub(rows);
+                    let new_offset = surface.scroll_offset as isize - lines;
+                    surface.scroll_offset = (new_offset.max(0) as usize).min(max_offset);
+                }
             }
         }
     }
@@ -493,14 +501,15 @@ impl AmuxApp {
     pub(crate) fn do_clear_scrollback(&mut self) {
         let focused_id = self.focused_pane_id();
         if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused_id) {
-            let surface = managed.active_surface_mut();
-            // 1. Clear visible screen and move cursor home via terminal state machine
-            surface.pane.feed_bytes(b"\x1b[2J\x1b[H");
-            // 2. Erase scrollback buffer
-            surface.pane.erase_scrollback();
-            surface.snap_scroll_to_bottom();
-            // 3. Send Ctrl+L to the PTY so the shell redraws its prompt
-            let _ = surface.pane.write_bytes(b"\x0c");
+            if let Some(surface) = managed.active_surface_mut() {
+                // 1. Clear visible screen and move cursor home via terminal state machine
+                surface.pane.feed_bytes(b"\x1b[2J\x1b[H");
+                // 2. Erase scrollback buffer
+                surface.pane.erase_scrollback();
+                surface.snap_scroll_to_bottom();
+                // 3. Send Ctrl+L to the PTY so the shell redraws its prompt
+                let _ = surface.pane.write_bytes(b"\x0c");
+            }
         }
     }
 }
