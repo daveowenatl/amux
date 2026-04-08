@@ -99,7 +99,7 @@ pub struct SavedManagedPane {
 }
 
 /// A browser tab saved within a ManagedPane.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedBrowserTab {
     pub pane_id: u64,
     pub url: String,

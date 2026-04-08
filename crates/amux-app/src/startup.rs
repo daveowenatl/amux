@@ -240,8 +240,8 @@ pub(crate) struct StartupState {
     pub(crate) sidebar: SidebarState,
     pub(crate) notifications: NotificationStore,
     /// Browser panes that need to be created once the window handle is available.
-    /// Tuple: (parent_pane_id, browser_pane_id, url).
-    pub(crate) pending_browser_restores: Vec<(PaneId, PaneId, String)>,
+    /// Tuple: (parent_pane_id, saved_tab).
+    pub(crate) pending_browser_restores: Vec<(PaneId, amux_session::SavedBrowserTab)>,
 }
 
 /// Create a fresh default startup (one workspace, one pane).
@@ -310,7 +310,7 @@ pub(crate) fn restore_session(
 ) -> StartupState {
     let mut workspaces = Vec::new();
     let mut panes: HashMap<PaneId, PaneEntry> = HashMap::new();
-    let mut pending_browser_restores: Vec<(PaneId, PaneId, String)> = Vec::new();
+    let mut pending_browser_restores: Vec<(PaneId, amux_session::SavedBrowserTab)> = Vec::new();
 
     for saved_ws in &session.workspaces {
         for (&pane_id, saved_pane) in &saved_ws.panes {
@@ -386,7 +386,7 @@ pub(crate) fn restore_session(
                 .map(|s| TabEntry::Terminal(Box::new(s)))
                 .collect();
             for bt in &saved_pane.browser_tabs {
-                pending_browser_restores.push((pane_id, bt.pane_id, bt.url.clone()));
+                pending_browser_restores.push((pane_id, bt.clone()));
                 tabs.push(TabEntry::Browser(bt.pane_id));
             }
 

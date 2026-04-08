@@ -161,8 +161,8 @@ struct AmuxApp {
     /// Pending browser pane creation requests (originating_pane_id, URL).
     /// Processed in update() where the window handle is available.
     pending_browser_panes: Vec<(PaneId, String)>,
-    /// Browser panes being restored: (parent_pane_id, browser_pane_id, url).
-    pending_browser_restores: Vec<(PaneId, PaneId, String)>,
+    /// Browser panes being restored: (parent_pane_id, saved_tab).
+    pending_browser_restores: Vec<(PaneId, amux_session::SavedBrowserTab)>,
     /// Per-browser-pane omnibar editing state.
     omnibar_state: HashMap<PaneId, OmnibarState>,
     /// Browser URL history for omnibar autocomplete.
@@ -378,11 +378,26 @@ impl AmuxApp {
         }
 
         // Restored browser panes — added as tabs in their parent pane
-        let restores: Vec<(PaneId, PaneId, String)> =
+        let restores: Vec<(PaneId, amux_session::SavedBrowserTab)> =
             self.pending_browser_restores.drain(..).collect();
-        for (parent_pane_id, browser_pane_id, url) in restores {
-            match amux_browser::BrowserPane::new(frame, bounds, &url, None, Some(&options)) {
+        for (parent_pane_id, saved_tab) in restores {
+            let browser_pane_id = saved_tab.pane_id;
+            let profile = if saved_tab.profile == "default" {
+                None
+            } else {
+                Some(saved_tab.profile.as_str())
+            };
+            match amux_browser::BrowserPane::new(
+                frame,
+                bounds,
+                &saved_tab.url,
+                profile,
+                Some(&options),
+            ) {
                 Ok(browser) => {
+                    if saved_tab.zoom_level != 1.0 {
+                        browser.zoom(saved_tab.zoom_level);
+                    }
                     self.panes
                         .insert(browser_pane_id, PaneEntry::Browser(browser));
                     // tabs list was already populated with Browser entries during
@@ -391,7 +406,7 @@ impl AmuxApp {
                         "Restored browser tab {} in pane {} with URL: {}",
                         browser_pane_id,
                         parent_pane_id,
-                        url
+                        saved_tab.url
                     );
                 }
                 Err(e) => {
