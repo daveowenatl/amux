@@ -352,7 +352,7 @@ impl AmuxApp {
                 Ok(browser) => {
                     browser.focus();
                     self.panes
-                        .insert(browser_pane_id, PaneEntry::Browser(browser));
+                        .insert(browser_pane_id, PaneEntry::Browser(Box::new(browser)));
                     // Add as a tab in the originating ManagedPane (not a tree split).
                     // Insert right after the active tab (cmux behavior).
                     if let Some(PaneEntry::Terminal(managed)) =
@@ -399,7 +399,7 @@ impl AmuxApp {
                         browser.zoom(saved_tab.zoom_level);
                     }
                     self.panes
-                        .insert(browser_pane_id, PaneEntry::Browser(browser));
+                        .insert(browser_pane_id, PaneEntry::Browser(Box::new(browser)));
                     // tabs list was already populated with Browser entries during
                     // session restore in startup.rs — no need to push again here.
                     tracing::info!(

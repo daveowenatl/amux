@@ -24,7 +24,7 @@ pub(crate) use amux_core::model::{
 #[allow(dead_code)]
 pub(crate) enum PaneEntry {
     Terminal(ManagedPane),
-    Browser(amux_browser::BrowserPane),
+    Browser(Box<amux_browser::BrowserPane>),
 }
 
 #[allow(dead_code)]

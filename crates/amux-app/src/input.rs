@@ -858,14 +858,10 @@ impl AmuxApp {
                     2 => {
                         // Word selection
                         // `surface` borrow ends at the match guard so this borrow is safe
-                        let text = selection::line_text_string(
-                            &managed
-                                .active_surface()
-                                .expect("surface disappeared mid-click")
-                                .pane,
-                            stable_row,
-                            cols,
-                        );
+                        let Some(surface) = managed.active_surface() else {
+                            return false;
+                        };
+                        let text = selection::line_text_string(&surface.pane, stable_row, cols);
                         let (wstart, wend) = selection::word_bounds_in_line(&text, col);
                         (
                             (wstart, stable_row),

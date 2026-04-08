@@ -88,9 +88,12 @@ pub fn is_url_like(input: &str) -> bool {
     {
         return true;
     }
-    // localhost or 127.0.0.1 with optional port
-    if trimmed.starts_with("localhost") || trimmed.starts_with("127.0.0.1") {
-        return true;
+    // localhost or 127.0.0.1 with optional port/path
+    if let Some(rest) = trimmed
+        .strip_prefix("localhost")
+        .or_else(|| trimmed.strip_prefix("127.0.0.1"))
+    {
+        return rest.is_empty() || rest.starts_with(':') || rest.starts_with('/');
     }
     // Has a dot → likely a domain
     trimmed.contains('.')

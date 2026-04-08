@@ -328,7 +328,15 @@ async fn main() -> anyhow::Result<()> {
                 print_response(&resp, true);
             } else if resp.ok {
                 if let Some(result) = resp.result.as_ref().and_then(|r| r.get("result")) {
-                    println!("{}", result);
+                    // Print strings without JSON quotes
+                    if let Some(s) = result.as_str() {
+                        println!("{}", s);
+                    } else {
+                        println!("{}", result);
+                    }
+                } else {
+                    eprintln!("Timed out waiting for eval result");
+                    std::process::exit(1);
                 }
             } else {
                 print_response(&resp, false);
@@ -351,6 +359,9 @@ async fn main() -> anyhow::Result<()> {
                     .and_then(|v| v.as_str())
                 {
                     println!("{}", text);
+                } else {
+                    eprintln!("Timed out waiting for result");
+                    std::process::exit(1);
                 }
             } else {
                 print_response(&resp, false);
@@ -373,6 +384,9 @@ async fn main() -> anyhow::Result<()> {
                     .and_then(|v| v.as_str())
                 {
                     println!("{}", text);
+                } else {
+                    eprintln!("Timed out waiting for result");
+                    std::process::exit(1);
                 }
             } else {
                 print_response(&resp, false);
@@ -415,8 +429,11 @@ async fn main() -> anyhow::Result<()> {
                                 std::process::exit(1);
                             }
                         } else {
-                            std::fs::write(&path, result)?;
-                            println!("Screenshot written to {}", path);
+                            eprintln!(
+                                "Screenshot not available (got metadata instead of image data)"
+                            );
+                            eprintln!("{}", result);
+                            std::process::exit(1);
                         }
                     } else {
                         println!("{}", result);
