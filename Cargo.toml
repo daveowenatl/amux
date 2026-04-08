@@ -22,6 +22,9 @@ license = "MIT"
 repository = "https://github.com/yourusername/amux"
 
 [workspace.dependencies]
+# Encoding
+base64 = "0.22"
+
 # Terminal engine
 wezterm-term = { git = "https://github.com/wezterm/wezterm", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
 wezterm-surface = { git = "https://github.com/wezterm/wezterm", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
@@ -46,7 +49,6 @@ cosmic-text = "0.12"
 
 # Image decoding
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "ico"] }
-base64 = "0.22"
 
 # GPU rendering
 wgpu = "24.0"

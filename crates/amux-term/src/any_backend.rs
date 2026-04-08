@@ -157,6 +157,10 @@ impl TerminalBackend for AnyBackend {
         delegate!(self, search_scrollback, query: &str)
     }
 
+    fn vt_state_snapshot(&self) -> Option<Vec<u8>> {
+        delegate!(self, vt_state_snapshot)
+    }
+
     fn read_screen_cells(&self, scroll_offset: usize) -> Vec<ScreenRow> {
         delegate!(self, read_screen_cells, scroll_offset: usize)
     }

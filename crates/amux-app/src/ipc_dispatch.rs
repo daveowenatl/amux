@@ -701,9 +701,9 @@ impl AmuxApp {
                             .and_then(|s| s.parse::<PaneId>().ok())
                             .unwrap_or(self.focused_pane_id());
 
-                        // Validate pane exists before spawning a surface
-                        if !self.panes.contains_key(&target_pane) {
-                            Response::err(req.id.clone(), "not_found", "pane not found")
+                        // Validate pane exists and is a terminal before spawning a surface
+                        if !matches!(self.panes.get(&target_pane), Some(PaneEntry::Terminal(_))) {
+                            Response::err(req.id.clone(), "not_found", "terminal pane not found")
                         } else {
                             // Find the workspace that owns this pane
                             let ws_id = self
@@ -730,6 +730,7 @@ impl AmuxApp {
                                 ws_id,
                                 sf_id,
                                 cwd.as_deref(),
+                                None,
                                 None,
                             ) {
                                 Ok(surface) => {

@@ -144,6 +144,11 @@ pub struct SavedSurface {
     pub working_dir: Option<String>,
     #[serde(default)]
     pub scrollback: String,
+    /// VT state snapshot (base64-encoded byte stream from ghostty formatter).
+    /// When present, preferred over `scrollback` for session restore — produces
+    /// an exact reconstruction of terminal state without trailing blank lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scrollback_vt: Option<String>,
     pub cols: u16,
     pub rows: u16,
     #[serde(default)]
@@ -302,6 +307,7 @@ mod tests {
                     pr_title: None,
                     pr_state: None,
                     user_title: None,
+                    scrollback_vt: None,
                 }],
                 active_surface_idx: 0,
                 browser: None,
@@ -346,6 +352,26 @@ mod tests {
             restored.workspaces[0].panes[&0].surfaces[0].scrollback,
             "$ echo hello\nhello\n"
         );
+    }
+
+    #[test]
+    fn round_trip_serde_with_scrollback_vt() {
+        let mut session = minimal_session();
+        session.workspaces[0].panes.get_mut(&0).unwrap().surfaces[0].scrollback_vt =
+            Some("dGVzdA==".to_string()); // base64("test")
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("scrollback_vt"));
+        let restored: SessionData = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            restored.workspaces[0].panes[&0].surfaces[0].scrollback_vt,
+            Some("dGVzdA==".to_string())
+        );
+
+        // Verify skip_serializing_if works: None should not appear in JSON
+        let mut session2 = minimal_session();
+        session2.workspaces[0].panes.get_mut(&0).unwrap().surfaces[0].scrollback_vt = None;
+        let json2 = serde_json::to_string(&session2).unwrap();
+        assert!(!json2.contains("scrollback_vt"));
     }
 
     #[test]

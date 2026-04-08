@@ -425,17 +425,33 @@ impl AmuxApp {
                                         .map(|p| p.to_string_lossy().to_string())
                                         .or_else(|| sf.pane.child_pid().and_then(get_cwd_from_pid))
                                 });
-                                let raw_scrollback = sf
+                                // Prefer VT state snapshot (exact terminal state
+                                // reconstruction) over text-based scrollback.
+                                let scrollback_vt = sf
                                     .pane
-                                    .read_scrollback_text(amux_session::MAX_SCROLLBACK_LINES);
-                                let truncated = amux_session::truncate_scrollback(
-                                    &raw_scrollback,
-                                    amux_session::MAX_SCROLLBACK_BYTES,
-                                );
-                                let scrollback = if truncated.len() == raw_scrollback.len() {
-                                    raw_scrollback
+                                    .vt_state_snapshot()
+                                    .filter(|bytes| {
+                                        bytes.len() <= amux_session::MAX_SCROLLBACK_BYTES
+                                    })
+                                    .map(|bytes| {
+                                        use base64::Engine;
+                                        base64::engine::general_purpose::STANDARD.encode(&bytes)
+                                    });
+                                let scrollback = if scrollback_vt.is_none() {
+                                    let raw = sf
+                                        .pane
+                                        .read_scrollback_text(amux_session::MAX_SCROLLBACK_LINES);
+                                    let truncated = amux_session::truncate_scrollback(
+                                        &raw,
+                                        amux_session::MAX_SCROLLBACK_BYTES,
+                                    );
+                                    if truncated.len() == raw.len() {
+                                        raw
+                                    } else {
+                                        truncated.to_string()
+                                    }
                                 } else {
-                                    truncated.to_string()
+                                    String::new()
                                 };
                                 let (cols, rows) = sf.pane.dimensions();
                                 amux_session::SavedSurface {
@@ -443,6 +459,7 @@ impl AmuxApp {
                                     title: sf.pane.title().to_string(),
                                     working_dir,
                                     scrollback,
+                                    scrollback_vt,
                                     cols: cols as u16,
                                     rows: rows as u16,
                                     git_branch: sf.metadata.git_branch.clone(),
