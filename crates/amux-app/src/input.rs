@@ -61,7 +61,7 @@ impl AmuxApp {
                 #[cfg(target_os = "macos")]
                 let is_cmd = modifiers.mac_cmd || modifiers.command;
                 #[cfg(not(target_os = "macos"))]
-                let is_cmd = modifiers.ctrl && modifiers.shift;
+                let is_cmd = modifiers.ctrl;
 
                 // --- Terminal-specific shortcuts (skipped when browser tab active) ---
                 if !browser_active {
