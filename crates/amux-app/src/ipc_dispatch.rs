@@ -373,6 +373,34 @@ impl AmuxApp {
                     None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
                 }
             }
+            "browser.get-eval-result" => {
+                #[derive(serde::Deserialize)]
+                struct GetEvalResultParams {
+                    eval_id: String,
+                    #[serde(default)]
+                    pane_id: Option<String>,
+                }
+                match serde_json::from_value::<GetEvalResultParams>(req.params.clone()) {
+                    Ok(params) => match self.resolve_browser_pane_ref(params.pane_id.as_deref()) {
+                        Some(browser) => match browser.take_eval_result(&params.eval_id) {
+                            Some(result) => {
+                                let value: serde_json::Value = serde_json::from_str(&result)
+                                    .unwrap_or(serde_json::Value::String(result));
+                                Response::ok(
+                                    req.id.clone(),
+                                    serde_json::json!({"status": "complete", "result": value}),
+                                )
+                            }
+                            None => Response::ok(
+                                req.id.clone(),
+                                serde_json::json!({"status": "pending"}),
+                            ),
+                        },
+                        None => Response::err(req.id.clone(), "not_found", "no browser pane found"),
+                    },
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
             "browser.click" => {
                 #[derive(serde::Deserialize)]
                 struct ClickParams {
