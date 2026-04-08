@@ -208,7 +208,8 @@ impl AmuxApp {
                     self.add_surface_to_focused_pane();
                 }
                 menu_bar::MenuAction::NewBrowserTab => {
-                    self.queue_browser_pane(DEFAULT_BROWSER_URL.to_string());
+                    let pane_id = self.focused_pane_id();
+                    self.queue_browser_pane(pane_id, DEFAULT_BROWSER_URL.to_string());
                 }
                 menu_bar::MenuAction::CloseTab => {
                     self.do_close_cascade();

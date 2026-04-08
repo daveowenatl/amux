@@ -216,7 +216,8 @@ impl AmuxApp {
                 }
                 match serde_json::from_value::<BrowserParams>(req.params.clone()) {
                     Ok(params) => {
-                        self.queue_browser_pane(params.url);
+                        let pane_id = self.focused_pane_id();
+                        self.queue_browser_pane(pane_id, params.url);
                         Response::ok(req.id.clone(), serde_json::json!({"status": "queued"}))
                     }
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),

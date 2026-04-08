@@ -238,7 +238,8 @@ impl AmuxApp {
 
                 // New browser tab: Cmd+Shift+L (macOS) / Ctrl+Shift+L (other)
                 if is_cmd && modifiers.shift && *key == egui::Key::L {
-                    self.queue_browser_pane(DEFAULT_BROWSER_URL.to_string());
+                    let pane_id = self.focused_pane_id();
+                    self.queue_browser_pane(pane_id, DEFAULT_BROWSER_URL.to_string());
                     return true;
                 }
 

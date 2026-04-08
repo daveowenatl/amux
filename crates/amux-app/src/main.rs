@@ -158,9 +158,9 @@ struct AmuxApp {
     menu_attached: bool,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
-    /// Pending browser pane creation requests (URL). Processed in update()
-    /// where the window handle is available.
-    pending_browser_panes: Vec<String>,
+    /// Pending browser pane creation requests (originating_pane_id, URL).
+    /// Processed in update() where the window handle is available.
+    pending_browser_panes: Vec<(PaneId, String)>,
     /// Browser panes being restored: (parent_pane_id, browser_pane_id, url).
     pending_browser_restores: Vec<(PaneId, PaneId, String)>,
     /// Per-browser-pane omnibar editing state.
@@ -286,9 +286,11 @@ impl AmuxApp {
     }
 
     /// Queue a browser pane creation. Deferred to update() where the window handle
-    /// is available.
-    fn queue_browser_pane(&mut self, url: String) {
-        self.pending_browser_panes.push(url);
+    /// is available. `pane_id` is the originating pane — captured now so that
+    /// deferred processing attaches the new browser tab to the correct pane even
+    /// if focus changes before `create_pending_browser_panes` runs.
+    fn queue_browser_pane(&mut self, pane_id: PaneId, url: String) {
+        self.pending_browser_panes.push((pane_id, url));
     }
 
     /// Open a URL in an existing browser tab, or queue creation of a new one.
@@ -318,7 +320,8 @@ impl AmuxApp {
             }
             self.set_focus(tree_pane_id);
         } else {
-            self.queue_browser_pane(url.to_string());
+            let pane_id = self.focused_pane_id();
+            self.queue_browser_pane(pane_id, url.to_string());
         }
     }
 
@@ -339,9 +342,9 @@ impl AmuxApp {
             download_dir: dl_dir.as_deref(),
         };
 
-        // New browser panes (from IPC/CLI) — added as tabs in the focused pane
-        let urls: Vec<String> = self.pending_browser_panes.drain(..).collect();
-        for url in urls {
+        // New browser panes — added as tabs in their originating pane
+        let pending: Vec<(PaneId, String)> = self.pending_browser_panes.drain(..).collect();
+        for (originating_pane_id, url) in pending {
             let browser_pane_id = self.next_pane_id;
             self.next_pane_id += 1;
 
@@ -350,10 +353,11 @@ impl AmuxApp {
                     browser.focus();
                     self.panes
                         .insert(browser_pane_id, PaneEntry::Browser(browser));
-                    // Add as a tab in the focused ManagedPane (not a tree split).
+                    // Add as a tab in the originating ManagedPane (not a tree split).
                     // Insert right after the active tab (cmux behavior).
-                    let focused = self.focused_pane_id();
-                    if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused) {
+                    if let Some(PaneEntry::Terminal(managed)) =
+                        self.panes.get_mut(&originating_pane_id)
+                    {
                         let insert_at = (managed.active_tab_idx + 1).min(managed.tabs.len());
                         managed
                             .tabs
@@ -363,7 +367,7 @@ impl AmuxApp {
                     tracing::info!(
                         "Created browser tab {} in pane {} with URL: {}",
                         browser_pane_id,
-                        self.focused_pane_id(),
+                        originating_pane_id,
                         url
                     );
                 }

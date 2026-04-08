@@ -30,15 +30,40 @@ impl eframe::App for AmuxApp {
             self.create_pending_browser_panes(_frame);
         }
 
-        // Drain popup requests from browser panes → queue as new browser panes
-        let popup_urls: Vec<String> = self
+        // Drain popup requests from browser panes → queue as new browser panes.
+        // Build a map of browser_pane_id → parent managed pane_id so the new tab
+        // is inserted into the same managed pane as the source browser tab.
+        let browser_to_parent: HashMap<PaneId, PaneId> = self
             .panes
-            .values()
-            .filter_map(|e| e.as_browser())
-            .flat_map(|b| b.drain_popup_requests())
+            .iter()
+            .filter_map(|(&managed_id, e)| {
+                e.as_terminal().map(|m| {
+                    m.browser_pane_ids()
+                        .into_iter()
+                        .map(move |bid| (bid, managed_id))
+                })
+            })
+            .flatten()
             .collect();
-        for url in popup_urls {
-            self.queue_browser_pane(url);
+        let popup_requests: Vec<(PaneId, Vec<String>)> = self
+            .panes
+            .iter()
+            .filter_map(|(&browser_id, e)| {
+                let urls = e.as_browser()?.drain_popup_requests();
+                if urls.is_empty() {
+                    return None;
+                }
+                let parent_id = browser_to_parent
+                    .get(&browser_id)
+                    .copied()
+                    .unwrap_or_else(|| self.focused_pane_id());
+                Some((parent_id, urls))
+            })
+            .collect();
+        for (parent_pane_id, urls) in popup_requests {
+            for url in urls {
+                self.queue_browser_pane(parent_pane_id, url);
+            }
         }
 
         // Record browser page visits for history/autocomplete (only when URL changes)

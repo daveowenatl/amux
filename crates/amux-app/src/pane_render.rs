@@ -550,7 +550,7 @@ impl AmuxApp {
                         return;
                     }
                     ToolbarAction::NewBrowser => {
-                        self.queue_browser_pane(DEFAULT_BROWSER_URL.to_string());
+                        self.queue_browser_pane(pane_id, DEFAULT_BROWSER_URL.to_string());
                         return;
                     }
                     ToolbarAction::SplitVertical => {
