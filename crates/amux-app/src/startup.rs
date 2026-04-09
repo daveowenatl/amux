@@ -648,7 +648,8 @@ pub(crate) fn spawn_surface(
         None
     };
 
-    let mut ghostty_pane = amux_term::ghostty_pane::GhosttyPane::spawn(cols, rows, cmd)?;
+    let mut ghostty_pane =
+        amux_term::ghostty_pane::GhosttyPane::spawn(cols, rows, cmd, config.scrollback_lines)?;
     // Apply amux theme colors to the ghostty backend (which otherwise
     // uses libghostty-vt's built-in defaults).
     ghostty_pane.set_palette(config.color_palette.clone());

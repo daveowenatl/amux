@@ -55,7 +55,12 @@ where
     'alloc: 'cb,
 {
     /// Spawn a new terminal pane running the given command.
-    pub fn spawn(cols: u16, rows: u16, cmd: CommandBuilder) -> Result<Self, TermError> {
+    pub fn spawn(
+        cols: u16,
+        rows: u16,
+        cmd: CommandBuilder,
+        max_scrollback: usize,
+    ) -> Result<Self, TermError> {
         let pty_system = native_pty_system();
         let pty_size = PtySize {
             rows,
@@ -85,7 +90,7 @@ where
         let opts = TerminalOptions {
             cols,
             rows,
-            max_scrollback: 10_000,
+            max_scrollback,
         };
         // Box the terminal BEFORE registering callbacks. libghostty-vt stores
         // a raw pointer to Terminal.vtable via ghostty_terminal_set(USERDATA, &self.vtable).

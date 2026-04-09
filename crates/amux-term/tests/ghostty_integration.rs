@@ -1,5 +1,7 @@
 //! Integration tests for GhosttyPane via the TerminalBackend trait.
 
+#![cfg(unix)]
+
 use std::thread;
 use std::time::Duration;
 
@@ -27,7 +29,7 @@ fn new_terminal_and_render_state() -> (
 fn spawn_and_run(script: &str) -> Box<GhosttyPane<'static, 'static>> {
     let mut cmd = CommandBuilder::new("bash");
     cmd.args(["--norc", "--noprofile", "-c", script]);
-    let mut pane = Box::new(GhosttyPane::spawn(80, 24, cmd).expect("spawn failed"));
+    let mut pane = Box::new(GhosttyPane::spawn(80, 24, cmd, 10_000).expect("spawn failed"));
 
     for _ in 0..60 {
         if let AdvanceResult::Eof = pane.advance() {
@@ -41,7 +43,7 @@ fn spawn_and_run(script: &str) -> Box<GhosttyPane<'static, 'static>> {
 #[test]
 fn dimensions_match_spawn_size() {
     let cmd = CommandBuilder::new("true");
-    let pane = GhosttyPane::spawn(120, 40, cmd).expect("spawn failed");
+    let pane = GhosttyPane::spawn(120, 40, cmd, 10_000).expect("spawn failed");
     let (cols, rows) = pane.dimensions();
     assert_eq!(cols, 120);
     assert_eq!(rows, 40);
@@ -50,7 +52,7 @@ fn dimensions_match_spawn_size() {
 #[test]
 fn resize_updates_dimensions() {
     let cmd = CommandBuilder::new("true");
-    let mut pane = GhosttyPane::spawn(80, 24, cmd).expect("spawn failed");
+    let mut pane = GhosttyPane::spawn(80, 24, cmd, 10_000).expect("spawn failed");
     pane.resize(100, 30).expect("resize failed");
     let (cols, rows) = pane.dimensions();
     assert_eq!(cols, 100);
@@ -66,7 +68,7 @@ fn screen_text_contains_output() {
         "-c",
         "printf 'hello ghostty\\n'; exit 0",
     ]);
-    let mut pane = Box::new(GhosttyPane::spawn(80, 24, cmd).expect("spawn failed"));
+    let mut pane = Box::new(GhosttyPane::spawn(80, 24, cmd, 10_000).expect("spawn failed"));
 
     for _ in 0..60 {
         if let AdvanceResult::Eof = pane.advance() {
@@ -86,7 +88,7 @@ fn screen_text_contains_output() {
 fn feed_bytes_renders_to_screen() {
     let mut cmd = CommandBuilder::new("sleep");
     cmd.arg("1");
-    let mut pane = GhosttyPane::spawn(80, 24, cmd).expect("spawn failed");
+    let mut pane = GhosttyPane::spawn(80, 24, cmd, 10_000).expect("spawn failed");
 
     // Feed bytes directly into the VT state machine (bypass PTY)
     pane.feed_bytes(b"direct feed test\r\n");
@@ -195,7 +197,7 @@ fn search_scrollback_case_insensitive() {
 fn is_alive_while_running() {
     let mut cmd = CommandBuilder::new("sleep");
     cmd.arg("1");
-    let mut pane = GhosttyPane::spawn(80, 24, cmd).expect("spawn failed");
+    let mut pane = GhosttyPane::spawn(80, 24, cmd, 10_000).expect("spawn failed");
     assert!(pane.is_alive(), "expected process to be alive");
 }
 
@@ -203,7 +205,7 @@ fn is_alive_while_running() {
 fn cursor_visible_after_show_hide_sequence() {
     let mut cmd = CommandBuilder::new("sleep");
     cmd.arg("1");
-    let mut pane = GhosttyPane::spawn(80, 24, cmd).expect("spawn failed");
+    let mut pane = GhosttyPane::spawn(80, 24, cmd, 10_000).expect("spawn failed");
 
     // Cursor should be visible initially
     let cursor = pane.cursor();
@@ -230,7 +232,7 @@ fn cursor_visible_after_show_hide_sequence() {
 fn cursor_visible_after_rapid_toggle() {
     let mut cmd = CommandBuilder::new("sleep");
     cmd.arg("1");
-    let mut pane = GhosttyPane::spawn(80, 24, cmd).expect("spawn failed");
+    let mut pane = GhosttyPane::spawn(80, 24, cmd, 10_000).expect("spawn failed");
 
     // Simulate rapid DECTCEM toggling like Claude Code does
     for _ in 0..50 {
@@ -385,7 +387,7 @@ fn cursor_visible_truncated_in_buffer() {
 fn seqno_increments_on_advance() {
     let mut cmd = CommandBuilder::new("bash");
     cmd.args(["--norc", "--noprofile", "-c", "printf 'x\\n'; exit 0"]);
-    let mut pane = GhosttyPane::spawn(80, 24, cmd).expect("spawn failed");
+    let mut pane = GhosttyPane::spawn(80, 24, cmd, 10_000).expect("spawn failed");
 
     let before = pane.current_seqno();
     for _ in 0..10 {

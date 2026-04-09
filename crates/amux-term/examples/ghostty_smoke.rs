@@ -23,7 +23,7 @@ fn main() {
         "echo 'hello from ghostty'; echo 'line two'; sleep 0.2; exit 42",
     ]);
 
-    let mut pane = GhosttyPane::spawn(80, 24, cmd).expect("spawn failed");
+    let mut pane = GhosttyPane::spawn(80, 24, cmd, 10_000).expect("spawn failed");
     println!("Spawned. PID: {:?}", pane.child_pid());
     println!("Dimensions: {:?}", pane.dimensions());
 
