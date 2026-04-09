@@ -251,146 +251,6 @@ where
 
     /// Build lines with ANSI SGR escape sequences for color/style preservation.
     /// Used by `read_scrollback_text` so session restore retains styling.
-    fn snapshot_lines_ansi(&self) -> Vec<String> {
-        use libghostty_vt::style::Underline as GhosttyUnderline;
-
-        let mut rs = self.render_state.borrow_mut();
-        let snapshot = match rs.update(&self.terminal) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
-
-        let mut row_iter = match RowIterator::new() {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
-        };
-        let mut cell_iter = match CellIterator::new() {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
-        };
-        let mut row_iteration = match row_iter.update(&snapshot) {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
-        };
-
-        let default_style = libghostty_vt::style::Style::default();
-
-        let mut lines = Vec::new();
-        while let Some(row) = row_iteration.next() {
-            let mut line = String::new();
-            let mut col: usize = 0;
-            let mut visible_col: usize = 0;
-            let mut prev_style = default_style;
-            let mut prev_fg: Option<RgbColor> = None;
-            let mut prev_bg: Option<RgbColor> = None;
-
-            if let Ok(mut cell_iteration) = cell_iter.update(row) {
-                while let Some(cell) = cell_iteration.next() {
-                    let graphemes = cell.graphemes().unwrap_or_default();
-                    if graphemes.is_empty() {
-                        col += 1;
-                        continue;
-                    }
-
-                    // Pad with spaces up to this column.
-                    while visible_col < col {
-                        line.push(' ');
-                        visible_col += 1;
-                    }
-
-                    // Check if style changed.
-                    let cur_style = cell.style().unwrap_or(default_style);
-                    let cur_fg = cell.fg_color().ok().flatten();
-                    let cur_bg = cell.bg_color().ok().flatten();
-
-                    let style_changed =
-                        cur_style != prev_style || cur_fg != prev_fg || cur_bg != prev_bg;
-
-                    if style_changed {
-                        // Reset, then emit active attributes.
-                        line.push_str("\x1b[0");
-
-                        if cur_style.bold {
-                            line.push_str(";1");
-                        }
-                        if cur_style.faint {
-                            line.push_str(";2");
-                        }
-                        if cur_style.italic {
-                            line.push_str(";3");
-                        }
-                        match cur_style.underline {
-                            GhosttyUnderline::Single => line.push_str(";4"),
-                            GhosttyUnderline::Double => line.push_str(";21"),
-                            GhosttyUnderline::Curly => line.push_str(";4:3"),
-                            GhosttyUnderline::Dotted => line.push_str(";4:4"),
-                            GhosttyUnderline::Dashed => line.push_str(";4:5"),
-                            _ => {}
-                        }
-                        if cur_style.inverse {
-                            line.push_str(";7");
-                        }
-                        if cur_style.invisible {
-                            line.push_str(";8");
-                        }
-                        if cur_style.strikethrough {
-                            line.push_str(";9");
-                        }
-
-                        // Foreground color
-                        {
-                            use std::fmt::Write;
-                            if let Some(fg) = cur_fg {
-                                let _ = write!(line, ";38;2;{};{};{}", fg.r, fg.g, fg.b);
-                            }
-
-                            // Background color
-                            if let Some(bg) = cur_bg {
-                                let _ = write!(line, ";48;2;{};{};{}", bg.r, bg.g, bg.b);
-                            }
-
-                            // Underline color (SGR 58;2;R;G;B)
-                            if !matches!(cur_style.underline, GhosttyUnderline::None) {
-                                if let Some(uc) = resolve_style_color(
-                                    &cur_style.underline_color,
-                                    &self.cached_palette.colors,
-                                ) {
-                                    let _ = write!(
-                                        line,
-                                        ";58;2;{};{};{}",
-                                        (uc.0 * 255.0) as u8,
-                                        (uc.1 * 255.0) as u8,
-                                        (uc.2 * 255.0) as u8
-                                    );
-                                }
-                            }
-                        }
-
-                        line.push('m');
-
-                        prev_style = cur_style;
-                        prev_fg = cur_fg;
-                        prev_bg = cur_bg;
-                    }
-
-                    for ch in graphemes {
-                        line.push(ch);
-                    }
-                    col += 1;
-                    visible_col += 1;
-                }
-            }
-
-            // Reset at end of line if we had non-default attributes.
-            if prev_style != default_style || prev_fg.is_some() || prev_bg.is_some() {
-                line.push_str("\x1b[0m");
-            }
-
-            lines.push(line.trim_end().to_string());
-        }
-        lines
-    }
-
     /// Read screen text using the render state snapshot iterators.
     /// Takes &self via RefCell interior mutability.
     fn read_text_from_snapshot(&self) -> String {
@@ -596,52 +456,39 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
         self.read_text_from_snapshot()
     }
 
-    fn read_scrollback_text(&self, max_lines: usize) -> String {
-        // libghostty-vt 0.1.x only exposes viewport via render state.
-        // PointCoordinate fields are private, so grid_ref can't reach scrollback.
-        let lines = self.snapshot_lines_ansi();
-        if max_lines > lines.len() {
-            tracing::warn!(
-                "read_scrollback_text({max_lines}) requested but only {} viewport lines available \
-                 (ghostty backend cannot read scrollback history)",
-                lines.len()
-            );
-        }
-        let total = lines.len();
-        let start = total.saturating_sub(max_lines);
-        let mut selected: Vec<&str> = lines[start..].iter().map(|s| s.as_str()).collect();
-        while selected.last().is_some_and(|l| l.is_empty()) {
-            selected.pop();
-        }
-        selected.join("\n")
+    fn read_scrollback_text(&self, _max_lines: usize) -> String {
+        use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
+
+        let opts = FormatterOptions {
+            format: Format::Vt,
+            trim: true,
+            unwrap: false,
+        };
+        let mut formatter = match Formatter::new(&self.terminal, opts) {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!("Failed to create formatter: {e:?}");
+                return String::new();
+            }
+        };
+        let bytes = match formatter.format_alloc::<()>(None) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("Failed to format terminal: {e:?}");
+                return String::new();
+            }
+        };
+        let text = String::from_utf8_lossy(&bytes).to_string();
+
+        // Strip content after the last command-finished mark (OSC 133;D).
+        // This excludes trailing prompts from the saved scrollback.
+        strip_trailing_prompts(&text)
     }
 
-    fn read_scrollback_text_range(&self, start: usize, end: usize) -> String {
-        // libghostty-vt 0.1.x only exposes viewport via render state.
-        let lines = self.snapshot_lines_ansi();
-        let viewport_total = self.terminal.total_rows().unwrap_or(0);
-        let viewport_rows = lines.len();
-        let viewport_start = viewport_total.saturating_sub(viewport_rows);
-
-        if start < viewport_start || end > viewport_total {
-            tracing::warn!(
-                "read_scrollback_text_range({start}..{end}) extends beyond viewport \
-                 ({viewport_start}..{viewport_total}), results may be incomplete \
-                 (ghostty backend cannot read scrollback history)"
-            );
-        }
-
-        // Map physical row range to viewport-relative indices.
-        let s = start.saturating_sub(viewport_start).min(viewport_rows);
-        let e = end.saturating_sub(viewport_start).min(viewport_rows);
-        if s >= e {
-            return String::new();
-        }
-        let mut selected: Vec<&str> = lines[s..e].iter().map(|s| s.as_str()).collect();
-        while selected.last().is_some_and(|l| l.is_empty()) {
-            selected.pop();
-        }
-        selected.join("\n")
+    fn read_scrollback_text_range(&self, _start: usize, _end: usize) -> String {
+        // With the Formatter API we get the full screen content.
+        // Range-based access isn't supported — return the full output.
+        self.read_scrollback_text(usize::MAX)
     }
 
     fn search_scrollback(&self, query: &str) -> Vec<(usize, usize, usize)> {
@@ -839,6 +686,35 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
             events.push(event);
         }
         events
+    }
+}
+
+/// Strip trailing prompt content from VT-formatted scrollback.
+///
+/// Finds the last OSC 133;D (command finished) mark and truncates
+/// everything after it. This removes the trailing shell prompt that
+/// would otherwise duplicate when the shell draws a fresh prompt
+/// on restore.
+fn strip_trailing_prompts(text: &str) -> String {
+    // Look for the last occurrence of OSC 133;D (command finished).
+    // The mark format is: \x1b]133;D or \x1b]133;D;N (with exit code)
+    // terminated by BEL (\x07) or ST (\x1b\\).
+    if let Some(last_d) = text.rfind("\x1b]133;D") {
+        // Find the end of this OSC sequence (BEL or ST terminator)
+        let after_mark = &text[last_d..];
+        let end = after_mark
+            .find('\x07')
+            .map(|i| i + 1)
+            .or_else(|| after_mark.find("\x1b\\").map(|i| i + 2))
+            .unwrap_or(after_mark.len());
+
+        // Keep everything up to and including the 133;D mark
+        let truncated = &text[..last_d + end];
+        truncated.to_string()
+    } else {
+        // No semantic marks found — return as-is (shell integration
+        // may not be loaded, or no commands were run)
+        text.to_string()
     }
 }
 
