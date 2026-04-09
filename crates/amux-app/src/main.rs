@@ -142,6 +142,8 @@ struct AmuxApp {
     app_focused: bool,
     /// Persisted application configuration.
     app_config: AppConfig,
+    /// Resolved keybindings: user overrides merged with platform defaults.
+    keybindings: HashMap<config::Action, config::KeyCombo>,
     /// Cross-platform system notification sender.
     system_notifier: system_notify::SystemNotifier,
     /// Cached badge count to avoid redundant dock badge updates every frame.

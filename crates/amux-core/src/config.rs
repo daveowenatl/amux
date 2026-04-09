@@ -1,9 +1,377 @@
 //! Application configuration loaded from config.toml.
 
+use std::collections::HashMap;
+
 /// Default font family — must match `amux_term::DEFAULT_FONT_FAMILY`.
 pub const DEFAULT_FONT_FAMILY: &str = "IBM Plex Mono";
 /// Default font size — must match `amux_term::DEFAULT_FONT_SIZE`.
 pub const DEFAULT_FONT_SIZE: f32 = 14.0;
+
+/// Custom color palette configuration.
+/// Colors are specified as hex strings: "#rrggbb" or "rrggbb".
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct ColorsConfig {
+    pub foreground: Option<String>,
+    pub background: Option<String>,
+    pub cursor_fg: Option<String>,
+    pub cursor_bg: Option<String>,
+    pub selection_fg: Option<String>,
+    pub selection_bg: Option<String>,
+    /// ANSI colors 0-15. Index maps to color number.
+    /// e.g. palette = ["#000000", "#cc0000", ...] for colors 0, 1, etc.
+    #[serde(default)]
+    pub palette: Vec<String>,
+}
+
+impl ColorsConfig {
+    /// Parse a hex color string like "#rrggbb" or "rrggbb" into [u8; 3].
+    pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
+        let s = s.strip_prefix('#').unwrap_or(s);
+        if s.len() != 6 {
+            return None;
+        }
+        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+        Some([r, g, b])
+    }
+}
+
+/// Bindable keyboard actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+    Copy,
+    Paste,
+    Find,
+    SelectAll,
+    CopyMode,
+    ToggleSidebar,
+    NewBrowserTab,
+    NewWorkspace,
+    NewTab,
+    NextWorkspace,
+    PrevWorkspace,
+    NextTab,
+    PrevTab,
+    SplitRight,
+    SplitDown,
+    ClosePane,
+    NavigateLeft,
+    NavigateRight,
+    NavigateUp,
+    NavigateDown,
+    ZoomToggle,
+    DevTools,
+    NotificationPanel,
+    JumpToUnread,
+    ClearScrollback,
+}
+
+/// A keyboard shortcut: modifier flags + key name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct KeyCombo {
+    /// Cmd on macOS, Ctrl on others.
+    pub cmd: bool,
+    pub shift: bool,
+    pub alt: bool,
+    /// Always Ctrl (even on macOS).
+    pub ctrl: bool,
+    /// Lowercase key name: "c", "v", "f", "tab", "enter", etc.
+    pub key: String,
+}
+
+impl KeyCombo {
+    /// Parse a key combo string like `"cmd+shift+t"`, `"ctrl+c"`, `"cmd+alt+left"`.
+    /// Returns `None` if the string is empty or has no key after modifiers.
+    pub fn parse(s: &str) -> Option<Self> {
+        let parts: Vec<&str> = s.split('+').collect();
+        if parts.is_empty() {
+            return None;
+        }
+
+        let mut cmd = false;
+        let mut shift = false;
+        let mut alt = false;
+        let mut ctrl = false;
+
+        // All segments except the last are modifier candidates.
+        // The last segment is always the key.
+        let (modifier_parts, key_parts) = parts.split_at(parts.len() - 1);
+        let key = key_parts[0].trim().to_lowercase();
+        if key.is_empty()
+            || matches!(
+                key.as_str(),
+                "cmd" | "super" | "meta" | "shift" | "alt" | "option" | "ctrl" | "control"
+            )
+        {
+            return None;
+        }
+
+        for part in modifier_parts {
+            match part.trim().to_lowercase().as_str() {
+                "cmd" | "super" | "meta" => cmd = true,
+                "shift" => shift = true,
+                "alt" | "option" => alt = true,
+                "ctrl" | "control" => ctrl = true,
+                _ => {}
+            }
+        }
+
+        Some(KeyCombo {
+            cmd,
+            shift,
+            alt,
+            ctrl,
+            key,
+        })
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for KeyCombo {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        KeyCombo::parse(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("invalid key combo: {s:?}")))
+    }
+}
+
+/// User-customizable keybindings. Each field is an optional override;
+/// if None, the platform default is used.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct KeybindingsConfig {
+    pub copy: Option<KeyCombo>,
+    pub paste: Option<KeyCombo>,
+    pub find: Option<KeyCombo>,
+    pub select_all: Option<KeyCombo>,
+    pub copy_mode: Option<KeyCombo>,
+    pub toggle_sidebar: Option<KeyCombo>,
+    pub new_browser_tab: Option<KeyCombo>,
+    pub new_workspace: Option<KeyCombo>,
+    pub new_tab: Option<KeyCombo>,
+    pub next_workspace: Option<KeyCombo>,
+    pub prev_workspace: Option<KeyCombo>,
+    pub next_tab: Option<KeyCombo>,
+    pub prev_tab: Option<KeyCombo>,
+    pub split_right: Option<KeyCombo>,
+    pub split_down: Option<KeyCombo>,
+    pub close_pane: Option<KeyCombo>,
+    pub navigate_left: Option<KeyCombo>,
+    pub navigate_right: Option<KeyCombo>,
+    pub navigate_up: Option<KeyCombo>,
+    pub navigate_down: Option<KeyCombo>,
+    pub zoom_toggle: Option<KeyCombo>,
+    pub devtools: Option<KeyCombo>,
+    pub notification_panel: Option<KeyCombo>,
+    pub jump_to_unread: Option<KeyCombo>,
+    pub clear_scrollback: Option<KeyCombo>,
+}
+
+impl KeybindingsConfig {
+    /// Return resolved keybindings: user overrides merged with platform defaults.
+    pub fn resolved(&self) -> HashMap<Action, KeyCombo> {
+        let mut map = Self::platform_defaults();
+        if let Some(k) = &self.copy {
+            map.insert(Action::Copy, k.clone());
+        }
+        if let Some(k) = &self.paste {
+            map.insert(Action::Paste, k.clone());
+        }
+        if let Some(k) = &self.find {
+            map.insert(Action::Find, k.clone());
+        }
+        if let Some(k) = &self.select_all {
+            map.insert(Action::SelectAll, k.clone());
+        }
+        if let Some(k) = &self.copy_mode {
+            map.insert(Action::CopyMode, k.clone());
+        }
+        if let Some(k) = &self.toggle_sidebar {
+            map.insert(Action::ToggleSidebar, k.clone());
+        }
+        if let Some(k) = &self.new_browser_tab {
+            map.insert(Action::NewBrowserTab, k.clone());
+        }
+        if let Some(k) = &self.new_workspace {
+            map.insert(Action::NewWorkspace, k.clone());
+        }
+        if let Some(k) = &self.new_tab {
+            map.insert(Action::NewTab, k.clone());
+        }
+        if let Some(k) = &self.next_workspace {
+            map.insert(Action::NextWorkspace, k.clone());
+        }
+        if let Some(k) = &self.prev_workspace {
+            map.insert(Action::PrevWorkspace, k.clone());
+        }
+        if let Some(k) = &self.next_tab {
+            map.insert(Action::NextTab, k.clone());
+        }
+        if let Some(k) = &self.prev_tab {
+            map.insert(Action::PrevTab, k.clone());
+        }
+        if let Some(k) = &self.split_right {
+            map.insert(Action::SplitRight, k.clone());
+        }
+        if let Some(k) = &self.split_down {
+            map.insert(Action::SplitDown, k.clone());
+        }
+        if let Some(k) = &self.close_pane {
+            map.insert(Action::ClosePane, k.clone());
+        }
+        if let Some(k) = &self.navigate_left {
+            map.insert(Action::NavigateLeft, k.clone());
+        }
+        if let Some(k) = &self.navigate_right {
+            map.insert(Action::NavigateRight, k.clone());
+        }
+        if let Some(k) = &self.navigate_up {
+            map.insert(Action::NavigateUp, k.clone());
+        }
+        if let Some(k) = &self.navigate_down {
+            map.insert(Action::NavigateDown, k.clone());
+        }
+        if let Some(k) = &self.zoom_toggle {
+            map.insert(Action::ZoomToggle, k.clone());
+        }
+        if let Some(k) = &self.devtools {
+            map.insert(Action::DevTools, k.clone());
+        }
+        if let Some(k) = &self.notification_panel {
+            map.insert(Action::NotificationPanel, k.clone());
+        }
+        if let Some(k) = &self.jump_to_unread {
+            map.insert(Action::JumpToUnread, k.clone());
+        }
+        if let Some(k) = &self.clear_scrollback {
+            map.insert(Action::ClearScrollback, k.clone());
+        }
+        map
+    }
+
+    fn platform_defaults() -> HashMap<Action, KeyCombo> {
+        let mut m = HashMap::new();
+        #[cfg(target_os = "macos")]
+        {
+            m.insert(Action::Copy, KeyCombo::parse("cmd+c").unwrap());
+            m.insert(Action::Paste, KeyCombo::parse("cmd+v").unwrap());
+            m.insert(Action::Find, KeyCombo::parse("cmd+f").unwrap());
+            m.insert(Action::SelectAll, KeyCombo::parse("cmd+a").unwrap());
+            m.insert(Action::CopyMode, KeyCombo::parse("cmd+shift+x").unwrap());
+            m.insert(Action::ToggleSidebar, KeyCombo::parse("cmd+b").unwrap());
+            m.insert(
+                Action::NewBrowserTab,
+                KeyCombo::parse("cmd+shift+l").unwrap(),
+            );
+            m.insert(Action::NewWorkspace, KeyCombo::parse("cmd+n").unwrap());
+            m.insert(Action::NewTab, KeyCombo::parse("cmd+t").unwrap());
+            m.insert(
+                Action::NextWorkspace,
+                KeyCombo::parse("cmd+shift+]").unwrap(),
+            );
+            m.insert(
+                Action::PrevWorkspace,
+                KeyCombo::parse("cmd+shift+[").unwrap(),
+            );
+            m.insert(Action::NextTab, KeyCombo::parse("ctrl+tab").unwrap());
+            m.insert(Action::PrevTab, KeyCombo::parse("ctrl+shift+tab").unwrap());
+            m.insert(Action::SplitRight, KeyCombo::parse("cmd+d").unwrap());
+            m.insert(Action::SplitDown, KeyCombo::parse("cmd+shift+d").unwrap());
+            m.insert(Action::ClosePane, KeyCombo::parse("cmd+w").unwrap());
+            m.insert(
+                Action::NavigateLeft,
+                KeyCombo::parse("cmd+alt+left").unwrap(),
+            );
+            m.insert(
+                Action::NavigateRight,
+                KeyCombo::parse("cmd+alt+right").unwrap(),
+            );
+            m.insert(Action::NavigateUp, KeyCombo::parse("cmd+alt+up").unwrap());
+            m.insert(
+                Action::NavigateDown,
+                KeyCombo::parse("cmd+alt+down").unwrap(),
+            );
+            m.insert(
+                Action::ZoomToggle,
+                KeyCombo::parse("cmd+shift+enter").unwrap(),
+            );
+            m.insert(Action::DevTools, KeyCombo::parse("cmd+alt+i").unwrap());
+            m.insert(Action::NotificationPanel, KeyCombo::parse("cmd+i").unwrap());
+            m.insert(
+                Action::JumpToUnread,
+                KeyCombo::parse("cmd+shift+u").unwrap(),
+            );
+            m.insert(Action::ClearScrollback, KeyCombo::parse("cmd+k").unwrap());
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            m.insert(Action::Copy, KeyCombo::parse("ctrl+shift+c").unwrap());
+            m.insert(Action::Paste, KeyCombo::parse("ctrl+shift+v").unwrap());
+            m.insert(Action::Find, KeyCombo::parse("ctrl+f").unwrap());
+            m.insert(Action::SelectAll, KeyCombo::parse("ctrl+shift+a").unwrap());
+            m.insert(Action::CopyMode, KeyCombo::parse("ctrl+shift+x").unwrap());
+            m.insert(Action::ToggleSidebar, KeyCombo::parse("ctrl+b").unwrap());
+            m.insert(
+                Action::NewBrowserTab,
+                KeyCombo::parse("ctrl+shift+l").unwrap(),
+            );
+            m.insert(
+                Action::NewWorkspace,
+                KeyCombo::parse("ctrl+shift+n").unwrap(),
+            );
+            m.insert(Action::NewTab, KeyCombo::parse("ctrl+shift+t").unwrap());
+            m.insert(
+                Action::NextWorkspace,
+                KeyCombo::parse("ctrl+shift+]").unwrap(),
+            );
+            m.insert(
+                Action::PrevWorkspace,
+                KeyCombo::parse("ctrl+shift+[").unwrap(),
+            );
+            m.insert(Action::NextTab, KeyCombo::parse("ctrl+tab").unwrap());
+            m.insert(Action::PrevTab, KeyCombo::parse("ctrl+shift+tab").unwrap());
+            m.insert(Action::SplitRight, KeyCombo::parse("ctrl+d").unwrap());
+            m.insert(Action::SplitDown, KeyCombo::parse("ctrl+shift+d").unwrap());
+            m.insert(Action::ClosePane, KeyCombo::parse("ctrl+w").unwrap());
+            m.insert(
+                Action::NavigateLeft,
+                KeyCombo::parse("ctrl+alt+left").unwrap(),
+            );
+            m.insert(
+                Action::NavigateRight,
+                KeyCombo::parse("ctrl+alt+right").unwrap(),
+            );
+            m.insert(Action::NavigateUp, KeyCombo::parse("ctrl+alt+up").unwrap());
+            m.insert(
+                Action::NavigateDown,
+                KeyCombo::parse("ctrl+alt+down").unwrap(),
+            );
+            m.insert(
+                Action::ZoomToggle,
+                KeyCombo::parse("ctrl+shift+enter").unwrap(),
+            );
+            m.insert(Action::DevTools, KeyCombo::parse("ctrl+shift+i").unwrap());
+            m.insert(
+                Action::NotificationPanel,
+                KeyCombo::parse("ctrl+i").unwrap(),
+            );
+            m.insert(
+                Action::JumpToUnread,
+                KeyCombo::parse("ctrl+shift+u").unwrap(),
+            );
+            m.insert(
+                Action::ClearScrollback,
+                KeyCombo::parse("ctrl+shift+k").unwrap(),
+            );
+        }
+        m
+    }
+}
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(default)]
@@ -20,6 +388,10 @@ pub struct AppConfig {
     pub theme_source: String,
     pub notifications: NotificationConfig,
     pub browser: BrowserConfig,
+    #[serde(default)]
+    pub colors: ColorsConfig,
+    #[serde(default)]
+    pub keybindings: KeybindingsConfig,
 }
 
 impl Default for AppConfig {
@@ -31,6 +403,8 @@ impl Default for AppConfig {
             theme_source: "default".to_owned(),
             notifications: NotificationConfig::default(),
             browser: BrowserConfig::default(),
+            colors: ColorsConfig::default(),
+            keybindings: KeybindingsConfig::default(),
         }
     }
 }
@@ -227,5 +601,105 @@ mod tests {
         assert!(!is_url_like("example\t.com"));
         assert!(!is_url_like("example\n.com"));
         assert!(!is_url_like("hello\tworld"));
+    }
+
+    #[test]
+    fn parse_hex_with_hash() {
+        assert_eq!(ColorsConfig::parse_hex("#ff0000"), Some([255, 0, 0]));
+    }
+
+    #[test]
+    fn parse_hex_without_hash() {
+        assert_eq!(ColorsConfig::parse_hex("00ff00"), Some([0, 255, 0]));
+    }
+
+    #[test]
+    fn parse_hex_invalid() {
+        assert_eq!(ColorsConfig::parse_hex("xyz"), None);
+        assert_eq!(ColorsConfig::parse_hex("#ff"), None);
+    }
+
+    #[test]
+    fn key_combo_parse_simple() {
+        let combo = KeyCombo::parse("cmd+c").unwrap();
+        assert!(combo.cmd);
+        assert!(!combo.shift);
+        assert!(!combo.alt);
+        assert!(!combo.ctrl);
+        assert_eq!(combo.key, "c");
+    }
+
+    #[test]
+    fn key_combo_parse_multi_modifier() {
+        let combo = KeyCombo::parse("cmd+shift+t").unwrap();
+        assert!(combo.cmd);
+        assert!(combo.shift);
+        assert!(!combo.alt);
+        assert!(!combo.ctrl);
+        assert_eq!(combo.key, "t");
+    }
+
+    #[test]
+    fn key_combo_parse_ctrl_only() {
+        let combo = KeyCombo::parse("ctrl+tab").unwrap();
+        assert!(!combo.cmd);
+        assert!(!combo.shift);
+        assert!(!combo.alt);
+        assert!(combo.ctrl);
+        assert_eq!(combo.key, "tab");
+    }
+
+    #[test]
+    fn key_combo_parse_special_keys() {
+        let combo = KeyCombo::parse("cmd+alt+left").unwrap();
+        assert!(combo.cmd);
+        assert!(!combo.shift);
+        assert!(combo.alt);
+        assert!(!combo.ctrl);
+        assert_eq!(combo.key, "left");
+    }
+
+    #[test]
+    fn key_combo_parse_invalid_empty() {
+        assert!(KeyCombo::parse("").is_none());
+    }
+
+    #[test]
+    fn key_combo_parse_bracket_keys() {
+        let combo = KeyCombo::parse("cmd+shift+]").unwrap();
+        assert!(combo.cmd);
+        assert!(combo.shift);
+        assert_eq!(combo.key, "]");
+    }
+
+    #[test]
+    fn key_combo_serde_roundtrip() {
+        // Verify deserialization via serde works
+        let toml_str = r#"copy = "cmd+c""#;
+        let cfg: KeybindingsConfig = toml::from_str(toml_str).unwrap();
+        let combo = cfg.copy.unwrap();
+        assert!(combo.cmd);
+        assert_eq!(combo.key, "c");
+    }
+
+    #[test]
+    fn keybindings_resolved_has_all_defaults() {
+        let cfg = KeybindingsConfig::default();
+        let resolved = cfg.resolved();
+        // On any platform, Copy should have a default.
+        assert!(resolved.contains_key(&Action::Copy));
+        assert!(resolved.contains_key(&Action::Paste));
+        assert!(resolved.contains_key(&Action::NewTab));
+    }
+
+    #[test]
+    fn keybindings_resolved_user_override() {
+        let toml_str = r#"copy = "ctrl+shift+y""#;
+        let cfg: KeybindingsConfig = toml::from_str(toml_str).unwrap();
+        let resolved = cfg.resolved();
+        let copy = resolved.get(&Action::Copy).unwrap();
+        assert!(copy.ctrl);
+        assert!(copy.shift);
+        assert_eq!(copy.key, "y");
     }
 }
