@@ -450,19 +450,8 @@ impl AmuxApp {
                                         .map(|p| p.to_string_lossy().to_string())
                                         .or_else(|| sf.pane.child_pid().and_then(get_cwd_from_pid))
                                 });
-                                // Prefer VT state snapshot (exact terminal state
-                                // reconstruction) over text-based scrollback.
-                                let scrollback_vt = sf
-                                    .pane
-                                    .vt_state_snapshot()
-                                    .filter(|bytes| {
-                                        bytes.len() <= amux_session::MAX_SCROLLBACK_BYTES
-                                    })
-                                    .map(|bytes| {
-                                        use base64::Engine;
-                                        base64::engine::general_purpose::STANDARD.encode(&bytes)
-                                    });
-                                let scrollback = if scrollback_vt.is_none() {
+                                let scrollback_vt = None;
+                                let scrollback = {
                                     let raw = sf
                                         .pane
                                         .read_scrollback_text(amux_session::MAX_SCROLLBACK_LINES);
@@ -475,8 +464,6 @@ impl AmuxApp {
                                     } else {
                                         truncated.to_string()
                                     }
-                                } else {
-                                    String::new()
                                 };
                                 let (cols, rows) = sf.pane.dimensions();
                                 amux_session::SavedSurface {
