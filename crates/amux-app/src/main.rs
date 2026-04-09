@@ -459,10 +459,16 @@ impl AmuxApp {
                                         &raw,
                                         amux_session::MAX_SCROLLBACK_BYTES,
                                     );
-                                    if truncated.len() == raw.len() {
+                                    let text = if truncated.len() == raw.len() {
                                         raw
                                     } else {
                                         truncated.to_string()
+                                    };
+                                    // Wrap with SGR reset to prevent attribute bleed on restore
+                                    if text.is_empty() {
+                                        text
+                                    } else {
+                                        format!("\x1b[0m{text}\x1b[0m")
                                     }
                                 };
                                 let (cols, rows) = sf.pane.dimensions();
