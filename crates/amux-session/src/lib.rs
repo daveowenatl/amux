@@ -144,9 +144,8 @@ pub struct SavedSurface {
     pub working_dir: Option<String>,
     #[serde(default)]
     pub scrollback: String,
-    /// VT state snapshot (base64-encoded byte stream from ghostty formatter).
-    /// When present, preferred over `scrollback` for session restore — produces
-    /// an exact reconstruction of terminal state without trailing blank lines.
+    /// Legacy VT state snapshot field (no longer written).
+    /// Kept for backwards compatibility so old session files still deserialize.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scrollback_vt: Option<String>,
     pub cols: u16,
