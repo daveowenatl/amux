@@ -1,9 +1,7 @@
 //! libghostty-vt backend for the TerminalBackend trait.
 //!
-//! POC implementation (#34) proving that `TerminalBackend` can be implemented
-//! against a non-wezterm backend. Wraps libghostty-vt's Terminal + portable-pty.
-//!
-//! Enabled with `--features libghostty`.
+//! Wraps libghostty-vt's Terminal + portable-pty. This is the sole terminal
+//! engine used by amux.
 
 use std::cell::RefCell;
 use std::io::{Read, Write};
@@ -16,11 +14,10 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use url::Url;
 
 use crate::backend::{
-    Color, CursorPos, CursorShape, Palette, ProcessExit, ScreenCell, ScreenRow, StableRow,
-    TerminalBackend, UnderlineStyle,
+    AdvanceResult, Color, CursorPos, CursorShape, Palette, ProcessExit, ScreenCell, ScreenRow,
+    SequenceNo, StableRow, TermError, TerminalBackend, UnderlineStyle,
 };
 use crate::osc::NotificationEvent;
-use crate::pane::{AdvanceResult, SequenceNo, TermError};
 
 /// A terminal pane backed by libghostty-vt + portable-pty.
 ///

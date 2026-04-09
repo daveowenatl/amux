@@ -61,10 +61,6 @@ pub(crate) fn render_pane(
             snapshot.cursor_blink_hidden = true;
         }
 
-        // Add Kitty inline images for the wezterm backend.
-        if let Some(wez) = pane.as_wezterm() {
-            amux_render_gpu::snapshot::extract_kitty_images(&mut snapshot, wez.screen());
-        }
         let pixels_per_point = ui.ctx().pixels_per_point();
         let callback = gpu.paint_callback(rect, snapshot, pixels_per_point);
         ui.painter().add(egui::Shape::Callback(callback));

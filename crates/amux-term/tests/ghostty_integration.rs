@@ -1,21 +1,18 @@
 //! Integration tests for GhosttyPane via the TerminalBackend trait.
-//!
-//! Mirrors pty_integration.rs but exercises the libghostty-vt backend.
-//! Run with: cargo test -p amux-term --features libghostty
-
-#![cfg(feature = "libghostty")]
 
 use std::thread;
 use std::time::Duration;
 
 use portable_pty::CommandBuilder;
 
-use amux_term::backend::TerminalBackend;
+use amux_term::backend::{AdvanceResult, TerminalBackend};
 use amux_term::ghostty_pane::GhosttyPane;
-use amux_term::pane::AdvanceResult;
 
 /// Helper: create a raw Terminal + RenderState pair for direct VT API tests.
-fn new_terminal_and_render_state() -> (libghostty_vt::Terminal, libghostty_vt::RenderState) {
+fn new_terminal_and_render_state() -> (
+    libghostty_vt::Terminal<'static, 'static>,
+    libghostty_vt::RenderState<'static>,
+) {
     let terminal = libghostty_vt::Terminal::new(libghostty_vt::TerminalOptions {
         cols: 80,
         rows: 24,

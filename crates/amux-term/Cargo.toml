@@ -3,32 +3,21 @@ name = "amux-term"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Terminal pane abstraction wrapping wezterm-term + portable-pty"
-
-[features]
-default = []
-libghostty = ["dep:libghostty-vt"]
+description = "Terminal pane abstraction wrapping libghostty-vt + portable-pty"
 
 [dependencies]
 amux-core = { workspace = true }
-wezterm-term = { workspace = true }
-wezterm-surface = { workspace = true }
 portable-pty = { workspace = true }
+libghostty-vt = { workspace = true }
 winit = { workspace = true }
 url = { workspace = true }
 cosmic-text = { workspace = true }
 tracing = { workspace = true }
 anyhow = "1"
 thiserror = { workspace = true }
-libghostty-vt = { workspace = true, optional = true }
 
 [[example]]
 name = "ghostty_smoke"
-required-features = ["libghostty"]
-
-[[example]]
-name = "backend_compare"
-required-features = ["libghostty"]
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
