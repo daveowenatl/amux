@@ -323,16 +323,6 @@ pub trait TerminalBackend {
     /// handle receiving fewer rows than requested.
     fn read_cells_range(&self, start_row: usize, end_row: usize) -> Vec<ScreenRow>;
 
-    /// Serialize the full terminal state (screen content + modes + cursor) as a
-    /// VT escape sequence byte stream. When fed back to `feed_bytes` on a new
-    /// terminal of the same size, it reconstructs the visual state exactly.
-    ///
-    /// Returns `None` if the backend doesn't support VT state serialization.
-    /// Currently only the libghostty backend supports this.
-    fn vt_state_snapshot(&self) -> Option<Vec<u8>> {
-        None
-    }
-
     // --- Scrolling ---
 
     /// Whether this backend manages its own viewport scrolling.

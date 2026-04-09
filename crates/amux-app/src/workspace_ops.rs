@@ -53,7 +53,6 @@ impl AmuxApp {
             sf_id,
             cwd.as_deref(),
             None,
-            None,
         ) {
             Ok(surface) => {
                 let pane_id = self.next_pane_id;
@@ -92,7 +91,6 @@ impl AmuxApp {
             ws_id,
             sf_id,
             cwd.as_deref(),
-            None,
             None,
         ) {
             Ok(surface) => {
@@ -147,7 +145,6 @@ impl AmuxApp {
             ws_id,
             sf_id,
             cwd.as_deref(),
-            None,
             None,
         ) {
             Ok(surface) => {
@@ -392,7 +389,6 @@ impl AmuxApp {
             ws_id,
             sf_id,
             cwd.as_deref(),
-            None,
             None,
         ) {
             Ok(new_surface) => {

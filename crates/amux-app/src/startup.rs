@@ -258,18 +258,7 @@ pub(crate) fn fresh_startup(
     config: &Arc<AmuxTermConfig>,
 ) -> anyhow::Result<StartupState> {
     let initial_pane_id: PaneId = 0;
-    let surface = spawn_surface(
-        80,
-        24,
-        ipc_addr,
-        socket_token,
-        config,
-        0,
-        0,
-        None,
-        None,
-        None,
-    )?;
+    let surface = spawn_surface(80, 24, ipc_addr, socket_token, config, 0, 0, None, None)?;
 
     let managed = PaneEntry::Terminal(ManagedPane {
         tabs: vec![managed_pane::TabEntry::Terminal(Box::new(surface))],
@@ -346,8 +335,6 @@ pub(crate) fn restore_session(
                 } else {
                     Some(saved_sf.scrollback.as_str())
                 };
-                let scrollback_vt = saved_sf.scrollback_vt.as_deref();
-
                 match spawn_surface(
                     saved_sf.cols,
                     saved_sf.rows,
@@ -358,7 +345,6 @@ pub(crate) fn restore_session(
                     saved_sf.id,
                     cwd,
                     scrollback,
-                    scrollback_vt,
                 ) {
                     Ok(mut surface) => {
                         // Restore git/PR metadata from session
@@ -525,7 +511,6 @@ pub(crate) fn spawn_surface(
     surface_id: u64,
     cwd: Option<&str>,
     scrollback: Option<&str>,
-    scrollback_vt: Option<&str>,
 ) -> anyhow::Result<PaneSurface> {
     let shell = shell::default_shell();
     let mut cmd = CommandBuilder::new(&shell);
@@ -598,44 +583,24 @@ pub(crate) fn spawn_surface(
 
     // Inject saved terminal state before starting the reader thread.
     // feed_bytes writes directly to the terminal state machine, not through the PTY.
-    let mut restored = false;
-    if let Some(vt_b64) = scrollback_vt {
-        if !vt_b64.is_empty() {
-            use base64::Engine;
-            match base64::engine::general_purpose::STANDARD.decode(vt_b64) {
-                Ok(bytes) => {
-                    pane.feed_bytes(&bytes);
-                    // Move cursor to column 0 on a new line so the shell's
-                    // PROMPT_SP doesn't overwrite the last restored line.
-                    pane.feed_bytes(b"\r\n");
-                    restored = true;
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to decode scrollback_vt base64: {e}");
-                }
-            }
-        }
-    }
-    if !restored {
-        if let Some(text) = scrollback {
-            if !text.is_empty() {
-                // Strip trailing lines whose visible text (after removing ANSI
-                // escape sequences) is empty or whitespace-only.
-                let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-                let lines: Vec<&str> = normalized.split('\n').collect();
-                let trimmed: Vec<&str> = lines
-                    .into_iter()
-                    .rev()
-                    .skip_while(|line| strip_ansi(line).trim().is_empty())
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
-                let buffer = trimmed.join("\r\n");
-                if !buffer.is_empty() {
-                    pane.feed_bytes(buffer.as_bytes());
-                    pane.feed_bytes(b"\r\n");
-                }
+    if let Some(text) = scrollback {
+        if !text.is_empty() {
+            // Strip trailing lines whose visible text (after removing ANSI
+            // escape sequences) is empty or whitespace-only.
+            let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+            let lines: Vec<&str> = normalized.split('\n').collect();
+            let trimmed: Vec<&str> = lines
+                .into_iter()
+                .rev()
+                .skip_while(|line| strip_ansi(line).trim().is_empty())
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let buffer = trimmed.join("\r\n");
+            if !buffer.is_empty() {
+                pane.feed_bytes(buffer.as_bytes());
+                pane.feed_bytes(b"\r\n");
             }
         }
     }
