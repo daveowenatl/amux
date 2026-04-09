@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
 use amux_core::config;
+use amux_term::backend::{Color, Palette};
 use egui::Color32;
-use wezterm_term::color::SrgbaTuple;
 
-/// Terminal color scheme — feeds into wezterm-term's ColorPalette.
+/// Terminal color scheme — feeds into the amux-native Palette.
 /// Later: loadable from named schemes (Dracula, Solarized, etc.)
 #[derive(Debug, Clone)]
 pub(crate) struct TerminalColors {
@@ -21,7 +21,7 @@ pub(crate) struct TerminalColors {
 }
 
 /// UI chrome colors — tab bar, sidebar, dividers, accents.
-/// Distinct from terminal colors (wezterm/ghostty pattern).
+/// Distinct from terminal colors.
 /// Fields that are `None` fall back to the terminal background (ghostty pattern).
 #[derive(Debug, Clone)]
 pub(crate) struct ChromeColors {
@@ -47,6 +47,15 @@ pub(crate) struct Theme {
     pub chrome: ChromeColors,
 }
 
+fn rgb_to_color(c: [u8; 3]) -> Color {
+    Color(
+        c[0] as f32 / 255.0,
+        c[1] as f32 / 255.0,
+        c[2] as f32 / 255.0,
+        1.0,
+    )
+}
+
 impl Theme {
     /// Terminal background as `Color32`.
     pub fn terminal_bg(&self) -> Color32 {
@@ -54,46 +63,28 @@ impl Theme {
         Color32::from_rgb(r, g, b)
     }
 
-    /// Terminal background as `SrgbaTuple` for wezterm palette.
-    pub fn terminal_bg_srgba(&self) -> SrgbaTuple {
-        let [r, g, b] = self.terminal.background;
-        SrgbaTuple(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
-    }
-
-    /// Terminal foreground as `SrgbaTuple` for wezterm palette.
-    pub fn terminal_fg_srgba(&self) -> SrgbaTuple {
-        let [r, g, b] = self.terminal.foreground;
-        SrgbaTuple(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
-    }
-
-    /// Apply terminal colors to a wezterm ColorPalette.
-    pub fn apply_to_palette(&self, palette: &mut wezterm_term::color::ColorPalette) {
-        palette.background = self.terminal_bg_srgba();
-        palette.foreground = self.terminal_fg_srgba();
+    /// Apply terminal colors to an amux-native Palette.
+    pub fn apply_to_palette(&self, palette: &mut Palette) {
+        palette.background = rgb_to_color(self.terminal.background);
+        palette.foreground = rgb_to_color(self.terminal.foreground);
         for (i, [r, g, b]) in self.terminal.ansi.iter().enumerate() {
-            palette.colors.0[i] =
-                SrgbaTuple(*r as f32 / 255.0, *g as f32 / 255.0, *b as f32 / 255.0, 1.0);
+            if i < palette.colors.len() {
+                palette.colors[i] =
+                    Color(*r as f32 / 255.0, *g as f32 / 255.0, *b as f32 / 255.0, 1.0);
+            }
         }
         // Apply extended palette overrides (16-255).
         for (&idx, &[r, g, b]) in &self.terminal.palette_overrides {
-            if (idx as usize) < palette.colors.0.len() {
-                palette.colors.0[idx as usize] =
-                    SrgbaTuple(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0);
+            if (idx as usize) < palette.colors.len() {
+                palette.colors[idx as usize] =
+                    Color(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0);
             }
         }
-        let to_srgba = |c: [u8; 3]| {
-            SrgbaTuple(
-                c[0] as f32 / 255.0,
-                c[1] as f32 / 255.0,
-                c[2] as f32 / 255.0,
-                1.0,
-            )
-        };
-        palette.cursor_fg = to_srgba(self.terminal.cursor_fg);
-        palette.cursor_bg = to_srgba(self.terminal.cursor_bg);
-        palette.cursor_border = to_srgba(self.terminal.cursor_bg);
-        palette.selection_fg = to_srgba(self.terminal.selection_fg);
-        palette.selection_bg = to_srgba(self.terminal.selection_bg);
+        palette.cursor_fg = rgb_to_color(self.terminal.cursor_fg);
+        palette.cursor_bg = rgb_to_color(self.terminal.cursor_bg);
+        palette.cursor_border = rgb_to_color(self.terminal.cursor_bg);
+        palette.selection_fg = rgb_to_color(self.terminal.selection_fg);
+        palette.selection_bg = rgb_to_color(self.terminal.selection_bg);
     }
 
     /// Resolved tab bar background: chrome override → terminal background.

@@ -39,7 +39,6 @@ use amux_session::SessionData;
 use amux_term::config::AmuxTermConfig;
 use amux_term::font;
 use amux_term::osc::NotificationEvent;
-use amux_term::pane::TerminalPane;
 use amux_term::TerminalBackend;
 use managed_pane::*;
 use portable_pty::CommandBuilder;

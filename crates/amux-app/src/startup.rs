@@ -156,10 +156,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
         size: app_config.font_size,
     };
 
-    let mut term_config = AmuxTermConfig {
-        backend: app_config.backend.clone(),
-        ..Default::default()
-    };
+    let mut term_config = AmuxTermConfig::default();
     theme.apply_to_palette(&mut term_config.color_palette);
     let config = Arc::new(term_config);
 
@@ -651,21 +648,12 @@ pub(crate) fn spawn_surface(
         None
     };
 
-    let mut pane: amux_term::AnyBackend = match config.backend.as_str() {
-        #[cfg(feature = "libghostty")]
-        "ghostty" => {
-            let mut ghostty_pane = amux_term::ghostty_pane::GhosttyPane::spawn(cols, rows, cmd)?;
-            // Apply amux theme colors to the ghostty backend (which otherwise
-            // uses libghostty-vt's built-in defaults).
-            let palette: amux_term::backend::Palette = config.color_palette.clone().into();
-            ghostty_pane.set_palette(palette);
-            amux_term::AnyBackend::Ghostty(Box::new(ghostty_pane))
-        }
-        _ => {
-            let wez_pane = TerminalPane::spawn(cols, rows, cmd, config.clone())?;
-            amux_term::AnyBackend::Wezterm(Box::new(wez_pane))
-        }
-    };
+    let mut ghostty_pane =
+        amux_term::ghostty_pane::GhosttyPane::spawn(cols, rows, cmd, config.scrollback_lines)?;
+    // Apply amux theme colors to the ghostty backend (which otherwise
+    // uses libghostty-vt's built-in defaults).
+    ghostty_pane.set_palette(config.color_palette.clone());
+    let mut pane: amux_term::AnyBackend = amux_term::AnyBackend::Ghostty(Box::new(ghostty_pane));
 
     let mut reader = pane.take_reader().expect("reader already taken");
     let (byte_tx, byte_rx) = mpsc::sync_channel::<Vec<u8>>(64);

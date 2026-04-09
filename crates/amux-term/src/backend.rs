@@ -3,11 +3,34 @@ use std::io::Read;
 use url::Url;
 
 use crate::osc::NotificationEvent;
-use crate::pane::{AdvanceResult, SequenceNo, TermError};
+
+/// Typed errors for terminal pane operations.
+#[derive(Debug, thiserror::Error)]
+pub enum TermError {
+    #[error("PTY setup failed: {0}")]
+    PtySetupFailed(#[source] anyhow::Error),
+
+    #[error("resize failed: {0}")]
+    ResizeFailed(#[source] anyhow::Error),
+
+    #[error("write failed: {0}")]
+    WriteFailed(#[source] std::io::Error),
+}
+
+/// Sequence number type (matches rendering generation counter).
+pub type SequenceNo = usize;
+
+/// Result of advancing the terminal (reading PTY bytes).
+pub enum AdvanceResult {
+    /// Bytes were read and fed to the terminal.
+    Read(usize),
+    /// The PTY read would block (no data available).
+    WouldBlock,
+    /// The PTY has closed (child exited).
+    Eof,
+}
 
 // --- Amux-native types ---
-// These replace wezterm-term/portable-pty types in the trait so backends
-// don't need to produce wezterm-specific types.
 
 /// RGBA color as sRGB f32 values in [0.0, 1.0].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -144,60 +167,6 @@ pub struct ScreenRow {
     pub wrapped: bool,
 }
 
-// --- Conversions from wezterm-term / portable-pty types ---
-
-impl From<wezterm_term::color::SrgbaTuple> for Color {
-    fn from(c: wezterm_term::color::SrgbaTuple) -> Self {
-        Self(c.0, c.1, c.2, c.3)
-    }
-}
-
-impl From<Color> for wezterm_term::color::SrgbaTuple {
-    fn from(c: Color) -> Self {
-        Self(c.0, c.1, c.2, c.3)
-    }
-}
-
-impl From<wezterm_term::CursorPosition> for CursorPos {
-    fn from(c: wezterm_term::CursorPosition) -> Self {
-        Self {
-            x: c.x,
-            y: c.y,
-            shape: c.shape.into(),
-            visible: c.visibility == wezterm_surface::CursorVisibility::Visible,
-        }
-    }
-}
-
-impl From<wezterm_surface::CursorShape> for CursorShape {
-    fn from(s: wezterm_surface::CursorShape) -> Self {
-        match s {
-            wezterm_surface::CursorShape::Default => Self::Default,
-            wezterm_surface::CursorShape::BlinkingBlock => Self::BlinkingBlock,
-            wezterm_surface::CursorShape::SteadyBlock => Self::SteadyBlock,
-            wezterm_surface::CursorShape::BlinkingUnderline => Self::BlinkingUnderline,
-            wezterm_surface::CursorShape::SteadyUnderline => Self::SteadyUnderline,
-            wezterm_surface::CursorShape::BlinkingBar => Self::BlinkingBar,
-            wezterm_surface::CursorShape::SteadyBar => Self::SteadyBar,
-        }
-    }
-}
-
-impl From<wezterm_term::color::ColorPalette> for Palette {
-    fn from(p: wezterm_term::color::ColorPalette) -> Self {
-        Self {
-            foreground: p.foreground.into(),
-            background: p.background.into(),
-            cursor_fg: p.cursor_fg.into(),
-            cursor_bg: p.cursor_bg.into(),
-            cursor_border: p.cursor_border.into(),
-            selection_fg: p.selection_fg.into(),
-            selection_bg: p.selection_bg.into(),
-            colors: p.colors.0.iter().map(|&c| Color::from(c)).collect(),
-        }
-    }
-}
-
 impl From<portable_pty::ExitStatus> for ProcessExit {
     fn from(s: portable_pty::ExitStatus) -> Self {
         Self {
@@ -209,15 +178,12 @@ impl From<portable_pty::ExitStatus> for ProcessExit {
 
 // --- The trait ---
 
-/// Trait abstracting the terminal backend (wezterm-term, libghostty, etc.).
+/// Trait abstracting the terminal backend.
 ///
 /// Covers lifecycle, state queries, process management, change tracking,
-/// text reading, and terminal control. Does NOT include raw screen access
-/// (`screen()`) — that is backend-specific and accessed via the concrete type
-/// for GPU rendering and cell-level iteration.
+/// text reading, and terminal control.
 ///
-/// Uses amux-native types (CursorPos, Palette, etc.) so backends don't need
-/// to produce wezterm-specific types.
+/// Uses amux-native types (CursorPos, Palette, etc.).
 pub trait TerminalBackend {
     // --- Lifecycle ---
 

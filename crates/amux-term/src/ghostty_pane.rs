@@ -1,9 +1,7 @@
 //! libghostty-vt backend for the TerminalBackend trait.
 //!
-//! POC implementation (#34) proving that `TerminalBackend` can be implemented
-//! against a non-wezterm backend. Wraps libghostty-vt's Terminal + portable-pty.
-//!
-//! Enabled with `--features libghostty`.
+//! Wraps libghostty-vt's Terminal + portable-pty. This is the sole terminal
+//! engine used by amux.
 
 use std::cell::RefCell;
 use std::io::{Read, Write};
@@ -16,11 +14,10 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use url::Url;
 
 use crate::backend::{
-    Color, CursorPos, CursorShape, Palette, ProcessExit, ScreenCell, ScreenRow, StableRow,
-    TerminalBackend, UnderlineStyle,
+    AdvanceResult, Color, CursorPos, CursorShape, Palette, ProcessExit, ScreenCell, ScreenRow,
+    SequenceNo, StableRow, TermError, TerminalBackend, UnderlineStyle,
 };
 use crate::osc::NotificationEvent;
-use crate::pane::{AdvanceResult, SequenceNo, TermError};
 
 /// A terminal pane backed by libghostty-vt + portable-pty.
 ///
@@ -58,7 +55,12 @@ where
     'alloc: 'cb,
 {
     /// Spawn a new terminal pane running the given command.
-    pub fn spawn(cols: u16, rows: u16, cmd: CommandBuilder) -> Result<Self, TermError> {
+    pub fn spawn(
+        cols: u16,
+        rows: u16,
+        cmd: CommandBuilder,
+        max_scrollback: usize,
+    ) -> Result<Self, TermError> {
         let pty_system = native_pty_system();
         let pty_size = PtySize {
             rows,
@@ -88,7 +90,7 @@ where
         let opts = TerminalOptions {
             cols,
             rows,
-            max_scrollback: 10_000,
+            max_scrollback,
         };
         // Box the terminal BEFORE registering callbacks. libghostty-vt stores
         // a raw pointer to Terminal.vtable via ghostty_terminal_set(USERDATA, &self.vtable).

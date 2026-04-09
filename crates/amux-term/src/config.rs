@@ -1,31 +1,23 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-use wezterm_term::color::{ColorPalette, RgbColor, SrgbaTuple};
-use wezterm_term::config::{BidiMode, NewlineCanon};
-use wezterm_term::TerminalConfiguration;
-
-static GENERATION: AtomicUsize = AtomicUsize::new(0);
+use crate::backend::{Color, Palette};
 
 /// Terminal configuration for amux panes.
-///
-/// Implements `wezterm_term::TerminalConfiguration` to feed terminal defaults
-/// (palette, scrollback depth, unicode version, etc.) into the wezterm-term engine.
 #[derive(Debug)]
 pub struct AmuxTermConfig {
     pub scrollback_lines: usize,
-    pub color_palette: ColorPalette,
-    pub enable_kitty_keyboard: bool,
-    /// Terminal backend engine: "wezterm" (default) or "ghostty".
-    pub backend: String,
+    pub color_palette: Palette,
 }
 
-/// Build a color palette using standard xterm ANSI colors (0-15).
-/// wezterm-term's default palette uses softer, more pastel colors that make
-/// reds look pinkish. This overrides with the widely-expected xterm defaults.
-fn default_palette() -> ColorPalette {
-    let mut palette = ColorPalette::default();
+impl Default for AmuxTermConfig {
+    fn default() -> Self {
+        Self {
+            scrollback_lines: 10_000,
+            color_palette: default_palette(),
+        }
+    }
+}
 
-    // Standard xterm ANSI colors (same as iTerm2, Terminal.app, Ghostty defaults)
+/// Build a color palette using standard xterm ANSI colors (0-15) + 216 cube + 24 grayscale.
+fn default_palette() -> Palette {
     let xterm_ansi: [(u8, u8, u8); 16] = [
         (0x00, 0x00, 0x00), // 0  Black
         (0xcd, 0x00, 0x00), // 1  Red
@@ -45,68 +37,52 @@ fn default_palette() -> ColorPalette {
         (0xff, 0xff, 0xff), // 15 Bright White
     ];
 
-    for (i, (r, g, b)) in xterm_ansi.iter().enumerate() {
-        palette.colors.0[i] = RgbColor::new_8bpc(*r, *g, *b).into();
+    let mut colors = Vec::with_capacity(256);
+    for (r, g, b) in &xterm_ansi {
+        colors.push(Color(
+            *r as f32 / 255.0,
+            *g as f32 / 255.0,
+            *b as f32 / 255.0,
+            1.0,
+        ));
+    }
+    // 216-color cube (indices 16-231)
+    for r in 0..6u8 {
+        for g in 0..6u8 {
+            for b in 0..6u8 {
+                let ri = if r > 0 { 55 + 40 * r } else { 0 };
+                let gi = if g > 0 { 55 + 40 * g } else { 0 };
+                let bi = if b > 0 { 55 + 40 * b } else { 0 };
+                colors.push(Color(
+                    ri as f32 / 255.0,
+                    gi as f32 / 255.0,
+                    bi as f32 / 255.0,
+                    1.0,
+                ));
+            }
+        }
+    }
+    // 24-step grayscale (indices 232-255)
+    for i in 0..24u8 {
+        let v = (8 + 10 * i) as f32 / 255.0;
+        colors.push(Color(v, v, v, 1.0));
     }
 
-    // Use a lighter default foreground (standard xterm white-ish grey)
-    palette.foreground = SrgbaTuple(
+    let fg = Color(
         0xe5 as f32 / 255.0,
         0xe5 as f32 / 255.0,
         0xe5 as f32 / 255.0,
         1.0,
     );
 
-    palette
-}
-
-impl Default for AmuxTermConfig {
-    fn default() -> Self {
-        Self {
-            scrollback_lines: 10_000,
-            color_palette: default_palette(),
-            enable_kitty_keyboard: true,
-            backend: "wezterm".to_owned(),
-        }
-    }
-}
-
-impl AmuxTermConfig {
-    /// Bump the config generation so that the terminal re-reads values.
-    pub fn notify_changed(&self) {
-        GENERATION.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-impl TerminalConfiguration for AmuxTermConfig {
-    fn generation(&self) -> usize {
-        GENERATION.load(Ordering::Relaxed)
-    }
-
-    fn scrollback_size(&self) -> usize {
-        self.scrollback_lines
-    }
-
-    fn color_palette(&self) -> ColorPalette {
-        self.color_palette.clone()
-    }
-
-    fn enable_kitty_keyboard(&self) -> bool {
-        self.enable_kitty_keyboard
-    }
-
-    fn enable_kitty_graphics(&self) -> bool {
-        true
-    }
-
-    fn canonicalize_pasted_newlines(&self) -> NewlineCanon {
-        NewlineCanon::None
-    }
-
-    fn bidi_mode(&self) -> BidiMode {
-        BidiMode {
-            enabled: false,
-            hint: Default::default(),
-        }
+    Palette {
+        foreground: fg,
+        background: Color::BLACK,
+        cursor_fg: Color::BLACK,
+        cursor_bg: Color::WHITE,
+        cursor_border: Color::WHITE,
+        selection_fg: Color::BLACK,
+        selection_bg: Color(0.4, 0.6, 1.0, 1.0),
+        colors,
     }
 }

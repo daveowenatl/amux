@@ -1,56 +1,30 @@
 //! `AnyBackend` enum — runtime-switchable terminal backend.
 //!
-//! Uses an enum instead of `Box<dyn TerminalBackend>` to avoid lifetime
-//! gymnastics (GhosttyPane has lifetime params), Send divergence, and to
-//! allow pattern-matching for backend-specific features (e.g., Kitty images
-//! on wezterm).
+//! Currently wraps only the Ghostty (libghostty-vt) backend.
+//! The enum is kept for future extensibility and to maintain a consistent API.
 
 use std::io::Read;
 
 use url::Url;
 
-use crate::backend::{CursorPos, Palette, ProcessExit, ScreenRow, StableRow, TerminalBackend};
-#[cfg(feature = "libghostty")]
+use crate::backend::{
+    AdvanceResult, CursorPos, Palette, ProcessExit, ScreenRow, SequenceNo, StableRow, TermError,
+    TerminalBackend,
+};
 use crate::ghostty_pane::GhosttyPane;
 use crate::osc::NotificationEvent;
-use crate::pane::{AdvanceResult, SequenceNo, TermError, TerminalPane};
 
 /// Runtime-selectable terminal backend.
 ///
-/// Both variants are boxed to keep enum size small and avoid
-/// clippy::large_enum_variant.
+/// The variant is boxed to keep enum size small.
 pub enum AnyBackend {
-    Wezterm(Box<TerminalPane>),
-    #[cfg(feature = "libghostty")]
     Ghostty(Box<GhosttyPane<'static, 'static>>),
-}
-
-impl AnyBackend {
-    /// Returns a reference to the inner `TerminalPane` if this is a wezterm backend.
-    pub fn as_wezterm(&self) -> Option<&TerminalPane> {
-        match self {
-            Self::Wezterm(p) => Some(p),
-            #[cfg(feature = "libghostty")]
-            _ => None,
-        }
-    }
-
-    /// Returns a mutable reference to the inner `TerminalPane` if this is a wezterm backend.
-    pub fn as_wezterm_mut(&mut self) -> Option<&mut TerminalPane> {
-        match self {
-            Self::Wezterm(p) => Some(p),
-            #[cfg(feature = "libghostty")]
-            _ => None,
-        }
-    }
 }
 
 /// Delegate all `TerminalBackend` methods to the inner variant.
 macro_rules! delegate {
     ($self:ident, $method:ident $(, $arg:ident : $ty:ty )* $(,)? ) => {
         match $self {
-            AnyBackend::Wezterm(inner) => inner.$method( $( $arg ),* ),
-            #[cfg(feature = "libghostty")]
             AnyBackend::Ghostty(inner) => inner.$method( $( $arg ),* ),
         }
     };

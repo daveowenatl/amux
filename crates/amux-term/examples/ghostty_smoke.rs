@@ -3,7 +3,7 @@
 //! Spawns a shell, runs commands, and exercises the TerminalBackend trait.
 //!
 //! Run with:
-//!   cargo run -p amux-term --features libghostty --example ghostty_smoke
+//!   cargo run -p amux-term --example ghostty_smoke
 
 use std::thread;
 use std::time::Duration;
@@ -23,16 +23,16 @@ fn main() {
         "echo 'hello from ghostty'; echo 'line two'; sleep 0.2; exit 42",
     ]);
 
-    let mut pane = GhosttyPane::spawn(80, 24, cmd).expect("spawn failed");
+    let mut pane = GhosttyPane::spawn(80, 24, cmd, 10_000).expect("spawn failed");
     println!("Spawned. PID: {:?}", pane.child_pid());
     println!("Dimensions: {:?}", pane.dimensions());
 
     // Let the shell run
     for _ in 0..20 {
         match pane.advance() {
-            amux_term::pane::AdvanceResult::Read(_) => {}
-            amux_term::pane::AdvanceResult::WouldBlock => {}
-            amux_term::pane::AdvanceResult::Eof => break,
+            amux_term::AdvanceResult::Read(_) => {}
+            amux_term::AdvanceResult::WouldBlock => {}
+            amux_term::AdvanceResult::Eof => break,
         }
         thread::sleep(Duration::from_millis(50));
     }

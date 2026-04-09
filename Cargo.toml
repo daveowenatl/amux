@@ -5,7 +5,7 @@ members = [
     "crates/amux-cli",
     "crates/amux-core",
     "crates/amux-term",
-    "crates/amux-render-soft",
+
     "crates/amux-render-gpu",
     "crates/amux-ipc",
     "crates/amux-layout",
@@ -26,8 +26,6 @@ repository = "https://github.com/yourusername/amux"
 base64 = "0.22"
 
 # Terminal engine
-wezterm-term = { git = "https://github.com/wezterm/wezterm", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
-wezterm-surface = { git = "https://github.com/wezterm/wezterm", rev = "05343b387085842b434d267f91b6b0ec157e4331" }
 portable-pty = "0.9"
 libghostty-vt = "0.1"
 
@@ -100,7 +98,6 @@ amux-ipc = { path = "crates/amux-ipc" }
 amux-layout = { path = "crates/amux-layout" }
 amux-notify = { path = "crates/amux-notify" }
 amux-session = { path = "crates/amux-session" }
-amux-render-soft = { path = "crates/amux-render-soft" }
 amux-render-gpu = { path = "crates/amux-render-gpu" }
 amux-ghostty-config = { path = "crates/amux-ghostty-config" }
 amux-browser = { path = "crates/amux-browser" }

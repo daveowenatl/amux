@@ -380,9 +380,6 @@ pub struct AppConfig {
     /// Font family for terminal text (e.g. "JetBrains Mono", "Menlo").
     /// Resolved against system-installed fonts by cosmic-text.
     pub font_family: String,
-    /// Terminal backend engine: "wezterm" (default) or "ghostty".
-    /// The "ghostty" backend requires the `libghostty` feature.
-    pub backend: String,
     /// Theme source: "default" uses built-in Tokyo Night, "ghostty" loads
     /// colors/fonts from Ghostty's config file (`~/.config/ghostty/config`).
     pub theme_source: String,
@@ -399,7 +396,6 @@ impl Default for AppConfig {
         Self {
             font_size: DEFAULT_FONT_SIZE,
             font_family: DEFAULT_FONT_FAMILY.to_owned(),
-            backend: "wezterm".to_owned(),
             theme_source: "default".to_owned(),
             notifications: NotificationConfig::default(),
             browser: BrowserConfig::default(),

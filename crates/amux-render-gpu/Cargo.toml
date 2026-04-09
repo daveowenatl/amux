@@ -9,12 +9,10 @@ description = "amux wgpu + cosmic-text GPU renderer"
 wgpu = { workspace = true }
 egui-wgpu = { workspace = true }
 egui = { workspace = true }
-wezterm-term = { workspace = true }
 cosmic-text = { workspace = true }
 bytemuck = { workspace = true }
 tracing = { workspace = true }
 image = { workspace = true }
-wezterm-surface = { workspace = true }
 amux-term = { workspace = true }
 
 [dev-dependencies]
