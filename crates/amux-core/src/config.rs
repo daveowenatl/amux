@@ -100,7 +100,12 @@ impl KeyCombo {
         // The last segment is always the key.
         let (modifier_parts, key_parts) = parts.split_at(parts.len() - 1);
         let key = key_parts[0].trim().to_lowercase();
-        if key.is_empty() {
+        if key.is_empty()
+            || matches!(
+                key.as_str(),
+                "cmd" | "super" | "meta" | "shift" | "alt" | "option" | "ctrl" | "control"
+            )
+        {
             return None;
         }
 

@@ -9,11 +9,14 @@ use crate::*;
 
 /// Check if a [`KeyCombo`] matches the current egui key event state.
 fn combo_matches(combo: &config::KeyCombo, modifiers: &egui::Modifiers, key: &egui::Key) -> bool {
-    // Check modifiers
+    // Check modifiers.
+    // On macOS, "cmd" maps to mac_cmd/command and "ctrl" maps to ctrl independently.
+    // On other platforms, both "cmd" and "ctrl" map to the Ctrl key (the platform
+    // command key), so we merge them: either combo.cmd or combo.ctrl must match.
     #[cfg(target_os = "macos")]
     let cmd_ok = combo.cmd == (modifiers.mac_cmd || modifiers.command);
     #[cfg(not(target_os = "macos"))]
-    let cmd_ok = combo.cmd == modifiers.ctrl;
+    let cmd_ok = (combo.cmd || combo.ctrl) == modifiers.ctrl;
 
     let shift_ok = combo.shift == modifiers.shift;
     let alt_ok = combo.alt == modifiers.alt;
