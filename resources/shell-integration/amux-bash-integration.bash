@@ -16,8 +16,8 @@ _amux_restore_scrollback_once() {
     unset AMUX_RESTORE_SCROLLBACK_FILE
 
     if [ -r "$path" ]; then
-        /bin/cat -- "$path" 2>/dev/null || true
-        /bin/rm -f -- "$path" >/dev/null 2>&1 || true
+        command cat < "$path" 2>/dev/null || true
+        command rm -f "$path" >/dev/null 2>&1 || true
     fi
 }
 _amux_restore_scrollback_once
