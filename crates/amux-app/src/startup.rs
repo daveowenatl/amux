@@ -77,6 +77,9 @@ pub(crate) fn run() -> anyhow::Result<()> {
     // Apply user color overrides from [colors] config section
     theme.apply_color_config(&app_config.colors);
 
+    // Resolve keybindings: user overrides merged with platform defaults.
+    let keybindings = app_config.keybindings.resolved();
+
     // FontConfig is only consumed by the GPU renderer; gate to avoid unused
     // warnings in non-GPU builds. Created after theme loading so Ghostty
     // font overrides are picked up.
@@ -206,6 +209,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 rename_modal: None,
                 app_focused: true,
                 app_config,
+                keybindings,
                 system_notifier: system_notify::SystemNotifier::new(),
                 last_badge_count: 0,
                 cursor_blink_since: Instant::now(),

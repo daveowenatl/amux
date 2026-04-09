@@ -1,8 +1,100 @@
 //! Keyboard, mouse, clipboard, copy-mode, and selection input handling.
 
+use std::collections::HashMap;
+
+use amux_core::config::{self, Action};
 use amux_term::TerminalBackend;
 
 use crate::*;
+
+/// Check if a [`KeyCombo`] matches the current egui key event state.
+fn combo_matches(combo: &config::KeyCombo, modifiers: &egui::Modifiers, key: &egui::Key) -> bool {
+    // Check modifiers
+    #[cfg(target_os = "macos")]
+    let cmd_ok = combo.cmd == (modifiers.mac_cmd || modifiers.command);
+    #[cfg(not(target_os = "macos"))]
+    let cmd_ok = combo.cmd == modifiers.ctrl;
+
+    let shift_ok = combo.shift == modifiers.shift;
+    let alt_ok = combo.alt == modifiers.alt;
+
+    #[cfg(target_os = "macos")]
+    let ctrl_ok = combo.ctrl == modifiers.ctrl;
+    #[cfg(not(target_os = "macos"))]
+    let ctrl_ok = true; // ctrl is consumed by cmd_ok on non-macOS
+
+    if !(cmd_ok && shift_ok && alt_ok && ctrl_ok) {
+        return false;
+    }
+
+    // Match key name
+    let key_name = &combo.key;
+    match key {
+        egui::Key::A => key_name == "a",
+        egui::Key::B => key_name == "b",
+        egui::Key::C => key_name == "c",
+        egui::Key::D => key_name == "d",
+        egui::Key::E => key_name == "e",
+        egui::Key::F => key_name == "f",
+        egui::Key::G => key_name == "g",
+        egui::Key::H => key_name == "h",
+        egui::Key::I => key_name == "i",
+        egui::Key::J => key_name == "j",
+        egui::Key::K => key_name == "k",
+        egui::Key::L => key_name == "l",
+        egui::Key::M => key_name == "m",
+        egui::Key::N => key_name == "n",
+        egui::Key::O => key_name == "o",
+        egui::Key::P => key_name == "p",
+        egui::Key::Q => key_name == "q",
+        egui::Key::R => key_name == "r",
+        egui::Key::S => key_name == "s",
+        egui::Key::T => key_name == "t",
+        egui::Key::U => key_name == "u",
+        egui::Key::V => key_name == "v",
+        egui::Key::W => key_name == "w",
+        egui::Key::X => key_name == "x",
+        egui::Key::Y => key_name == "y",
+        egui::Key::Z => key_name == "z",
+        egui::Key::Num0 => key_name == "0",
+        egui::Key::Num1 => key_name == "1",
+        egui::Key::Num2 => key_name == "2",
+        egui::Key::Num3 => key_name == "3",
+        egui::Key::Num4 => key_name == "4",
+        egui::Key::Num5 => key_name == "5",
+        egui::Key::Num6 => key_name == "6",
+        egui::Key::Num7 => key_name == "7",
+        egui::Key::Num8 => key_name == "8",
+        egui::Key::Num9 => key_name == "9",
+        egui::Key::Tab => key_name == "tab",
+        egui::Key::Enter => key_name == "enter",
+        egui::Key::Escape => key_name == "escape",
+        egui::Key::ArrowLeft => key_name == "left",
+        egui::Key::ArrowRight => key_name == "right",
+        egui::Key::ArrowUp => key_name == "up",
+        egui::Key::ArrowDown => key_name == "down",
+        egui::Key::PageUp => key_name == "pageup",
+        egui::Key::PageDown => key_name == "pagedown",
+        egui::Key::OpenBracket => key_name == "[",
+        egui::Key::CloseBracket => key_name == "]",
+        egui::Key::Space => key_name == "space",
+        egui::Key::Backspace => key_name == "backspace",
+        egui::Key::Delete => key_name == "delete",
+        _ => false,
+    }
+}
+
+/// Check if a specific [`Action`] in the resolved keybindings matches the current event.
+fn action_matches(
+    keybindings: &HashMap<Action, config::KeyCombo>,
+    action: Action,
+    modifiers: &egui::Modifiers,
+    key: &egui::Key,
+) -> bool {
+    keybindings
+        .get(&action)
+        .is_some_and(|combo| combo_matches(combo, modifiers, key))
+}
 
 impl AmuxApp {
     // --- Shortcuts ---
@@ -58,29 +150,63 @@ impl AmuxApp {
                 ..
             } = event
             {
-                #[cfg(target_os = "macos")]
-                let is_cmd = modifiers.mac_cmd || modifiers.command;
-                #[cfg(not(target_os = "macos"))]
-                let is_cmd = modifiers.ctrl;
+                // Pre-compute all action matches so the immutable borrow of
+                // self.keybindings is released before any &mut self calls.
+                let is_copy = action_matches(&self.keybindings, Action::Copy, modifiers, key);
+                let is_paste = action_matches(&self.keybindings, Action::Paste, modifiers, key);
+                let is_find = action_matches(&self.keybindings, Action::Find, modifiers, key);
+                let is_select_all =
+                    action_matches(&self.keybindings, Action::SelectAll, modifiers, key);
+                let is_copy_mode =
+                    action_matches(&self.keybindings, Action::CopyMode, modifiers, key);
+                let is_toggle_sidebar =
+                    action_matches(&self.keybindings, Action::ToggleSidebar, modifiers, key);
+                let is_new_browser_tab =
+                    action_matches(&self.keybindings, Action::NewBrowserTab, modifiers, key);
+                let is_new_workspace =
+                    action_matches(&self.keybindings, Action::NewWorkspace, modifiers, key);
+                let is_new_tab = action_matches(&self.keybindings, Action::NewTab, modifiers, key);
+                let is_next_workspace =
+                    action_matches(&self.keybindings, Action::NextWorkspace, modifiers, key);
+                let is_prev_workspace =
+                    action_matches(&self.keybindings, Action::PrevWorkspace, modifiers, key);
+                let is_next_tab =
+                    action_matches(&self.keybindings, Action::NextTab, modifiers, key);
+                let is_prev_tab =
+                    action_matches(&self.keybindings, Action::PrevTab, modifiers, key);
+                let is_split_right =
+                    action_matches(&self.keybindings, Action::SplitRight, modifiers, key);
+                let is_split_down =
+                    action_matches(&self.keybindings, Action::SplitDown, modifiers, key);
+                let is_close_pane =
+                    action_matches(&self.keybindings, Action::ClosePane, modifiers, key);
+                let is_nav_left =
+                    action_matches(&self.keybindings, Action::NavigateLeft, modifiers, key);
+                let is_nav_right =
+                    action_matches(&self.keybindings, Action::NavigateRight, modifiers, key);
+                let is_nav_up =
+                    action_matches(&self.keybindings, Action::NavigateUp, modifiers, key);
+                let is_nav_down =
+                    action_matches(&self.keybindings, Action::NavigateDown, modifiers, key);
+                let is_zoom_toggle =
+                    action_matches(&self.keybindings, Action::ZoomToggle, modifiers, key);
+                let is_devtools =
+                    action_matches(&self.keybindings, Action::DevTools, modifiers, key);
+                let is_notification_panel =
+                    action_matches(&self.keybindings, Action::NotificationPanel, modifiers, key);
+                let is_jump_to_unread =
+                    action_matches(&self.keybindings, Action::JumpToUnread, modifiers, key);
+                let is_clear_scrollback =
+                    action_matches(&self.keybindings, Action::ClearScrollback, modifiers, key);
 
                 // --- Terminal-specific shortcuts (skipped when browser tab active) ---
                 if !browser_active {
-                    // Copy: Cmd+C (with selection) / Cmd+Shift+C (always copy)
-                    #[cfg(target_os = "macos")]
-                    let is_copy = is_cmd && (*key == egui::Key::C);
-                    #[cfg(not(target_os = "macos"))]
-                    let is_copy = modifiers.ctrl && modifiers.shift && (*key == egui::Key::C);
-
+                    // Copy
                     if is_copy && self.copy_selection() {
                         return true;
                     }
 
-                    // Paste: Cmd+V (macOS) / Ctrl+Shift+V (other)
-                    #[cfg(target_os = "macos")]
-                    let is_paste = is_cmd && !modifiers.shift && *key == egui::Key::V;
-                    #[cfg(not(target_os = "macos"))]
-                    let is_paste = modifiers.ctrl && modifiers.shift && *key == egui::Key::V;
-
+                    // Paste
                     if is_paste {
                         if let Ok(mut clipboard) = arboard::Clipboard::new() {
                             if let Ok(text) = clipboard.get_text() {
@@ -116,8 +242,8 @@ impl AmuxApp {
                         }
                     }
 
-                    // Find: Cmd+F (macOS) / Ctrl+Shift+F (other)
-                    if is_cmd && !modifiers.shift && *key == egui::Key::F {
+                    // Find
+                    if is_find {
                         let pane_id = self.focused_pane_id();
                         self.find_state = Some(FindState {
                             query: String::new(),
@@ -129,20 +255,14 @@ impl AmuxApp {
                         return true;
                     }
 
-                    // Select all: Cmd+A
-                    #[cfg(target_os = "macos")]
-                    if is_cmd && !modifiers.shift && *key == egui::Key::A {
-                        self.select_all_visible();
-                        return true;
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    if modifiers.ctrl && modifiers.shift && *key == egui::Key::A {
+                    // Select all
+                    if is_select_all {
                         self.select_all_visible();
                         return true;
                     }
 
-                    // Enter copy mode: Cmd+Shift+X (macOS) / Ctrl+Shift+X (other)
-                    if is_cmd && modifiers.shift && *key == egui::Key::X {
+                    // Enter copy mode
+                    if is_copy_mode {
                         self.enter_copy_mode();
                         return true;
                     }
@@ -161,12 +281,7 @@ impl AmuxApp {
                         });
 
                     if let Some(bid) = browser_id {
-                        // Paste: Cmd+V / Ctrl+V — read clipboard and inject into webview
-                        #[cfg(target_os = "macos")]
-                        let is_paste = is_cmd && !modifiers.shift && *key == egui::Key::V;
-                        #[cfg(not(target_os = "macos"))]
-                        let is_paste = modifiers.ctrl && !modifiers.shift && *key == egui::Key::V;
-
+                        // Paste
                         if is_paste {
                             if let Ok(mut clipboard) = arboard::Clipboard::new() {
                                 if let Ok(text) = clipboard.get_text() {
@@ -180,13 +295,7 @@ impl AmuxApp {
                             return true;
                         }
 
-                        // Select all: Cmd+A (macOS) / Ctrl+A (other)
-                        #[cfg(target_os = "macos")]
-                        let is_select_all = is_cmd && !modifiers.shift && *key == egui::Key::A;
-                        #[cfg(not(target_os = "macos"))]
-                        let is_select_all =
-                            modifiers.ctrl && !modifiers.shift && *key == egui::Key::A;
-
+                        // Select all
                         if is_select_all {
                             if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
                                 b.evaluate_script("document.execCommand('selectAll')");
@@ -194,12 +303,7 @@ impl AmuxApp {
                             return true;
                         }
 
-                        // Copy: Cmd+C / Ctrl+C
-                        #[cfg(target_os = "macos")]
-                        let is_copy = is_cmd && *key == egui::Key::C;
-                        #[cfg(not(target_os = "macos"))]
-                        let is_copy = modifiers.ctrl && *key == egui::Key::C;
-
+                        // Copy
                         if is_copy {
                             if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
                                 b.evaluate_script("document.execCommand('copy')");
@@ -207,9 +311,12 @@ impl AmuxApp {
                             return true;
                         }
 
-                        // Cut: Cmd+X (macOS) / Ctrl+X (other)
+                        // Cut: uses the Copy combo key with no shift distinction;
+                        // browser cut is Cmd+X / Ctrl+X — hardcoded since there is
+                        // no CopyMode-style action for Cut.
                         #[cfg(target_os = "macos")]
-                        let is_cut = is_cmd && *key == egui::Key::X;
+                        let is_cut =
+                            (modifiers.mac_cmd || modifiers.command) && *key == egui::Key::X;
                         #[cfg(not(target_os = "macos"))]
                         let is_cut = modifiers.ctrl && *key == egui::Key::X;
 
@@ -224,60 +331,33 @@ impl AmuxApp {
 
                 // --- Amux chrome shortcuts (always active) ---
 
-                // Toggle sidebar: Cmd+B / Ctrl+B
-                #[cfg(target_os = "macos")]
-                if is_cmd && !modifiers.shift && *key == egui::Key::B {
-                    self.sidebar.visible = !self.sidebar.visible;
-                    return true;
-                }
-                #[cfg(not(target_os = "macos"))]
-                if modifiers.ctrl && !modifiers.shift && *key == egui::Key::B {
+                // Toggle sidebar
+                if is_toggle_sidebar {
                     self.sidebar.visible = !self.sidebar.visible;
                     return true;
                 }
 
-                // New browser tab: Cmd+Shift+L (macOS) / Ctrl+Shift+L (other)
-                if is_cmd && modifiers.shift && *key == egui::Key::L {
+                // New browser tab
+                if is_new_browser_tab {
                     let pane_id = self.focused_pane_id();
                     self.queue_browser_pane(pane_id, DEFAULT_BROWSER_URL.to_string());
                     return true;
                 }
 
-                // New workspace: Cmd+N / Ctrl+Shift+N
-                #[cfg(target_os = "macos")]
-                if is_cmd && !modifiers.shift && *key == egui::Key::N {
-                    self.create_workspace(None);
-                    return true;
-                }
-                #[cfg(not(target_os = "macos"))]
-                if modifiers.ctrl && modifiers.shift && *key == egui::Key::N {
+                // New workspace
+                if is_new_workspace {
                     self.create_workspace(None);
                     return true;
                 }
 
-                // New tab in focused pane: Cmd+T / Ctrl+Shift+T
-                #[cfg(target_os = "macos")]
-                if is_cmd && !modifiers.shift && *key == egui::Key::T {
-                    self.add_surface_to_focused_pane();
-                    return true;
-                }
-                #[cfg(not(target_os = "macos"))]
-                if modifiers.ctrl && modifiers.shift && *key == egui::Key::T {
+                // New tab in focused pane
+                if is_new_tab {
                     self.add_surface_to_focused_pane();
                     return true;
                 }
 
-                // Next workspace: Cmd+Shift+]
-                #[cfg(target_os = "macos")]
-                if is_cmd && modifiers.shift && *key == egui::Key::CloseBracket {
-                    if self.workspaces.len() > 1 {
-                        self.active_workspace_idx =
-                            (self.active_workspace_idx + 1) % self.workspaces.len();
-                    }
-                    return true;
-                }
-                #[cfg(not(target_os = "macos"))]
-                if modifiers.ctrl && modifiers.shift && *key == egui::Key::CloseBracket {
+                // Next workspace
+                if is_next_workspace {
                     if self.workspaces.len() > 1 {
                         self.active_workspace_idx =
                             (self.active_workspace_idx + 1) % self.workspaces.len();
@@ -285,20 +365,8 @@ impl AmuxApp {
                     return true;
                 }
 
-                // Prev workspace: Cmd+Shift+[
-                #[cfg(target_os = "macos")]
-                if is_cmd && modifiers.shift && *key == egui::Key::OpenBracket {
-                    if self.workspaces.len() > 1 {
-                        self.active_workspace_idx = if self.active_workspace_idx == 0 {
-                            self.workspaces.len() - 1
-                        } else {
-                            self.active_workspace_idx - 1
-                        };
-                    }
-                    return true;
-                }
-                #[cfg(not(target_os = "macos"))]
-                if modifiers.ctrl && modifiers.shift && *key == egui::Key::OpenBracket {
+                // Prev workspace
+                if is_prev_workspace {
                     if self.workspaces.len() > 1 {
                         self.active_workspace_idx = if self.active_workspace_idx == 0 {
                             self.workspaces.len() - 1
@@ -309,9 +377,9 @@ impl AmuxApp {
                     return true;
                 }
 
-                // Jump to workspace 1-9 (Cmd+9 = last workspace)
+                // Jump to workspace 1-9 (Cmd+9 = last workspace) — always fixed
                 #[cfg(target_os = "macos")]
-                let is_jump_mod = is_cmd && !modifiers.shift;
+                let is_jump_mod = (modifiers.mac_cmd || modifiers.command) && !modifiers.shift;
                 #[cfg(not(target_os = "macos"))]
                 let is_jump_mod = modifiers.ctrl && !modifiers.shift;
 
@@ -339,8 +407,8 @@ impl AmuxApp {
                     }
                 }
 
-                // Next tab in focused pane: Ctrl+Tab
-                if modifiers.ctrl && !modifiers.shift && *key == egui::Key::Tab {
+                // Next tab in focused pane
+                if is_next_tab {
                     if let Some(PaneEntry::Terminal(managed)) =
                         self.panes.get_mut(&self.focused_pane_id())
                     {
@@ -352,8 +420,8 @@ impl AmuxApp {
                     return true;
                 }
 
-                // Prev tab in focused pane: Ctrl+Shift+Tab
-                if modifiers.ctrl && modifiers.shift && *key == egui::Key::Tab {
+                // Prev tab in focused pane
+                if is_prev_tab {
                     if let Some(PaneEntry::Terminal(managed)) =
                         self.panes.get_mut(&self.focused_pane_id())
                     {
@@ -371,64 +439,41 @@ impl AmuxApp {
 
                 // --- Pane shortcuts ---
 
-                // Split right: Cmd+D (macOS) / Ctrl+Shift+D (other)
-                #[cfg(target_os = "macos")]
-                if is_cmd && !modifiers.shift && *key == egui::Key::D {
+                // Split right
+                if is_split_right {
                     return self.do_split(SplitDirection::Horizontal);
                 }
-                #[cfg(not(target_os = "macos"))]
-                if is_cmd && *key == egui::Key::D {
-                    return self.do_split(SplitDirection::Horizontal);
-                }
-                // Split down: Cmd+Shift+D (macOS) / Ctrl+Shift+Down (other)
-                #[cfg(target_os = "macos")]
-                if is_cmd && modifiers.shift && *key == egui::Key::D {
-                    return self.do_split(SplitDirection::Vertical);
-                }
-                #[cfg(not(target_os = "macos"))]
-                if modifiers.ctrl && modifiers.shift && *key == egui::Key::ArrowDown {
+
+                // Split down
+                if is_split_down {
                     return self.do_split(SplitDirection::Vertical);
                 }
 
-                // Close: Cmd+W — cascade: tab -> pane -> workspace
-                if is_cmd && *key == egui::Key::W {
+                // Close pane (cascade: tab -> pane -> workspace)
+                if is_close_pane {
                     return self.do_close_cascade();
                 }
 
-                // Navigate: Option+Cmd+Arrow / Ctrl+Alt+Arrow
-                #[cfg(target_os = "macos")]
-                let is_nav = is_cmd && modifiers.alt;
-                #[cfg(not(target_os = "macos"))]
-                let is_nav = modifiers.ctrl && modifiers.alt;
-
-                if is_nav {
-                    let dir = match key {
-                        egui::Key::ArrowLeft => Some(NavDirection::Left),
-                        egui::Key::ArrowRight => Some(NavDirection::Right),
-                        egui::Key::ArrowUp => Some(NavDirection::Up),
-                        egui::Key::ArrowDown => Some(NavDirection::Down),
-                        _ => None,
-                    };
-                    if let Some(dir) = dir {
-                        return self.do_navigate(dir);
-                    }
+                // Navigate
+                if is_nav_left {
+                    return self.do_navigate(NavDirection::Left);
+                }
+                if is_nav_right {
+                    return self.do_navigate(NavDirection::Right);
+                }
+                if is_nav_up {
+                    return self.do_navigate(NavDirection::Up);
+                }
+                if is_nav_down {
+                    return self.do_navigate(NavDirection::Down);
                 }
 
-                // Zoom toggle: Cmd+Shift+Enter / Ctrl+Shift+Enter
-                #[cfg(target_os = "macos")]
-                let is_zoom = is_cmd && modifiers.shift && *key == egui::Key::Enter;
-                #[cfg(not(target_os = "macos"))]
-                let is_zoom = modifiers.ctrl && modifiers.shift && *key == egui::Key::Enter;
-
-                if is_zoom {
+                // Zoom toggle
+                if is_zoom_toggle {
                     return self.do_toggle_zoom();
                 }
 
-                // DevTools: Cmd+Option+I (macOS) / Ctrl+Shift+I (Windows)
-                #[cfg(target_os = "macos")]
-                let is_devtools = is_cmd && modifiers.alt && *key == egui::Key::I;
-                #[cfg(not(target_os = "macos"))]
-                let is_devtools = modifiers.ctrl && modifiers.shift && *key == egui::Key::I;
+                // DevTools
                 if is_devtools {
                     let pane_id = self.focused_pane_id();
                     if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
@@ -441,26 +486,26 @@ impl AmuxApp {
                     }
                 }
 
-                // Notification panel: Cmd+I / Ctrl+I
-                if is_cmd && !modifiers.shift && *key == egui::Key::I {
+                // Notification panel
+                if is_notification_panel {
                     self.show_notification_panel = !self.show_notification_panel;
                     return true;
                 }
 
-                // Jump to latest unread: Cmd+Shift+U / Ctrl+Shift+U
-                if is_cmd && modifiers.shift && *key == egui::Key::U {
+                // Jump to latest unread
+                if is_jump_to_unread {
                     self.jump_to_latest_unread();
                     return true;
                 }
 
                 if !browser_active {
-                    // Clear scrollback: Cmd+K (macOS) / Ctrl+Shift+K (other)
-                    if is_cmd && !modifiers.shift && *key == egui::Key::K {
+                    // Clear scrollback
+                    if is_clear_scrollback {
                         self.do_clear_scrollback();
                         return true;
                     }
 
-                    // Scroll
+                    // Scroll — always fixed (Shift+PageUp/Down)
                     if modifiers.shift && *key == egui::Key::PageUp {
                         return self.do_scroll(-1);
                     }
