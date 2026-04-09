@@ -2,42 +2,46 @@
 
 use crate::*;
 
-/// Strip ANSI escape sequences from a string, returning only visible text.
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            // Skip CSI sequences (\x1b[...m etc.) and OSC sequences
-            if let Some(next) = chars.next() {
-                if next == '[' {
-                    // CSI: consume until final byte in 0x40..=0x7E range
-                    for c2 in chars.by_ref() {
-                        if ('@'..='~').contains(&c2) {
-                            break;
-                        }
-                    }
-                } else if next == ']' {
-                    // OSC: consume until ST (\x1b\\) or BEL (\x07)
-                    let mut prev = next;
-                    for c2 in chars.by_ref() {
-                        if c2 == '\x07' || (prev == '\x1b' && c2 == '\\') {
-                            break;
-                        }
-                        prev = c2;
-                    }
-                }
-                // else: two-char escape like \x1b( — already consumed
-            }
-        } else {
-            out.push(c);
+/// Write scrollback text to a temp file for shell-based replay.
+/// Returns the file path, or `None` on failure.
+fn write_scrollback_temp_file(text: &str) -> Option<std::path::PathBuf> {
+    let dir = std::env::temp_dir().join("amux-scrollback");
+    if std::fs::create_dir_all(&dir).is_err() {
+        tracing::warn!("Failed to create scrollback temp dir");
+        return None;
+    }
+    let filename = format!("{}.txt", uuid::Uuid::new_v4());
+    let path = dir.join(filename);
+    match std::fs::write(&path, text) {
+        Ok(()) => Some(path),
+        Err(e) => {
+            tracing::warn!("Failed to write scrollback temp file: {e}");
+            None
         }
     }
-    out
+}
+
+/// Remove scrollback temp files older than 1 hour.
+fn cleanup_stale_scrollback_files() {
+    let dir = std::env::temp_dir().join("amux-scrollback");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    for entry in entries.flatten() {
+        if let Ok(meta) = entry.metadata() {
+            if let Ok(modified) = meta.modified() {
+                if modified < cutoff {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
 }
 
 pub(crate) fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+    cleanup_stale_scrollback_files();
 
     let mut app_config = config::load_app_config();
     let mut font_size = app_config.font_size;
@@ -547,6 +551,18 @@ pub(crate) fn spawn_surface(
     // Auto-inject shell integration (matching cmux's ZDOTDIR/PROMPT_COMMAND approach)
     shell::inject_shell_integration(&shell, &mut cmd);
 
+    // Write scrollback to temp file for shell-based replay
+    if let Some(text) = scrollback {
+        if !text.is_empty() {
+            if let Some(path) = write_scrollback_temp_file(text) {
+                cmd.env(
+                    "AMUX_RESTORE_SCROLLBACK_FILE",
+                    path.to_string_lossy().as_ref(),
+                );
+            }
+        }
+    }
+
     let actual_cwd = if let Some(dir) = cwd {
         let path = std::path::Path::new(dir);
         if path.is_dir() {
@@ -580,30 +596,6 @@ pub(crate) fn spawn_surface(
             amux_term::AnyBackend::Wezterm(Box::new(wez_pane))
         }
     };
-
-    // Inject saved terminal state before starting the reader thread.
-    // feed_bytes writes directly to the terminal state machine, not through the PTY.
-    if let Some(text) = scrollback {
-        if !text.is_empty() {
-            // Strip trailing lines whose visible text (after removing ANSI
-            // escape sequences) is empty or whitespace-only.
-            let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-            let lines: Vec<&str> = normalized.split('\n').collect();
-            let trimmed: Vec<&str> = lines
-                .into_iter()
-                .rev()
-                .skip_while(|line| strip_ansi(line).trim().is_empty())
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            let buffer = trimmed.join("\r\n");
-            if !buffer.is_empty() {
-                pane.feed_bytes(buffer.as_bytes());
-                pane.feed_bytes(b"\r\n");
-            }
-        }
-    }
 
     let mut reader = pane.take_reader().expect("reader already taken");
     let (byte_tx, byte_rx) = mpsc::sync_channel::<Vec<u8>>(64);
