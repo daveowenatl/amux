@@ -8,21 +8,6 @@
 typeset -g _AMUX_CMD="${AMUX_BIN:-amux}"
 
 # ---------------------------------------------------------------------------
-# Session scrollback restore (one-shot, runs before first prompt)
-# ---------------------------------------------------------------------------
-_amux_restore_scrollback_once() {
-    local path="${AMUX_RESTORE_SCROLLBACK_FILE:-}"
-    [[ -n "$path" ]] || return 0
-    unset AMUX_RESTORE_SCROLLBACK_FILE
-
-    if [[ -r "$path" ]]; then
-        command cat < "$path" 2>/dev/null || true
-        command rm -f "$path" >/dev/null 2>&1 || true
-    fi
-}
-_amux_restore_scrollback_once
-
-# ---------------------------------------------------------------------------
 # Throttle state
 # ---------------------------------------------------------------------------
 typeset -g _AMUX_PWD_LAST=""

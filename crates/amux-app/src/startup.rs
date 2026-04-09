@@ -2,109 +2,8 @@
 
 use crate::*;
 
-/// Per-user scrollback temp directory with restrictive permissions.
-fn scrollback_temp_dir() -> std::path::PathBuf {
-    // Prefer XDG_RUNTIME_DIR (per-user, typically 0700) on Linux
-    if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
-        return std::path::PathBuf::from(runtime).join("amux-scrollback");
-    }
-    // Fall back to user-specific subdir in system temp
-    let user = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "default".to_string());
-    std::env::temp_dir().join(format!("amux-scrollback-{user}"))
-}
-
-/// Write scrollback text to a temp file for shell-based replay.
-/// Returns the file path, or `None` on failure.
-fn write_scrollback_temp_file(text: &str) -> Option<std::path::PathBuf> {
-    let dir = scrollback_temp_dir();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        let mut builder = std::fs::DirBuilder::new();
-        builder.recursive(true).mode(0o700);
-        if builder.create(&dir).is_err() {
-            tracing::warn!("Failed to create scrollback temp dir");
-            return None;
-        }
-    }
-    #[cfg(not(unix))]
-    if std::fs::create_dir_all(&dir).is_err() {
-        tracing::warn!("Failed to create scrollback temp dir");
-        return None;
-    }
-
-    let filename = format!("{}.txt", uuid::Uuid::new_v4());
-    let path = dir.join(filename);
-
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-        {
-            Ok(mut f) => {
-                if let Err(e) = f.write_all(text.as_bytes()) {
-                    tracing::warn!("Failed to write scrollback temp file: {e}");
-                    return None;
-                }
-                // Ensure file ends with newline so shell prompt appears on a new line
-                if !text.ends_with('\n') {
-                    let _ = f.write_all(b"\n");
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to create scrollback temp file: {e}");
-                return None;
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let content = if text.ends_with('\n') {
-            text.to_string()
-        } else {
-            format!("{text}\n")
-        };
-        if let Err(e) = std::fs::write(&path, &content) {
-            tracing::warn!("Failed to write scrollback temp file: {e}");
-            return None;
-        }
-    }
-
-    Some(path)
-}
-
-/// Remove scrollback temp files older than 1 hour.
-fn cleanup_stale_scrollback_files() {
-    let dir = scrollback_temp_dir();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return;
-    };
-    let Some(cutoff) =
-        std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(3600))
-    else {
-        return;
-    };
-    for entry in entries.flatten() {
-        if let Ok(meta) = entry.metadata() {
-            if let Ok(modified) = meta.modified() {
-                if modified < cutoff {
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
-        }
-    }
-}
-
 pub(crate) fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
-    cleanup_stale_scrollback_files();
 
     let mut app_config = config::load_app_config();
     let mut font_size = app_config.font_size;
@@ -611,24 +510,7 @@ pub(crate) fn spawn_surface(
     // Auto-inject shell integration (matching cmux's ZDOTDIR/PROMPT_COMMAND approach)
     shell::inject_shell_integration(&shell, &mut cmd);
 
-    // Write scrollback to temp file for shell-based replay.
-    // Only for shells with integration scripts that will replay and delete the file.
-    let shell_name = std::path::Path::new(&shell)
-        .file_name()
-        .and_then(|f| f.to_str())
-        .unwrap_or("");
-    if matches!(shell_name, "zsh" | "bash") {
-        if let Some(text) = scrollback {
-            if !text.is_empty() {
-                if let Some(path) = write_scrollback_temp_file(text) {
-                    cmd.env(
-                        "AMUX_RESTORE_SCROLLBACK_FILE",
-                        path.to_string_lossy().as_ref(),
-                    );
-                }
-            }
-        }
-    }
+    // Scrollback is restored via feed_bytes after spawn (below).
 
     let actual_cwd = if let Some(dir) = cwd {
         let path = std::path::Path::new(dir);
@@ -653,6 +535,16 @@ pub(crate) fn spawn_surface(
     // Apply amux theme colors to the ghostty backend (which otherwise
     // uses libghostty-vt's built-in defaults).
     ghostty_pane.set_palette(config.color_palette.clone());
+
+    // Restore saved scrollback by injecting directly into the terminal
+    // state machine before the reader thread starts.
+    if let Some(text) = scrollback {
+        if !text.is_empty() {
+            ghostty_pane.feed_bytes(text.as_bytes());
+            ghostty_pane.feed_bytes(b"\r\n");
+        }
+    }
+
     let mut pane: amux_term::AnyBackend = amux_term::AnyBackend::Ghostty(Box::new(ghostty_pane));
 
     let mut reader = pane.take_reader().expect("reader already taken");
