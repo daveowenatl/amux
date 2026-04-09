@@ -52,7 +52,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
     let (ipc_rx, ipc_addr, event_broadcaster) = amux_ipc::start_server(socket_token.clone())?;
     tracing::info!("IPC server: {}", ipc_addr);
 
-    let theme = match app_config.theme_source.as_str() {
+    let mut theme = match app_config.theme_source.as_str() {
         "ghostty" => {
             if let Some(ghostty_cfg) = amux_ghostty_config::GhosttyConfig::load() {
                 // Override font settings from Ghostty config if present.
@@ -73,6 +73,9 @@ pub(crate) fn run() -> anyhow::Result<()> {
         }
         _ => theme::Theme::default(),
     };
+
+    // Apply user color overrides from [colors] config section
+    theme.apply_color_config(&app_config.colors);
 
     // FontConfig is only consumed by the GPU renderer; gate to avoid unused
     // warnings in non-GPU builds. Created after theme loading so Ghostty

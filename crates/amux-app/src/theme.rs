@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use amux_core::config;
 use egui::Color32;
 use wezterm_term::color::SrgbaTuple;
 
@@ -144,21 +145,76 @@ impl Theme {
         }
 
         // Derive chrome colors from terminal background for a cohesive look.
-        let [br, bg, bb] = terminal.background;
         let accent = default.chrome.accent;
-        let chrome = ChromeColors {
-            sidebar_bg: darken_rgb(br, bg, bb, 0.15),
-            sidebar_active_bg: accent,
-            tab_bar_bg: None, // falls back to terminal background
-            titlebar_bg: None,
-            tab_active_bg: Color32::from_rgb(br, bg, bb), // match terminal background
-            tab_bar_border: lighten_rgb(br, bg, bb, 0.15),
-            tab_border: lighten_rgb(br, bg, bb, 0.15),
-            divider: lighten_rgb(br, bg, bb, 0.18),
-            accent,
-        };
+        let chrome = ChromeColors::from_background(terminal.background, accent);
 
         Self { terminal, chrome }
+    }
+}
+
+impl ChromeColors {
+    /// Derive chrome colors from a terminal background RGB value.
+    /// Uses the same algorithm as `Theme::from_ghostty`.
+    fn from_background(bg: [u8; 3], accent: Color32) -> Self {
+        let [br, bg_g, bb] = bg;
+        Self {
+            sidebar_bg: darken_rgb(br, bg_g, bb, 0.15),
+            sidebar_active_bg: accent,
+            tab_bar_bg: None,
+            titlebar_bg: None,
+            tab_active_bg: Color32::from_rgb(br, bg_g, bb),
+            tab_bar_border: lighten_rgb(br, bg_g, bb, 0.15),
+            tab_border: lighten_rgb(br, bg_g, bb, 0.15),
+            divider: lighten_rgb(br, bg_g, bb, 0.18),
+            accent,
+        }
+    }
+}
+
+impl Theme {
+    /// Apply user color overrides from config.
+    pub fn apply_color_config(&mut self, colors: &config::ColorsConfig) {
+        if let Some(ref hex) = colors.foreground {
+            if let Some(rgb) = config::ColorsConfig::parse_hex(hex) {
+                self.terminal.foreground = rgb;
+            }
+        }
+        if let Some(ref hex) = colors.background {
+            if let Some(rgb) = config::ColorsConfig::parse_hex(hex) {
+                self.terminal.background = rgb;
+                // Re-derive chrome colors from new background
+                self.chrome = ChromeColors::from_background(rgb, self.chrome.accent);
+            }
+        }
+        if let Some(ref hex) = colors.cursor_fg {
+            if let Some(rgb) = config::ColorsConfig::parse_hex(hex) {
+                self.terminal.cursor_fg = rgb;
+            }
+        }
+        if let Some(ref hex) = colors.cursor_bg {
+            if let Some(rgb) = config::ColorsConfig::parse_hex(hex) {
+                self.terminal.cursor_bg = rgb;
+            }
+        }
+        if let Some(ref hex) = colors.selection_fg {
+            if let Some(rgb) = config::ColorsConfig::parse_hex(hex) {
+                self.terminal.selection_fg = rgb;
+            }
+        }
+        if let Some(ref hex) = colors.selection_bg {
+            if let Some(rgb) = config::ColorsConfig::parse_hex(hex) {
+                self.terminal.selection_bg = rgb;
+            }
+        }
+        // Apply palette overrides (indices 0-15)
+        for (i, hex) in colors.palette.iter().enumerate() {
+            if i >= 16 {
+                break;
+            }
+            if let Some(rgb) = config::ColorsConfig::parse_hex(hex) {
+                self.terminal.ansi[i] = rgb;
+            }
+        }
     }
 }
 

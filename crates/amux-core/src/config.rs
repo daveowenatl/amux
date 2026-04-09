@@ -5,6 +5,37 @@ pub const DEFAULT_FONT_FAMILY: &str = "IBM Plex Mono";
 /// Default font size — must match `amux_term::DEFAULT_FONT_SIZE`.
 pub const DEFAULT_FONT_SIZE: f32 = 14.0;
 
+/// Custom color palette configuration.
+/// Colors are specified as hex strings: "#rrggbb" or "rrggbb".
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct ColorsConfig {
+    pub foreground: Option<String>,
+    pub background: Option<String>,
+    pub cursor_fg: Option<String>,
+    pub cursor_bg: Option<String>,
+    pub selection_fg: Option<String>,
+    pub selection_bg: Option<String>,
+    /// ANSI colors 0-15. Index maps to color number.
+    /// e.g. palette = ["#000000", "#cc0000", ...] for colors 0, 1, etc.
+    #[serde(default)]
+    pub palette: Vec<String>,
+}
+
+impl ColorsConfig {
+    /// Parse a hex color string like "#rrggbb" or "rrggbb" into [u8; 3].
+    pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
+        let s = s.strip_prefix('#').unwrap_or(s);
+        if s.len() != 6 {
+            return None;
+        }
+        let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+        Some([r, g, b])
+    }
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -20,6 +51,8 @@ pub struct AppConfig {
     pub theme_source: String,
     pub notifications: NotificationConfig,
     pub browser: BrowserConfig,
+    #[serde(default)]
+    pub colors: ColorsConfig,
 }
 
 impl Default for AppConfig {
@@ -31,6 +64,7 @@ impl Default for AppConfig {
             theme_source: "default".to_owned(),
             notifications: NotificationConfig::default(),
             browser: BrowserConfig::default(),
+            colors: ColorsConfig::default(),
         }
     }
 }
@@ -227,5 +261,21 @@ mod tests {
         assert!(!is_url_like("example\t.com"));
         assert!(!is_url_like("example\n.com"));
         assert!(!is_url_like("hello\tworld"));
+    }
+
+    #[test]
+    fn parse_hex_with_hash() {
+        assert_eq!(ColorsConfig::parse_hex("#ff0000"), Some([255, 0, 0]));
+    }
+
+    #[test]
+    fn parse_hex_without_hash() {
+        assert_eq!(ColorsConfig::parse_hex("00ff00"), Some([0, 255, 0]));
+    }
+
+    #[test]
+    fn parse_hex_invalid() {
+        assert_eq!(ColorsConfig::parse_hex("xyz"), None);
+        assert_eq!(ColorsConfig::parse_hex("#ff"), None);
     }
 }
