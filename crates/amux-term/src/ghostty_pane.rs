@@ -458,10 +458,48 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
 
     fn read_scrollback_text(&self, _max_lines: usize) -> String {
         use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
+        use libghostty_vt::screen::RowSemanticPrompt;
 
+        // Step 1: iterate rows and find the index of the last non-prompt row.
+        // Each row's `semantic_prompt()` reflects OSC 133 marks emitted by the
+        // shell integration. The trailing prompt rows are the boundary where
+        // we should truncate.
+        let last_content_row = {
+            let mut rs = self.render_state.borrow_mut();
+            let snapshot = match rs.update(&self.terminal) {
+                Ok(s) => s,
+                Err(_) => return String::new(),
+            };
+            let mut row_iter = match RowIterator::new() {
+                Ok(r) => r,
+                Err(_) => return String::new(),
+            };
+            let mut row_iteration = match row_iter.update(&snapshot) {
+                Ok(r) => r,
+                Err(_) => return String::new(),
+            };
+
+            let mut idx: i32 = -1;
+            let mut last_content: i32 = -1;
+            while let Some(row) = row_iteration.next() {
+                idx += 1;
+                if let Ok(raw) = row.raw_row() {
+                    match raw.semantic_prompt() {
+                        Ok(RowSemanticPrompt::None) => last_content = idx,
+                        Ok(_) => {}                   // Prompt or Continuation — skip
+                        Err(_) => last_content = idx, // Unknown — keep
+                    }
+                } else {
+                    last_content = idx;
+                }
+            }
+            last_content
+        };
+
+        // Step 2: get the formatted VT output (preserves colors/styling).
         let opts = FormatterOptions {
             format: Format::Vt,
-            trim: true,
+            trim: false,
             unwrap: false,
         };
         let mut formatter = match Formatter::new(&self.terminal, opts) {
@@ -480,9 +518,18 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
         };
         let text = String::from_utf8_lossy(&bytes).to_string();
 
-        // Strip content after the last command-finished mark (OSC 133;D).
-        // This excludes trailing prompts from the saved scrollback.
-        strip_trailing_prompts(&text)
+        // Step 3: take only the lines up to and including last_content_row.
+        // The Formatter outputs one line per terminal row when trim/unwrap
+        // are both false.
+        if last_content_row < 0 {
+            return String::new();
+        }
+        let keep = (last_content_row as usize) + 1;
+        let lines: Vec<&str> = text.lines().take(keep).collect();
+        let mut result = lines.join("\n");
+        // Trim trailing blank/whitespace lines (rows beyond actual content).
+        result = result.trim_end().to_string();
+        result
     }
 
     fn read_scrollback_text_range(&self, _start: usize, _end: usize) -> String {
@@ -686,35 +733,6 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
             events.push(event);
         }
         events
-    }
-}
-
-/// Strip trailing prompt content from VT-formatted scrollback.
-///
-/// Finds the last OSC 133;D (command finished) mark and truncates
-/// everything after it. This removes the trailing shell prompt that
-/// would otherwise duplicate when the shell draws a fresh prompt
-/// on restore.
-fn strip_trailing_prompts(text: &str) -> String {
-    // Look for the last occurrence of OSC 133;D (command finished).
-    // The mark format is: \x1b]133;D or \x1b]133;D;N (with exit code)
-    // terminated by BEL (\x07) or ST (\x1b\\).
-    if let Some(last_d) = text.rfind("\x1b]133;D") {
-        // Find the end of this OSC sequence (BEL or ST terminator)
-        let after_mark = &text[last_d..];
-        let end = after_mark
-            .find('\x07')
-            .map(|i| i + 1)
-            .or_else(|| after_mark.find("\x1b\\").map(|i| i + 2))
-            .unwrap_or(after_mark.len());
-
-        // Keep everything up to and including the 133;D mark
-        let truncated = &text[..last_d + end];
-        truncated.to_string()
-    } else {
-        // No semantic marks found — return as-is (shell integration
-        // may not be loaded, or no commands were run)
-        text.to_string()
     }
 }
 
