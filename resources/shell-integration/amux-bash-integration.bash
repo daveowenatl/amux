@@ -145,6 +145,13 @@ _amux_start_pr_poll() {
 # PROMPT_COMMAND hook
 # ---------------------------------------------------------------------------
 _amux_prompt_command() {
+    local _amux_exit=$?
+
+    # OSC 133;D — command finished (with exit code)
+    printf '\e]133;D;%s\a' "$_amux_exit"
+    # OSC 133;A — prompt starts
+    printf '\e]133;A\a'
+
     local now
     now="$(date +%s)"
     local pwd="$PWD"
@@ -201,6 +208,11 @@ _amux_preexec_trap() {
     # Only trigger for interactive commands, not PROMPT_COMMAND itself
     [[ "$BASH_COMMAND" == "_amux_prompt_command" ]] && return
     [[ "$BASH_COMMAND" == "$PROMPT_COMMAND" ]] && return
+
+    # OSC 133;B — command input finished
+    printf '\e]133;B\a'
+    # OSC 133;C — command output starts
+    printf '\e]133;C\a'
 
     local cmd="$BASH_COMMAND"
     case "$cmd" in

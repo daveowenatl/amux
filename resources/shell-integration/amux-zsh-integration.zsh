@@ -228,6 +228,11 @@ _amux_start_head_watch() {
 # Hook: preexec (before command runs)
 # ---------------------------------------------------------------------------
 _amux_preexec() {
+    # OSC 133;B — command input finished (user pressed Enter)
+    printf '\e]133;B\a'
+    # OSC 133;C — command output starts
+    printf '\e]133;C\a'
+
     # Force git refresh after git-related commands
     local cmd="${1## }"
     case "$cmd" in
@@ -244,7 +249,13 @@ _amux_preexec() {
 # Hook: precmd (before prompt)
 # ---------------------------------------------------------------------------
 _amux_precmd() {
+    local _amux_exit=$?
     _amux_stop_head_watch
+
+    # OSC 133;D — command finished (with exit code)
+    printf '\e]133;D;%s\a' "$_amux_exit"
+    # OSC 133;A — prompt starts
+    printf '\e]133;A\a'
 
     local now=$EPOCHSECONDS
     local pwd="$PWD"
