@@ -24,8 +24,7 @@ Sidebar shows git branch, PR status, working directory, listening ports, and lat
 
 ---
 
-- **All three agentic CLIs, first-class** — Claude Code, Gemini CLI, and Codex CLI each get full hook integration, live status indicators, and tool visibility in the sidebar. Zero-setup for Claude and Gemini — hooks inject automatically when the agent launches inside an amux pane.
-- **Approval interception** — When Codex wants to run a shell command, the approval prompt appears in the amux sidebar. No context switching; approve or deny without leaving your current pane.
+- **All three agentic CLIs, first-class** — Claude Code, Gemini CLI, and Codex CLI each get hook integration, live status indicators, and tool visibility in the sidebar. Zero-setup on Unix — hooks inject automatically when the agent launches inside an amux pane, without touching the user's native agent config. On Windows, automatic wrapper installation currently covers Claude Code only (Gemini: [#166](https://github.com/daveowenatl/amux/issues/166); Codex CLI wrapper is POSIX-only).
 - **Scriptable** — CLI and socket API to create workspaces, split panes, send keystrokes, and drive agents programmatically. tmux-compat shim included for agent scripts that call tmux directly.
 - **Native on every platform** — Built in Rust with wgpu for GPU-accelerated rendering. Runs natively on Windows (DX12/Vulkan), macOS (Metal), and Linux (Vulkan). Not Electron. Not Tauri.
 - **Cross-platform config** — Reads `~/.config/amux/config.toml`. No platform-specific config format.
@@ -72,7 +71,7 @@ Ghostty and WezTerm are excellent terminals but neither was built for multi-agen
 
 cmux solved this beautifully on macOS — the blue ring and sidebar model is exactly right. But it's macOS-only and optimized for Claude Code specifically. amux is the same idea built cross-platform in Rust, with first-class support for all three major agentic CLIs from day one.
 
-The sidebar hooks into each agent's native event system: Claude Code's `PreToolUse`/`Stop` hooks, Gemini CLI's `BeforeTool`/`AfterAgent` hooks, Codex's `app-server` JSON-RPC stream. You get live "Running: `cargo test`" tool indicators and an approval interception UI in the sidebar — without writing any glue code. Claude and Gemini hooks inject automatically per pane; no manual install step.
+The sidebar hooks into each agent's native event system: Claude Code's `PreToolUse`/`Stop` hooks, Gemini CLI's `BeforeTool`/`AfterAgent` hooks, and Codex CLI's `PreToolUse`/`Stop` hooks. You get live "Running: `cargo test`" tool indicators in the sidebar — without writing any glue code. All three agents inject hooks automatically per pane; no manual install step. Richer Codex integration via `codex app-server` — including approval interception from the sidebar — is tracked as future work.
 
 The rendering is wgpu (Metal on macOS, DX12/Vulkan on Windows/Linux) backed by wezterm-term for the VT state machine. It's fast and it's not Electron.
 
@@ -100,14 +99,7 @@ Hooks into Gemini CLI's BeforeAgent, AfterAgent, BeforeTool, Notification, Sessi
 
 ### Codex CLI
 
-amux can manage Codex as an `app-server` subprocess and speak JSON-RPC with it directly. This gives the richest integration: real-time `thread/tool-call-begin` events, `thread/status-changed` state machine, and full approval interception. When Codex wants to run a command, the prompt appears in the amux sidebar — approve or deny without leaving your current pane.
-
-If you run `codex` (TUI mode) manually inside a pane instead, the hook-based fallback activates automatically.
-
-```bash
-amux install-hooks --codex
-amux uninstall-hooks --codex
-```
+Hooks into Codex CLI's SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, and Stop events via a wrapper script that creates a per-session `CODEX_HOME` tempdir symlinking your real `~/.codex/` and overlaying amux hook config. No modification of your real Codex config, credentials, or history. Launching `codex` inside an amux pane is enough — no manual install step. Amux observes Codex state for the sidebar but does not intercept approvals or drive the model; full `codex app-server` integration with approval interception is tracked as future work.
 
 ### Any other agent
 

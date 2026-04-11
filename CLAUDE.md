@@ -50,7 +50,7 @@ wgpu for GPU rendering with platform-specific backends. wezterm-term handles VT/
 Three first-class agent integrations, each using the agent's native event system:
 - **Claude Code**: Hooks into all 9 hook events (`PreToolUse`, `Stop`, etc.)
 - **Gemini CLI**: Hooks into 6 events (`BeforeAgent`, `AfterAgent`, `BeforeTool`, `Notification`, `SessionStart`, `SessionEnd`) via a wrapper at `~/.config/amux/bin/gemini` that injects hooks using `GEMINI_CLI_SYSTEM_SETTINGS_PATH`. Because Gemini's hook arrays use `CONCAT` merging, injection is additive — user's `~/.gemini/settings.json` is untouched. Requires Gemini ≥ v0.26.0 for hooks; older versions fall back to parsing the dynamic window title state machine (◇ Ready / ✦ Working / ✋ Action Required) as a coarse status signal, captured via `NotificationEvent::TitleChanged` and `gemini_title::parse_gemini_title`.
-- **Codex CLI**: JSON-RPC via `app-server` subprocess for real-time events and approval interception; falls back to hooks when Codex runs in TUI mode
+- **Codex CLI**: Hooks into 5 events (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`) via a wrapper at `~/.config/amux/bin/codex` that builds a per-session `CODEX_HOME` tempdir. The tempdir symlinks the user's real `~/.codex/` and overlays amux's own `hooks.json` and `managed_config.toml` (the latter sets `[features] codex_hooks = true` via Codex's system-managed config layer). User's real `~/.codex/` is never touched. Full `codex app-server` integration with approval interception is deferred.
 - **Generic**: Any agent can integrate via environment variables (`AMUX_WORKSPACE_ID`, `AMUX_SURFACE_ID`, `AMUX_SOCKET_PATH`) and the `amux set-status` / `amux notify` CLI
 
 ### Core Concepts

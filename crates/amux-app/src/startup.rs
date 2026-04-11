@@ -141,10 +141,21 @@ fn cleanup_stale_gemini_settings_files() {
     }
 }
 
+/// Placeholder for `amux-codex-home-*` cleanup. Intentionally a no-op.
+///
+/// A prior version deleted entries older than one hour, but mtime-based
+/// cleanup can race a long-running amux instance: once a Codex session has
+/// been alive longer than the cutoff, any second amux startup would wipe
+/// its live `CODEX_HOME` out from under it. Safer to leak the tempdirs
+/// until we add a verifiable liveness signal (e.g. a pid-backed lockfile
+/// or per-process directory naming) to the wrapper.
+fn cleanup_stale_codex_home_dirs() {}
+
 pub(crate) fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     cleanup_stale_scrollback_files();
     cleanup_stale_gemini_settings_files();
+    cleanup_stale_codex_home_dirs();
 
     let mut app_config = config::load_app_config();
     let mut font_size = app_config.font_size;

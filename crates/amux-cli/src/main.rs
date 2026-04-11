@@ -1,5 +1,6 @@
 mod claude_hook;
 mod cli;
+mod codex_hook;
 mod gemini_hook;
 mod install;
 mod print;
@@ -9,6 +10,7 @@ use clap::Parser;
 
 use claude_hook::handle_claude_hook;
 use cli::{Cli, Command};
+use codex_hook::handle_codex_hook;
 use gemini_hook::handle_gemini_hook;
 use install::{install_claude_hooks, install_shell_integration, uninstall_claude_hooks};
 use print::{print_hierarchy, print_pane_list, print_response, print_workspace_list};
@@ -809,6 +811,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::GeminiHook { event } => {
             handle_gemini_hook(&mut client, &event).await?;
+        }
+        Command::CodexHook { event } => {
+            handle_codex_hook(&mut client, &event).await?;
         }
         Command::Subscribe { events } => {
             let resp = client
