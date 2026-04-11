@@ -1,8 +1,6 @@
 //! Pane layout operations: PTY resize when a pane's rect changes, and
-//! interactive divider dragging to resize splits.
-//!
-//! Split rendering and resize handling are grouped in one module because
-//! both operate on the `PaneTree` layout.
+//! interactive divider dragging to resize splits. Both live in this
+//! module because both operate on the `PaneTree` layout.
 
 use crate::*;
 
