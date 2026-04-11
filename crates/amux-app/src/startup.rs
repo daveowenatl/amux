@@ -102,9 +102,49 @@ fn cleanup_stale_scrollback_files() {
     }
 }
 
+/// Remove stale `amux-gemini-settings-*.json` temp files from $TMPDIR. The
+/// gemini wrapper writes one per pane launch to inject hooks, and on clean
+/// shutdown there's nothing that removes them. Only deletes files older than
+/// one hour so we don't race a concurrent amux process that may still have
+/// Gemini panes alive — multiple amux instances share $TMPDIR, so newer
+/// files are presumed to belong to a live sibling.
+fn cleanup_stale_gemini_settings_files() {
+    // Use std::env::temp_dir() rather than hand-rolling a $TMPDIR fallback
+    // so we resolve the real system temp dir consistently across Unix
+    // (honours $TMPDIR, falls back to /tmp) and Windows (honours %TMP%/%TEMP%).
+    let tmp_dir = std::env::temp_dir();
+    let Ok(entries) = std::fs::read_dir(&tmp_dir) else {
+        return;
+    };
+    let Some(cutoff) =
+        std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(3600))
+    else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        if !(name_str.starts_with("amux-gemini-settings-") && name_str.ends_with(".json")) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        if modified < cutoff {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 pub(crate) fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     cleanup_stale_scrollback_files();
+    cleanup_stale_gemini_settings_files();
 
     let mut app_config = config::load_app_config();
     let mut font_size = app_config.font_size;
@@ -599,7 +639,7 @@ pub(crate) fn spawn_surface(
 
     // Prepend amux bin dir (containing claude wrapper) to PATH so hooks are
     // injected at runtime via --settings, scoped to amux sessions only.
-    if let Some(bin_dir) = shell::ensure_claude_wrapper_dir() {
+    if let Some(bin_dir) = shell::ensure_agent_wrapper_dir() {
         let current_path = std::env::var("PATH").unwrap_or_default();
         let bin_str = bin_dir.to_string_lossy();
         if !current_path.split(':').any(|d| d == bin_str.as_ref()) {

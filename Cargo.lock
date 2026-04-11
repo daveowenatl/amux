@@ -151,6 +151,7 @@ dependencies = [
  "dirs",
  "portable-pty",
  "serde",
+ "tempfile",
  "toml",
  "tracing",
  "urlencoding",

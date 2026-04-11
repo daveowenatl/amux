@@ -24,7 +24,7 @@ Sidebar shows git branch, PR status, working directory, listening ports, and lat
 
 ---
 
-- **All three agentic CLIs, first-class** — Claude Code, Gemini CLI, and Codex CLI each get full hook integration, live status indicators, and tool visibility in the sidebar. Run `amux install-hooks --all` and you're set.
+- **All three agentic CLIs, first-class** — Claude Code, Gemini CLI, and Codex CLI each get full hook integration, live status indicators, and tool visibility in the sidebar. Zero-setup for Claude and Gemini — hooks inject automatically when the agent launches inside an amux pane.
 - **Approval interception** — When Codex wants to run a shell command, the approval prompt appears in the amux sidebar. No context switching; approve or deny without leaving your current pane.
 - **Scriptable** — CLI and socket API to create workspaces, split panes, send keystrokes, and drive agents programmatically. tmux-compat shim included for agent scripts that call tmux directly.
 - **Native on every platform** — Built in Rust with wgpu for GPU-accelerated rendering. Runs natively on Windows (DX12/Vulkan), macOS (Metal), and Linux (Vulkan). Not Electron. Not Tauri.
@@ -72,7 +72,7 @@ Ghostty and WezTerm are excellent terminals but neither was built for multi-agen
 
 cmux solved this beautifully on macOS — the blue ring and sidebar model is exactly right. But it's macOS-only and optimized for Claude Code specifically. amux is the same idea built cross-platform in Rust, with first-class support for all three major agentic CLIs from day one.
 
-The sidebar hooks into each agent's native event system: Claude Code's `PreToolUse`/`Stop` hooks, Gemini CLI's `BeforeTool`/`AfterTool` callbacks and OSC 9 notifications, Codex's `app-server` JSON-RPC stream. You get live "Running: `cargo test`" tool indicators and an approval interception UI in the sidebar — without writing any glue code. Just run `amux install-hooks --all` on first launch.
+The sidebar hooks into each agent's native event system: Claude Code's `PreToolUse`/`Stop` hooks, Gemini CLI's `BeforeTool`/`AfterAgent` hooks, Codex's `app-server` JSON-RPC stream. You get live "Running: `cargo test`" tool indicators and an approval interception UI in the sidebar — without writing any glue code. Claude and Gemini hooks inject automatically per pane; no manual install step.
 
 The rendering is wgpu (Metal on macOS, DX12/Vulkan on Windows/Linux) backed by wezterm-term for the VT state machine. It's fast and it's not Electron.
 
@@ -88,31 +88,15 @@ Give a million developers composable primitives across every platform and they'l
 
 ## Agent Integration
 
-amux auto-detects which agent is running in each pane and activates the appropriate integration. Run this once after installing:
-
-```bash
-amux install-hooks --all
-```
-
-This detects which of the three agents are installed and writes the appropriate hook config for each.
+amux auto-detects which agent is running in each pane and activates the appropriate integration. No manual setup for Claude Code or Gemini CLI — launching them inside an amux pane is enough. Wrappers installed to `~/.config/amux/bin/` inject hooks at runtime without touching your global agent settings.
 
 ### Claude Code
 
-Hooks into all 9 Claude Code hook events. The sidebar shows the current tool name during `PreToolUse` and clears on `Stop`. Completion fires an in-app notification and optional OS notification.
-
-```bash
-amux install-hooks --claude
-amux uninstall-hooks --claude
-```
+Hooks into Claude Code's PreToolUse, UserPromptSubmit, Notification, Stop, and SubagentStart events. The sidebar shows the current tool name during `PreToolUse` and clears on `Stop`. Completion fires an in-app notification and optional OS notification. Hooks are injected via `--settings` per session — your `~/.claude/settings.json` is untouched.
 
 ### Gemini CLI
 
-Hooks into 7 of Gemini CLI's 11 events. Also parses the Gemini window title state machine (◇ idle / ✦ working / ✋ waiting) as a zero-config fallback — status indicators work even without hooks installed. When you run a Gemini session under amux, `TERM_PROGRAM=wezterm` is set automatically, which causes Gemini to emit OSC 9 notifications that amux intercepts from the PTY stream.
-
-```bash
-amux install-hooks --gemini
-amux uninstall-hooks --gemini
-```
+Hooks into Gemini CLI's BeforeAgent, AfterAgent, BeforeTool, Notification, SessionStart, and SessionEnd events. Status updates, tool indicators, and the "needs input" ring flow to the sidebar automatically. Requires Gemini CLI v0.26.0 or newer for hook support; older versions fall back to parsing Gemini's dynamic window title (◇ Ready / ✦ Working / ✋ Action Required / ⏲ Working…) as a best-effort status signal. Hook injection uses `GEMINI_CLI_SYSTEM_SETTINGS_PATH` pointing at a per-pane temp file, so your `~/.gemini/settings.json` is untouched and any user-defined hooks still fire alongside amux's.
 
 ### Codex CLI
 
@@ -246,10 +230,6 @@ amux read-screen [--pane <id>] [--lines <start:end>] [--ansi]
 
 amux set-status <active|idle|waiting> [--label <text>]
 amux notify <message> [--workspace <id>]
-
-amux install-hooks [--claude] [--gemini] [--codex] [--all]
-amux uninstall-hooks [--claude] [--gemini] [--codex] [--all]
-amux hooks-status
 
 amux tree [--json]
 amux socket-path

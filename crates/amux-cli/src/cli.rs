@@ -326,6 +326,12 @@ pub(crate) enum Command {
         /// Hook event name (PreToolUse, Stop, UserPromptSubmit, etc.)
         event: String,
     },
+    /// Handle a Gemini CLI hook event (reads JSON from stdin)
+    #[command(name = "gemini-hook")]
+    GeminiHook {
+        /// Hook event name (BeforeTool, AfterAgent, SessionStart, etc.)
+        event: String,
+    },
     /// Install agent hooks into Claude Code settings
     #[command(name = "install-hooks")]
     InstallHooks {

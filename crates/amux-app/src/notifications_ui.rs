@@ -59,7 +59,33 @@ impl AmuxApp {
                 NotificationEvent::Bell => {
                     (String::new(), "Bell".to_string(), NotificationSource::Bell)
                 }
-                NotificationEvent::TitleChanged(_) => {
+                NotificationEvent::TitleChanged(title) => {
+                    // Gemini CLI ≥ v0.26.0 emits status icons in its window
+                    // title (◇ Ready / ✦ Working / ✋ Action Required / ⏲ Working…).
+                    // Parse as a supplementary status signal — Gemini hooks are
+                    // the primary path when available, but title parsing is the
+                    // only signal for pre-v0.26 Gemini installs. Harmless for
+                    // non-Gemini shells because non-matching titles parse as None.
+                    if let Some(state) = crate::gemini_title::parse_gemini_title(&title) {
+                        let (agent_state, label) = match state {
+                            crate::gemini_title::GeminiTitleState::Ready => {
+                                (amux_notify::AgentState::Idle, "Idle")
+                            }
+                            crate::gemini_title::GeminiTitleState::Working => {
+                                (amux_notify::AgentState::Active, "Running")
+                            }
+                            crate::gemini_title::GeminiTitleState::ActionRequired => {
+                                (amux_notify::AgentState::Waiting, "Needs input")
+                            }
+                        };
+                        self.notifications.set_status(
+                            ws_id,
+                            agent_state,
+                            Some(label.to_string()),
+                            None, // preserve existing task
+                            None, // preserve existing message
+                        );
+                    }
                     continue;
                 }
                 NotificationEvent::WorkingDirectoryChanged => {

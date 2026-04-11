@@ -17,3 +17,4 @@ tracing = { workspace = true }
 urlencoding = "2"
 
 [dev-dependencies]
+tempfile = { workspace = true }

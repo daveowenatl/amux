@@ -126,36 +126,52 @@ fn ensure_shell_integration_dir() -> Option<std::path::PathBuf> {
     Some(config_dir)
 }
 
-/// Ensure the claude wrapper script is written to ~/.config/amux/bin/claude.
-/// Returns the bin directory path, or None on failure.
-pub fn ensure_claude_wrapper_dir() -> Option<std::path::PathBuf> {
+/// Ensure agent wrapper scripts are written to ~/.config/amux/bin/.
+/// Writes both the `claude` and `gemini` wrappers on Unix. Returns the
+/// bin directory path, or None on failure.
+pub fn ensure_agent_wrapper_dir() -> Option<std::path::PathBuf> {
     // Use ~/.config/amux/bin/ instead of dirs::config_dir() because on macOS
     // that returns ~/Library/Application Support/ which has a space — spaces
     // in PATH entries break many tools.
     let bin_dir = dirs::home_dir()?.join(".config").join("amux").join("bin");
-    if std::fs::create_dir_all(&bin_dir).is_err() {
+    install_agent_wrappers_at(&bin_dir)?;
+    Some(bin_dir)
+}
+
+/// Write agent wrapper scripts into `bin_dir`. Extracted so tests can
+/// target a tempdir instead of mutating the caller's real ~/.config tree.
+pub fn install_agent_wrappers_at(bin_dir: &std::path::Path) -> Option<()> {
+    if std::fs::create_dir_all(bin_dir).is_err() {
         return None;
     }
 
     #[cfg(unix)]
     {
-        let wrapper_path = bin_dir.join("claude");
-        let wrapper_content = include_str!("../../../resources/bin/claude");
-
-        let needs_write = std::fs::read_to_string(&wrapper_path)
-            .map(|existing| existing != wrapper_content)
-            .unwrap_or(true);
-
-        if needs_write && std::fs::write(&wrapper_path, wrapper_content).is_err() {
-            return None;
-        }
-        if needs_write {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755));
+        use std::os::unix::fs::PermissionsExt;
+        let wrappers: &[(&str, &str)] = &[
+            ("claude", include_str!("../../../resources/bin/claude")),
+            ("gemini", include_str!("../../../resources/bin/gemini")),
+        ];
+        for (name, content) in wrappers {
+            let path = bin_dir.join(name);
+            let needs_write = std::fs::read_to_string(&path)
+                .map(|existing| existing != *content)
+                .unwrap_or(true);
+            if needs_write && std::fs::write(&path, content).is_err() {
+                return None;
+            }
+            // Always enforce the execute bit. Running this unconditionally
+            // (not just on content change) self-heals wrappers whose mode
+            // got stripped externally — e.g., cp/rsync from a non-unix fs.
+            if std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).is_err() {
+                return None;
+            }
         }
     }
     #[cfg(windows)]
     {
+        // PowerShell/pwsh support for Gemini is issue #166; for now only the
+        // claude.cmd shim is installed on Windows.
         let wrapper_path = bin_dir.join("claude.cmd");
         let wrapper_content = "@echo off\r\nclaude.exe %*\r\n";
 
@@ -168,5 +184,52 @@ pub fn ensure_claude_wrapper_dir() -> Option<std::path::PathBuf> {
         }
     }
 
-    Some(bin_dir)
+    Some(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_agent_wrappers_at_writes_both_wrappers() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        install_agent_wrappers_at(tmp.path()).expect("install");
+        #[cfg(unix)]
+        {
+            assert!(tmp.path().join("claude").exists(), "claude wrapper missing");
+            assert!(tmp.path().join("gemini").exists(), "gemini wrapper missing");
+            use std::os::unix::fs::PermissionsExt;
+            for name in ["claude", "gemini"] {
+                let mode = std::fs::metadata(tmp.path().join(name))
+                    .unwrap()
+                    .permissions()
+                    .mode();
+                assert_eq!(mode & 0o111, 0o111, "{name} wrapper not executable");
+            }
+        }
+    }
+
+    /// Regression: if a wrapper already exists with correct contents but the
+    /// execute bit got stripped, re-running the installer should restore it.
+    #[cfg(unix)]
+    #[test]
+    fn install_agent_wrappers_at_reapplies_chmod() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        install_agent_wrappers_at(tmp.path()).expect("first install");
+
+        let gemini = tmp.path().join("gemini");
+        std::fs::set_permissions(&gemini, std::fs::Permissions::from_mode(0o644))
+            .expect("strip +x");
+        assert_eq!(
+            std::fs::metadata(&gemini).unwrap().permissions().mode() & 0o111,
+            0,
+            "precondition: +x stripped"
+        );
+
+        install_agent_wrappers_at(tmp.path()).expect("second install");
+        let mode = std::fs::metadata(&gemini).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0o111, "installer should re-enforce +x");
+    }
 }

@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# amux gemini wrapper — injects hooks via GEMINI_CLI_SYSTEM_SETTINGS_PATH so
+# agent status flows back into amux without touching ~/.gemini/settings.json.
+#
+# When running inside an amux terminal (AMUX_SURFACE_ID is set), this wrapper
+# writes a temp settings file with amux hooks and points Gemini at it via the
+# system-settings env var. Because Gemini's hook arrays use CONCAT merging
+# (see packages/cli/src/config/settingsSchema.ts), the user's own hooks in
+# ~/.gemini/settings.json still fire alongside ours. Outside amux (or when
+# the socket is down, or Gemini is too old), it passes through unchanged.
+
+set -u
+
+# Find the real gemini binary, skipping our own directory.
+find_real_gemini() {
+    local self_dir
+    self_dir="$(cd "$(dirname "$0")" && pwd)"
+    local IFS=:
+    for d in $PATH; do
+        [[ "$d" == "$self_dir" ]] && continue
+        [[ -x "$d/gemini" ]] && printf '%s' "$d/gemini" && return 0
+    done
+    return 1
+}
+
+# Resolve the amux binary exactly once. Prefer AMUX_BIN, fall back to PATH
+# lookup. Prints the resolved path to stdout on success; non-zero exit and
+# empty stdout on failure. Every hook invocation must use this same resolved
+# path so a stale AMUX_BIN doesn't poison the generated hook JSON.
+resolve_amux_bin() {
+    local amux_bin="${AMUX_BIN:-}"
+    if [[ -n "$amux_bin" && -x "$amux_bin" ]]; then
+        printf '%s' "$amux_bin"
+        return 0
+    fi
+    amux_bin="$(command -v amux 2>/dev/null || true)"
+    [[ -n "$amux_bin" ]] || return 1
+    printf '%s' "$amux_bin"
+}
+
+# Return 0 only when AMUX_SOCKET_PATH points to a live amux socket.
+amux_socket_available() {
+    local socket="${AMUX_SOCKET_PATH:-}"
+    [[ -n "$socket" && -S "$socket" ]] || return 1
+
+    local amux_bin
+    amux_bin="$(resolve_amux_bin)" || return 1
+
+    # Bounded check so gemini startup doesn't block behind a hung socket.
+    "$amux_bin" --socket "$socket" ping >/dev/null 2>&1
+}
+
+# Return 0 if gemini --version reports >= 0.26.0 (first hook-capable release).
+gemini_supports_hooks() {
+    local bin="$1"
+    local ver
+    ver="$("$bin" --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    [[ -n "$ver" ]] || return 1
+    local IFS=.
+    # shellcheck disable=SC2206
+    local parts=($ver)
+    local major=${parts[0]:-0}
+    local minor=${parts[1]:-0}
+    if (( major > 0 )); then return 0; fi
+    if (( major == 0 && minor >= 26 )); then return 0; fi
+    return 1
+}
+
+REAL_GEMINI="$(find_real_gemini)" || { echo "Error: gemini not found in PATH" >&2; exit 127; }
+
+# Passthrough if not in amux, socket down, or gemini too old.
+if [[ -z "${AMUX_SURFACE_ID:-}" ]] || ! amux_socket_available || ! gemini_supports_hooks "$REAL_GEMINI"; then
+    exec "$REAL_GEMINI" "$@"
+fi
+
+# Resolve amux once here and use the resolved path in the hook JSON. If
+# resolution fails for any reason, fall back to launching Gemini unhooked
+# — better to run the agent unhooked than to inject hook commands that
+# point at a missing binary.
+if ! AMUX_CMD="$(resolve_amux_bin)"; then
+    exec "$REAL_GEMINI" "$@"
+fi
+
+# Write hooks into a temp settings file. Use a stable per-surface path so
+# sibling panes don't race each other on creation/cleanup, and amux-app's
+# stale-file sweeper can find and remove them.
+TMPDIR_BASE="${TMPDIR:-/tmp}"
+SETTINGS_FILE="${TMPDIR_BASE%/}/amux-gemini-settings-${AMUX_SURFACE_ID}.json"
+
+# If writing the settings file fails (unwritable $TMPDIR, full disk, etc.),
+# clean up any partial file and launch Gemini unhooked rather than exporting
+# GEMINI_CLI_SYSTEM_SETTINGS_PATH pointing at a broken path.
+if ! cat > "$SETTINGS_FILE" <<EOF
+{
+  "hooks": {
+    "BeforeAgent": [{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" gemini-hook BeforeAgent","timeout":5000,"name":"amux-status"}]}],
+    "BeforeTool":  [{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" gemini-hook BeforeTool","timeout":5000,"name":"amux-status"}]}],
+    "Notification":[{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" gemini-hook Notification","timeout":5000,"name":"amux-status"}]}],
+    "AfterAgent":  [{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" gemini-hook AfterAgent","timeout":5000,"name":"amux-status"}]}],
+    "SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" gemini-hook SessionStart","timeout":5000,"name":"amux-status"}]}],
+    "SessionEnd":  [{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" gemini-hook SessionEnd","timeout":5000,"name":"amux-status"}]}]
+  }
+}
+EOF
+then
+    rm -f "$SETTINGS_FILE" 2>/dev/null || true
+    echo "amux: failed to write Gemini hook settings; launching unhooked" >&2
+    exec "$REAL_GEMINI" "$@"
+fi
+
+export GEMINI_CLI_SYSTEM_SETTINGS_PATH="$SETTINGS_FILE"
+exec "$REAL_GEMINI" "$@"
