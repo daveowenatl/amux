@@ -102,9 +102,33 @@ fn cleanup_stale_scrollback_files() {
     }
 }
 
+/// Remove amux-gemini-settings-*.json temp files from $TMPDIR. The gemini
+/// wrapper writes one per pane launch to inject hooks, and on clean shutdown
+/// there's nothing that removes them. Sweeping at app startup is safe:
+/// by definition no amux panes are running yet, so any matching file is
+/// stale from a prior run.
+fn cleanup_stale_gemini_settings_files() {
+    let tmp_dir = std::env::var_os("TMPDIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let Ok(entries) = std::fs::read_dir(&tmp_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        if name_str.starts_with("amux-gemini-settings-") && name_str.ends_with(".json") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 pub(crate) fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     cleanup_stale_scrollback_files();
+    cleanup_stale_gemini_settings_files();
 
     let mut app_config = config::load_app_config();
     let mut font_size = app_config.font_size;
