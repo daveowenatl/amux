@@ -383,6 +383,12 @@ pub struct AppConfig {
     /// Theme source: "default" uses built-in Tokyo Night, "ghostty" loads
     /// colors/fonts from Ghostty's config file (`~/.config/ghostty/config`).
     pub theme_source: String,
+    /// Shell to spawn in new panes. Accepts either a plain binary name
+    /// (`"pwsh"`, `"bash"`) that amux resolves against `PATH`, or an
+    /// absolute path (`"/opt/homebrew/bin/fish"`, `"C:\\Program Files\\PowerShell\\7\\pwsh.exe"`).
+    /// When unset (the default), amux uses `$SHELL` on Unix and prefers
+    /// `pwsh.exe` on Windows if it's on `PATH`, otherwise `$COMSPEC`.
+    pub shell: Option<String>,
     pub notifications: NotificationConfig,
     pub browser: BrowserConfig,
     #[serde(default)]
@@ -397,6 +403,7 @@ impl Default for AppConfig {
             font_size: DEFAULT_FONT_SIZE,
             font_family: DEFAULT_FONT_FAMILY.to_owned(),
             theme_source: "default".to_owned(),
+            shell: None,
             notifications: NotificationConfig::default(),
             browser: BrowserConfig::default(),
             colors: ColorsConfig::default(),

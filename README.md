@@ -244,6 +244,12 @@ amux does **not** restore live process state (active Claude Code / Gemini / Code
 Config lives at `~/.config/amux/config.toml` (or `%APPDATA%\amux\config.toml` on Windows):
 
 ```toml
+# Shell to spawn in new panes. Accepts a bare name ("pwsh", "bash", "fish")
+# that amux resolves against PATH, or an absolute path.
+# When unset, amux uses $SHELL on Unix and prefers pwsh.exe on Windows if
+# installed, otherwise falls back to $COMSPEC (cmd.exe).
+# shell = "pwsh"
+
 [appearance]
 sidebar_width = 220
 font_family = "JetBrains Mono"

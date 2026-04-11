@@ -5,7 +5,16 @@
 
 use portable_pty::CommandBuilder;
 
-/// Return the user's default shell.
+/// Return the default shell amux should spawn in new panes.
+///
+/// Unix: `$SHELL`, falling back to `/bin/bash`.
+///
+/// Windows: prefers `pwsh.exe` (PowerShell 7+) if it's on `PATH` so the
+/// user automatically gets the amux shell integration that ships in
+/// `resources/shell-integration/amux-pwsh-integration.ps1`. Falls back
+/// to `$COMSPEC` (typically `cmd.exe`) when pwsh isn't installed. Users
+/// who want a specific shell can override this in `config.toml` via the
+/// top-level `shell` key — see [`resolve_shell`].
 pub fn default_shell() -> String {
     #[cfg(unix)]
     {
@@ -13,7 +22,103 @@ pub fn default_shell() -> String {
     }
     #[cfg(windows)]
     {
+        if let Some(pwsh) = find_on_path("pwsh.exe") {
+            return pwsh;
+        }
         std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+    }
+}
+
+/// Resolve the shell amux should spawn for a new pane. Config override
+/// wins, falling through to [`default_shell`]. An absolute-path override
+/// is returned verbatim; a bare name (`"pwsh"`, `"bash"`) is resolved
+/// against `PATH` — if resolution fails, the bare name is still returned
+/// so portable-pty can surface a clearer spawn error than "not found".
+pub fn resolve_shell(config_override: Option<&str>) -> String {
+    if let Some(override_value) = config_override {
+        let trimmed = override_value.trim();
+        if !trimmed.is_empty() {
+            let path = std::path::Path::new(trimmed);
+            if path.is_absolute() {
+                return trimmed.to_string();
+            }
+            if let Some(resolved) = find_on_path(trimmed) {
+                return resolved;
+            }
+            return trimmed.to_string();
+        }
+    }
+    default_shell()
+}
+
+/// Walk `PATH` looking for an executable with the given file name. On
+/// Windows, honours `PATHEXT` so `find_on_path("pwsh")` matches `pwsh.exe`.
+/// On Unix, verifies the execute bit is set so we never return a candidate
+/// that would fail to spawn. Relative `PATH` entries are skipped to avoid
+/// PATH-hijacking risk (e.g. a `.` entry pointing the shell resolver at
+/// whatever binary happens to be in the current working directory).
+/// Returns the first match as an absolute path string, or `None`.
+fn find_on_path(name: &str) -> Option<String> {
+    let path_var = std::env::var_os("PATH")?;
+    #[cfg(windows)]
+    let extensions: Vec<String> = {
+        let raw = std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".to_string());
+        // An empty entry represents the original `name` without any extension
+        // appended — matches the behaviour of `where.exe` and `Get-Command`.
+        std::iter::once(String::new())
+            .chain(
+                raw.split(';')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+            )
+            .collect()
+    };
+    #[cfg(unix)]
+    let extensions: Vec<String> = vec![String::new()];
+
+    for dir in std::env::split_paths(&path_var) {
+        // Skip empty and relative entries. Absolute-only guarantees the
+        // returned path is safe to embed in command spawns and matches
+        // the docstring contract above.
+        if dir.as_os_str().is_empty() || !dir.is_absolute() {
+            continue;
+        }
+        for ext in &extensions {
+            let candidate = if ext.is_empty() {
+                dir.join(name)
+            } else {
+                dir.join(format!("{name}{ext}"))
+            };
+            if !candidate.is_file() {
+                continue;
+            }
+            if !is_executable(&candidate) {
+                continue;
+            }
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+/// Returns true when the path at `candidate` is executable by the current
+/// process. On Unix, checks the file-mode execute bits. On Windows, the
+/// `.exe`/`.cmd`/`.bat` extension probe done by `find_on_path` already
+/// filters out non-executable files so we accept any regular file.
+fn is_executable(candidate: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(meta) = std::fs::metadata(candidate) else {
+            return false;
+        };
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(windows)]
+    {
+        let _ = candidate;
+        true
     }
 }
 
@@ -231,6 +336,181 @@ pub fn install_agent_wrappers_at(bin_dir: &std::path::Path) -> Option<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_shell_honours_absolute_override() {
+        // Absolute paths are returned verbatim, even if they don't exist —
+        // portable-pty surfaces the spawn error with context. We don't
+        // stat-check here because the override is an explicit user choice.
+        let path = if cfg!(windows) {
+            "C:\\Program Files\\Fish\\bin\\fish.exe"
+        } else {
+            "/opt/homebrew/bin/fish"
+        };
+        assert_eq!(resolve_shell(Some(path)), path);
+    }
+
+    #[test]
+    fn resolve_shell_ignores_empty_or_whitespace_override() {
+        // `shell = ""` or `shell = "   "` in config.toml falls back to
+        // default_shell() — we don't want to spawn an empty command.
+        let fallback = default_shell();
+        assert_eq!(resolve_shell(Some("")), fallback);
+        assert_eq!(resolve_shell(Some("   ")), fallback);
+    }
+
+    #[test]
+    fn resolve_shell_none_falls_back_to_default() {
+        assert_eq!(resolve_shell(None), default_shell());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_shell_bare_name_resolves_against_path() {
+        // `sh` is guaranteed to exist on every Unix runner, so this test
+        // doubles as a sanity check for `find_on_path` on Unix.
+        let resolved = resolve_shell(Some("sh"));
+        assert!(
+            resolved.ends_with("/sh") || resolved == "sh",
+            "expected resolved sh path or bare fallback, got {resolved}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_shell_bare_name_returns_input_when_missing() {
+        // A made-up name must not crash — we return it verbatim so the
+        // subsequent CommandBuilder::new gives a clean "not found" error.
+        assert_eq!(
+            resolve_shell(Some("definitely-not-a-real-shell-xyz")),
+            "definitely-not-a-real-shell-xyz"
+        );
+    }
+
+    /// Serializes the Windows PATH/PATHEXT tests so parallel test threads
+    /// can't stomp each other's env manipulation.
+    #[cfg(windows)]
+    static WINDOWS_PATH_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// RAII guard that restores a named env var to its prior value on drop.
+    #[cfg(windows)]
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<std::ffi::OsString>,
+    }
+    #[cfg(windows)]
+    impl EnvGuard {
+        fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
+            let prev = std::env::var_os(key);
+            // SAFETY: tests are serialized via WINDOWS_PATH_TEST_LOCK.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, prev }
+        }
+    }
+    #[cfg(windows)]
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: tests are serialized via WINDOWS_PATH_TEST_LOCK.
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    /// Regression for Copilot #3068233897: Windows `find_on_path` must
+    /// honour `PATHEXT` so a bare `"pwsh"` override resolves to
+    /// `pwsh.exe` inside a PATH directory, and the empty-extension
+    /// case matches before extension-appended candidates (matches the
+    /// `where.exe` / `Get-Command` lookup order).
+    #[cfg(windows)]
+    #[test]
+    fn windows_find_on_path_pathext_prefers_exe() {
+        let _guard = WINDOWS_PATH_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let exe = tmp.path().join("pwsh.exe");
+        std::fs::write(&exe, b"dummy").expect("write exe");
+
+        let path_env = EnvGuard::set("PATH", tmp.path().as_os_str());
+        let pathext_env = EnvGuard::set("PATHEXT", std::ffi::OsStr::new(".EXE;.CMD;.BAT;.COM"));
+
+        let resolved = resolve_shell(Some("pwsh"));
+        drop(path_env);
+        drop(pathext_env);
+        assert_eq!(
+            std::path::PathBuf::from(&resolved).file_name().unwrap(),
+            "pwsh.exe"
+        );
+    }
+
+    /// Windows: when only a `.cmd` shim exists (no `.exe`), PATHEXT
+    /// iteration still resolves via the extension fallback.
+    #[cfg(windows)]
+    #[test]
+    fn windows_find_on_path_falls_back_to_cmd_extension() {
+        let _guard = WINDOWS_PATH_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cmd_shim = tmp.path().join("mytool.cmd");
+        std::fs::write(&cmd_shim, b"@echo off\r\n").expect("write cmd");
+
+        let path_env = EnvGuard::set("PATH", tmp.path().as_os_str());
+        let pathext_env = EnvGuard::set("PATHEXT", std::ffi::OsStr::new(".EXE;.CMD;.BAT;.COM"));
+
+        let resolved = resolve_shell(Some("mytool"));
+        drop(path_env);
+        drop(pathext_env);
+        assert_eq!(
+            std::path::PathBuf::from(&resolved).file_name().unwrap(),
+            "mytool.cmd"
+        );
+    }
+
+    /// Windows: a relative PATH entry (e.g. `.`) must be skipped so we
+    /// don't fall prey to PATH hijacking. The resolver must return the
+    /// bare name verbatim when no absolute match exists.
+    #[cfg(windows)]
+    #[test]
+    fn windows_find_on_path_skips_relative_entries() {
+        let _guard = WINDOWS_PATH_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Write an "evil" exe in the temp dir and set PATH=. while the
+        // CWD is the temp dir. The resolver should NOT return it.
+        let evil = tmp.path().join("pwsh.exe");
+        std::fs::write(&evil, b"dummy").expect("write evil");
+        let _cwd_guard = {
+            let prev_cwd = std::env::current_dir().expect("cwd");
+            std::env::set_current_dir(tmp.path()).expect("set cwd");
+            // Move `prev_cwd` into a closure that restores on drop via a
+            // `defer`-style helper. Simpler: a struct guard.
+            struct CwdGuard(std::path::PathBuf);
+            impl Drop for CwdGuard {
+                fn drop(&mut self) {
+                    let _ = std::env::set_current_dir(&self.0);
+                }
+            }
+            CwdGuard(prev_cwd)
+        };
+
+        let path_env = EnvGuard::set("PATH", std::ffi::OsStr::new("."));
+        let pathext_env = EnvGuard::set("PATHEXT", std::ffi::OsStr::new(".EXE"));
+
+        let resolved = resolve_shell(Some("pwsh"));
+        drop(path_env);
+        drop(pathext_env);
+
+        assert_eq!(
+            resolved, "pwsh",
+            "relative PATH entry must not resolve — got {resolved:?}"
+        );
+    }
 
     #[test]
     fn shell_stem_strips_extensions_and_directories() {

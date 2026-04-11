@@ -356,10 +356,11 @@ pub(crate) fn run() -> anyhow::Result<()> {
         }
     };
 
+    let shell_override = app_config.shell.as_deref();
     let state = if let Some(session) = restored {
-        restore_session(&session, &ipc_addr, &socket_token, &config)
+        restore_session(&session, &ipc_addr, &socket_token, &config, shell_override)
     } else {
-        fresh_startup(&ipc_addr, &socket_token, &config)?
+        fresh_startup(&ipc_addr, &socket_token, &config, shell_override)?
     };
 
     // Force dark appearance on macOS so the title bar matches the app's dark chrome.
@@ -491,9 +492,21 @@ pub(crate) fn fresh_startup(
     ipc_addr: &amux_ipc::IpcAddr,
     socket_token: &str,
     config: &Arc<AmuxTermConfig>,
+    shell_override: Option<&str>,
 ) -> anyhow::Result<StartupState> {
     let initial_pane_id: PaneId = 0;
-    let surface = spawn_surface(80, 24, ipc_addr, socket_token, config, 0, 0, None, None)?;
+    let surface = spawn_surface(
+        80,
+        24,
+        ipc_addr,
+        socket_token,
+        config,
+        0,
+        0,
+        None,
+        None,
+        shell_override,
+    )?;
 
     let managed = PaneEntry::Terminal(ManagedPane {
         tabs: vec![managed_pane::TabEntry::Terminal(Box::new(surface))],
@@ -538,6 +551,7 @@ pub(crate) fn restore_session(
     ipc_addr: &amux_ipc::IpcAddr,
     socket_token: &str,
     config: &Arc<AmuxTermConfig>,
+    shell_override: Option<&str>,
 ) -> StartupState {
     let mut workspaces = Vec::new();
     let mut panes: HashMap<PaneId, PaneEntry> = HashMap::new();
@@ -580,6 +594,7 @@ pub(crate) fn restore_session(
                     saved_sf.id,
                     cwd,
                     scrollback,
+                    shell_override,
                 ) {
                     Ok(mut surface) => {
                         // Restore git/PR metadata from session
@@ -666,7 +681,7 @@ pub(crate) fn restore_session(
     // If nothing restored, fall back to fresh
     if workspaces.is_empty() {
         tracing::warn!("Session restore produced no workspaces, starting fresh");
-        return match fresh_startup(ipc_addr, socket_token, config) {
+        return match fresh_startup(ipc_addr, socket_token, config, shell_override) {
             Ok(result) => result,
             Err(e) => {
                 tracing::error!("Fresh startup also failed: {}", e);
@@ -736,6 +751,7 @@ pub(crate) fn cleanup_addr(addr: &amux_ipc::IpcAddr) {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 pub(crate) fn spawn_surface(
     cols: u16,
     rows: u16,
@@ -746,8 +762,9 @@ pub(crate) fn spawn_surface(
     surface_id: u64,
     cwd: Option<&str>,
     scrollback: Option<&str>,
+    shell_override: Option<&str>,
 ) -> anyhow::Result<PaneSurface> {
-    let shell = shell::default_shell();
+    let shell = shell::resolve_shell(shell_override);
     let mut cmd = CommandBuilder::new(&shell);
     cmd.env("AMUX_SOCKET_PATH", ipc_addr.to_string());
     cmd.env("AMUX_SOCKET_TOKEN", socket_token);
@@ -770,11 +787,19 @@ pub(crate) fn spawn_surface(
 
     // Prepend amux bin dir (containing claude wrapper) to PATH so hooks are
     // injected at runtime via --settings, scoped to amux sessions only.
+    // PATH uses `;` as a separator on Windows, `:` everywhere else —
+    // hardcoding `:` would collapse the entire Windows PATH into a single
+    // entry and make the wrapper PATH prepend a no-op.
     if let Some(bin_dir) = shell::ensure_agent_wrapper_dir() {
         let current_path = std::env::var("PATH").unwrap_or_default();
         let bin_str = bin_dir.to_string_lossy();
-        if !current_path.split(':').any(|d| d == bin_str.as_ref()) {
-            let sep = if current_path.is_empty() { "" } else { ":" };
+        let sep_char = if cfg!(windows) { ';' } else { ':' };
+        if !current_path.split(sep_char).any(|d| d == bin_str.as_ref()) {
+            let sep = if current_path.is_empty() {
+                String::new()
+            } else {
+                sep_char.to_string()
+            };
             cmd.env("PATH", format!("{bin_str}{sep}{current_path}"));
         }
     }

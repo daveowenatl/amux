@@ -536,6 +536,7 @@ impl AmuxApp {
                             sf_id,
                             cwd.as_deref(),
                             None,
+                            self.app_config.shell.as_deref(),
                         ) {
                             if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
                                 let insert_at = (m.active_tab_idx + 1).min(m.tabs.len());
