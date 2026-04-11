@@ -338,16 +338,6 @@ pub(crate) enum Command {
         /// Hook event name (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop)
         event: String,
     },
-    /// Install agent hooks into Claude Code settings
-    #[command(name = "install-hooks")]
-    InstallHooks {
-        /// Install Claude Code hooks
-        #[arg(long)]
-        claude: bool,
-        /// Uninstall hooks instead of installing
-        #[arg(long)]
-        uninstall: bool,
-    },
     /// Subscribe to server events and print them as newline-delimited JSON
     Subscribe {
         /// Event types to subscribe to (e.g. notification, focus_change)
