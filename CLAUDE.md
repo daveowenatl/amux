@@ -49,7 +49,7 @@ wgpu for GPU rendering with platform-specific backends. wezterm-term handles VT/
 ### Agent Integrations
 Three first-class agent integrations, each using the agent's native event system:
 - **Claude Code**: Hooks into all 9 hook events (`PreToolUse`, `Stop`, etc.)
-- **Gemini CLI**: Hooks into 7/11 events + window title state machine parsing + OSC 9 notifications (sets `TERM_PROGRAM=wezterm` to trigger Gemini's OSC output)
+- **Gemini CLI**: Hooks into 6 events (`BeforeAgent`, `AfterAgent`, `BeforeTool`, `Notification`, `SessionStart`, `SessionEnd`) via a wrapper at `~/.config/amux/bin/gemini` that injects hooks using `GEMINI_CLI_SYSTEM_SETTINGS_PATH`. Because Gemini's hook arrays use `CONCAT` merging, injection is additive — user's `~/.gemini/settings.json` is untouched. Requires Gemini ≥ v0.26.0 for hooks; older versions fall back to parsing the dynamic window title state machine (◇ Ready / ✦ Working / ✋ Action Required) as a coarse status signal, captured via `NotificationEvent::TitleChanged` and `gemini_title::parse_gemini_title`.
 - **Codex CLI**: JSON-RPC via `app-server` subprocess for real-time events and approval interception; falls back to hooks when Codex runs in TUI mode
 - **Generic**: Any agent can integrate via environment variables (`AMUX_WORKSPACE_ID`, `AMUX_SURFACE_ID`, `AMUX_SOCKET_PATH`) and the `amux set-status` / `amux notify` CLI
 

@@ -88,31 +88,15 @@ Give a million developers composable primitives across every platform and they'l
 
 ## Agent Integration
 
-amux auto-detects which agent is running in each pane and activates the appropriate integration. Run this once after installing:
-
-```bash
-amux install-hooks --all
-```
-
-This detects which of the three agents are installed and writes the appropriate hook config for each.
+amux auto-detects which agent is running in each pane and activates the appropriate integration. No manual setup for Claude Code or Gemini CLI — launching them inside an amux pane is enough. Wrappers installed to `~/.config/amux/bin/` inject hooks at runtime without touching your global agent settings.
 
 ### Claude Code
 
-Hooks into all 9 Claude Code hook events. The sidebar shows the current tool name during `PreToolUse` and clears on `Stop`. Completion fires an in-app notification and optional OS notification.
-
-```bash
-amux install-hooks --claude
-amux uninstall-hooks --claude
-```
+Hooks into Claude Code's PreToolUse, UserPromptSubmit, Notification, Stop, and SubagentStart events. The sidebar shows the current tool name during `PreToolUse` and clears on `Stop`. Completion fires an in-app notification and optional OS notification. Hooks are injected via `--settings` per session — your `~/.claude/settings.json` is untouched.
 
 ### Gemini CLI
 
-Hooks into 7 of Gemini CLI's 11 events. Also parses the Gemini window title state machine (◇ idle / ✦ working / ✋ waiting) as a zero-config fallback — status indicators work even without hooks installed. When you run a Gemini session under amux, `TERM_PROGRAM=wezterm` is set automatically, which causes Gemini to emit OSC 9 notifications that amux intercepts from the PTY stream.
-
-```bash
-amux install-hooks --gemini
-amux uninstall-hooks --gemini
-```
+Hooks into Gemini CLI's BeforeAgent, AfterAgent, BeforeTool, Notification, SessionStart, and SessionEnd events. Status updates, tool indicators, and the "needs input" ring flow to the sidebar automatically. Requires Gemini CLI v0.26.0 or newer for hook support; older versions fall back to parsing Gemini's dynamic window title (◇ Ready / ✦ Working / ✋ Action Required / ⏲ Working…) as a best-effort status signal. Hook injection uses `GEMINI_CLI_SYSTEM_SETTINGS_PATH` pointing at a per-pane temp file, so your `~/.gemini/settings.json` is untouched and any user-defined hooks still fire alongside amux's.
 
 ### Codex CLI
 
