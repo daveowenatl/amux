@@ -787,11 +787,19 @@ pub(crate) fn spawn_surface(
 
     // Prepend amux bin dir (containing claude wrapper) to PATH so hooks are
     // injected at runtime via --settings, scoped to amux sessions only.
+    // PATH uses `;` as a separator on Windows, `:` everywhere else —
+    // hardcoding `:` would collapse the entire Windows PATH into a single
+    // entry and make the wrapper PATH prepend a no-op.
     if let Some(bin_dir) = shell::ensure_agent_wrapper_dir() {
         let current_path = std::env::var("PATH").unwrap_or_default();
         let bin_str = bin_dir.to_string_lossy();
-        if !current_path.split(':').any(|d| d == bin_str.as_ref()) {
-            let sep = if current_path.is_empty() { "" } else { ":" };
+        let sep_char = if cfg!(windows) { ';' } else { ':' };
+        if !current_path.split(sep_char).any(|d| d == bin_str.as_ref()) {
+            let sep = if current_path.is_empty() {
+                String::new()
+            } else {
+                sep_char.to_string()
+            };
             cmd.env("PATH", format!("{bin_str}{sep}{current_path}"));
         }
     }
