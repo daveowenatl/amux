@@ -2,17 +2,15 @@ name: Release
 
 # Triggered on `v*` tag push (normal release flow) and manual dispatch
 # so we can test the workflow without cutting a real tag. Manual runs
-# don't upload to a GitHub release — they just build and archive.
+# are always build-only — they never attach anything to a GitHub
+# release. Publishing is gated on `github.event_name == 'push'` in the
+# `release` job below, so even a manual dispatch against a tag ref
+# cannot accidentally publish.
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Dry run (build only, do not attach to a release)'
-        type: boolean
-        default: true
 
 concurrency:
   group: release-${{ github.ref }}
@@ -80,29 +78,48 @@ jobs:
           staging="amux-${{ matrix.target }}"
           mkdir -p "$staging"
 
-          # Binaries shipped in every release. Each entry is
-          # "src_name:dest_name"; src_name is the cargo-produced filename
-          # under target/<target>/release and dest_name is the copy we
-          # put in the archive. On Windows, cargo produces <name>.exe so
-          # the dest names include the .exe suffix.
+          # On Windows, cargo emits <name>.exe.
           ext=""
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             ext=".exe"
           fi
 
-          bins=(
+          # Required binaries: the archive is broken without them, so
+          # a missing source file hard-fails the job. These are the CLI
+          # (`amux`) and the GUI app (`amux-app`), which ship on every
+          # platform.
+          required_bins=(
             "amux${ext}"
             "amux-app${ext}"
+          )
+
+          # Optional binaries: staged when available, warn-and-continue
+          # when missing. `amux-agent-wrapper` only matters on Windows
+          # (the compiled agent wrapper that replaces the Unix bash
+          # scripts) — on macOS/Linux it builds but isn't consumed, so
+          # its absence isn't fatal.
+          optional_bins=(
             "amux-agent-wrapper${ext}"
           )
 
-          for bin in "${bins[@]}"; do
+          for bin in "${required_bins[@]}"; do
             src="target/${{ matrix.target }}/release/${bin}"
             if [[ -f "$src" ]]; then
               cp "$src" "$staging/$bin"
-              echo "Staged $bin"
+              echo "Staged required $bin"
             else
-              echo "::warning::missing $src — skipping"
+              echo "::error::missing required binary $src"
+              exit 1
+            fi
+          done
+
+          for bin in "${optional_bins[@]}"; do
+            src="target/${{ matrix.target }}/release/${bin}"
+            if [[ -f "$src" ]]; then
+              cp "$src" "$staging/$bin"
+              echo "Staged optional $bin"
+            else
+              echo "::warning::missing optional binary $src — skipping"
             fi
           done
 
@@ -148,10 +165,12 @@ jobs:
     name: Attach to GitHub Release
     needs: build
     runs-on: ubuntu-latest
-    # Only attach to a release on a real tag push. Manual dispatches
-    # stay as build artifacts on the workflow run so we can test the
-    # pipeline without publishing anything.
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Only attach to a release on a real tag push. The `event_name`
+    # check is load-bearing: without it, a `workflow_dispatch` run
+    # against a tag ref would match `startsWith(github.ref, 'refs/tags/v')`
+    # and publish, which contradicts the "manual runs are build-only"
+    # contract documented at the top of this file.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
