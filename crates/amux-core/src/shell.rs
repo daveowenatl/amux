@@ -503,9 +503,18 @@ mod tests {
         let resolved = resolve_shell(Some("pwsh"));
         drop(path_env);
         drop(pathext_env);
-        assert_eq!(
-            std::path::PathBuf::from(&resolved).file_name().unwrap(),
-            "pwsh.exe"
+        // PATHEXT case is preserved in the constructed candidate, so the
+        // resolved file_name may be "pwsh.EXE" (uppercase) even though the
+        // on-disk file is "pwsh.exe". Windows filesystems are
+        // case-insensitive, so compare ignoring ASCII case.
+        let file_name = std::path::PathBuf::from(&resolved)
+            .file_name()
+            .expect("file_name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            file_name.eq_ignore_ascii_case("pwsh.exe"),
+            "expected pwsh.exe (any case), got {file_name}"
         );
     }
 
@@ -527,9 +536,15 @@ mod tests {
         let resolved = resolve_shell(Some("mytool"));
         drop(path_env);
         drop(pathext_env);
-        assert_eq!(
-            std::path::PathBuf::from(&resolved).file_name().unwrap(),
-            "mytool.cmd"
+        // Same PATHEXT-case caveat as windows_find_on_path_pathext_prefers_exe.
+        let file_name = std::path::PathBuf::from(&resolved)
+            .file_name()
+            .expect("file_name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            file_name.eq_ignore_ascii_case("mytool.cmd"),
+            "expected mytool.cmd (any case), got {file_name}"
         );
     }
 
