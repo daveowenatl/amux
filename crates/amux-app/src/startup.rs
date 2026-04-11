@@ -782,13 +782,9 @@ pub(crate) fn spawn_surface(
     // Auto-inject shell integration (matching cmux's ZDOTDIR/PROMPT_COMMAND approach)
     shell::inject_shell_integration(&shell, &mut cmd);
 
-    // Write scrollback to temp file for shell-based replay.
-    // Only for shells with integration scripts that will replay and delete the file.
-    let shell_name = std::path::Path::new(&shell)
-        .file_name()
-        .and_then(|f| f.to_str())
-        .unwrap_or("");
-    if matches!(shell_name, "zsh" | "bash") {
+    // Write scrollback to temp file for shell-based replay. Only for shells
+    // with integration scripts that know to read and delete the file.
+    if shell::has_shell_integration(&shell) {
         if let Some(text) = scrollback {
             if !text.is_empty() {
                 if let Some(path) = write_scrollback_temp_file(text) {
