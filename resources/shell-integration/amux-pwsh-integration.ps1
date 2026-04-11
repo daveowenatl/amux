@@ -166,8 +166,20 @@ function global:prompt {
 # ---------------------------------------------------------------------------
 # Cleanup on shell exit
 # ---------------------------------------------------------------------------
-Register-EngineEvent -SourceIdentifier PowerShell.Exiting -SupportEvent -Action {
-    if ($script:AmuxBin) {
-        try { & $script:AmuxBin set-git --clear *>&1 | Out-Null } catch {}
-    }
-} | Out-Null
+#
+# Pass the resolved amux binary path via -MessageData so the action block
+# can read it from $Event.MessageData. Using $script:AmuxBin directly inside
+# the action block is unreliable: the block is stored and executed later
+# when the engine exit event fires, and the `script:` scope prefix inside
+# a Register-EngineEvent -Action scriptblock is not guaranteed to resolve
+# to this script's top-level scope. Passing via -MessageData makes the
+# capture explicit and independent of scope semantics.
+Register-EngineEvent -SourceIdentifier PowerShell.Exiting `
+    -SupportEvent `
+    -MessageData $script:AmuxBin `
+    -Action {
+        $amuxBin = $Event.MessageData
+        if ($amuxBin) {
+            try { & $amuxBin set-git --clear *>&1 | Out-Null } catch {}
+        }
+    } | Out-Null
