@@ -24,7 +24,7 @@ Sidebar shows git branch, PR status, working directory, listening ports, and lat
 
 ---
 
-- **All three agentic CLIs, first-class** — Claude Code, Gemini CLI, and Codex CLI each get full hook integration, live status indicators, and tool visibility in the sidebar. Run `amux install-hooks --all` and you're set.
+- **All three agentic CLIs, first-class** — Claude Code, Gemini CLI, and Codex CLI each get full hook integration, live status indicators, and tool visibility in the sidebar. Zero-setup for Claude and Gemini — hooks inject automatically when the agent launches inside an amux pane.
 - **Approval interception** — When Codex wants to run a shell command, the approval prompt appears in the amux sidebar. No context switching; approve or deny without leaving your current pane.
 - **Scriptable** — CLI and socket API to create workspaces, split panes, send keystrokes, and drive agents programmatically. tmux-compat shim included for agent scripts that call tmux directly.
 - **Native on every platform** — Built in Rust with wgpu for GPU-accelerated rendering. Runs natively on Windows (DX12/Vulkan), macOS (Metal), and Linux (Vulkan). Not Electron. Not Tauri.
@@ -72,7 +72,7 @@ Ghostty and WezTerm are excellent terminals but neither was built for multi-agen
 
 cmux solved this beautifully on macOS — the blue ring and sidebar model is exactly right. But it's macOS-only and optimized for Claude Code specifically. amux is the same idea built cross-platform in Rust, with first-class support for all three major agentic CLIs from day one.
 
-The sidebar hooks into each agent's native event system: Claude Code's `PreToolUse`/`Stop` hooks, Gemini CLI's `BeforeTool`/`AfterTool` callbacks and OSC 9 notifications, Codex's `app-server` JSON-RPC stream. You get live "Running: `cargo test`" tool indicators and an approval interception UI in the sidebar — without writing any glue code. Just run `amux install-hooks --all` on first launch.
+The sidebar hooks into each agent's native event system: Claude Code's `PreToolUse`/`Stop` hooks, Gemini CLI's `BeforeTool`/`AfterAgent` hooks, Codex's `app-server` JSON-RPC stream. You get live "Running: `cargo test`" tool indicators and an approval interception UI in the sidebar — without writing any glue code. Claude and Gemini hooks inject automatically per pane; no manual install step.
 
 The rendering is wgpu (Metal on macOS, DX12/Vulkan on Windows/Linux) backed by wezterm-term for the VT state machine. It's fast and it's not Electron.
 
@@ -230,10 +230,6 @@ amux read-screen [--pane <id>] [--lines <start:end>] [--ansi]
 
 amux set-status <active|idle|waiting> [--label <text>]
 amux notify <message> [--workspace <id>]
-
-amux install-hooks [--claude] [--gemini] [--codex] [--all]
-amux uninstall-hooks [--claude] [--gemini] [--codex] [--all]
-amux hooks-status
 
 amux tree [--json]
 amux socket-path
