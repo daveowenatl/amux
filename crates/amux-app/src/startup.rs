@@ -141,10 +141,49 @@ fn cleanup_stale_gemini_settings_files() {
     }
 }
 
+/// Remove stale `amux-codex-home-*` directories from the system temp dir.
+/// The codex wrapper creates one per pane launch to use as `CODEX_HOME`; on
+/// clean shutdown there's nothing that removes them. Only deletes entries
+/// older than one hour so we don't race a concurrent amux process whose
+/// Codex panes may still be alive.
+fn cleanup_stale_codex_home_dirs() {
+    let tmp_dir = std::env::temp_dir();
+    let Ok(entries) = std::fs::read_dir(&tmp_dir) else {
+        return;
+    };
+    let Some(cutoff) =
+        std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(3600))
+    else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        if !name_str.starts_with("amux-codex-home-") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_dir() {
+            continue;
+        }
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        if modified < cutoff {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 pub(crate) fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     cleanup_stale_scrollback_files();
     cleanup_stale_gemini_settings_files();
+    cleanup_stale_codex_home_dirs();
 
     let mut app_config = config::load_app_config();
     let mut font_size = app_config.font_size;
