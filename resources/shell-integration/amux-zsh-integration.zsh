@@ -16,7 +16,7 @@ _amux_restore_scrollback_once() {
     unset AMUX_RESTORE_SCROLLBACK_FILE
 
     if [[ -r "$path" ]]; then
-        # Use absolute paths: during the first precmd of a freshly-launched
+        # Use absolute paths: during early shell startup in a freshly-launched
         # amux shell, $PATH may not yet include /bin or /usr/bin, so
         # unqualified `cat` fails with "command not found" (exit 127).
         /bin/cat -- "$path" 2>/dev/null || true
