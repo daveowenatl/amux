@@ -332,6 +332,12 @@ pub(crate) enum Command {
         /// Hook event name (BeforeTool, AfterAgent, SessionStart, etc.)
         event: String,
     },
+    /// Handle a Codex CLI hook event (reads JSON from stdin)
+    #[command(name = "codex-hook")]
+    CodexHook {
+        /// Hook event name (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop)
+        event: String,
+    },
     /// Install agent hooks into Claude Code settings
     #[command(name = "install-hooks")]
     InstallHooks {
