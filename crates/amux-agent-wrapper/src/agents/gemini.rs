@@ -83,17 +83,22 @@ fn settings_file_path(surface_id: &str) -> PathBuf {
 
 /// Probe `gemini --version` with a bounded 2s timeout. Returns true if
 /// the version string matches `0.26.0` or newer. Passthrough-safe: if
-/// the probe fails or times out, we return false and skip injection.
+/// the probe fails, times out, or exits non-zero, we return false and
+/// skip injection. The timeout is enforced by
+/// `amux::run_capture_stdout_with_timeout`, which polls `try_wait` and
+/// kills the child on deadline — `Command::output()` (which blocks
+/// indefinitely) is deliberately not used here.
 fn gemini_supports_hooks(real: &Path) -> bool {
     let mut cmd = std::process::Command::new(real);
     cmd.arg("--version")
         .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped());
-    let Ok(output) = cmd.output() else {
+        .stderr(std::process::Stdio::null());
+    let Some(stdout_bytes) =
+        amux::run_capture_stdout_with_timeout(cmd, std::time::Duration::from_secs(2))
+    else {
         return false;
     };
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = String::from_utf8_lossy(&stdout_bytes);
     parse_version_supports_hooks(&stdout)
 }
 
@@ -174,14 +179,33 @@ mod tests {
             Path::new("/usr/local/bin/amux"),
             &["BeforeAgent", "AfterAgent"],
         );
-        assert!(json.contains("\"BeforeAgent\":"));
-        assert!(json.contains("\"AfterAgent\":"));
-        assert!(json.contains("\"timeout\":5000"));
-        assert!(json.contains("gemini-hook BeforeAgent"));
-        assert!(json.contains("gemini-hook AfterAgent"));
-        let opens = json.matches('{').count();
-        let closes = json.matches('}').count();
-        assert_eq!(opens, closes, "json braces unbalanced: {json}");
+        // Must parse as valid JSON with the expected structure for every event.
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let hooks = parsed["hooks"].as_object().expect("hooks object");
+        for event in ["BeforeAgent", "AfterAgent"] {
+            let entry = &hooks[event][0]["hooks"][0];
+            assert_eq!(entry["type"], "command");
+            assert_eq!(entry["timeout"], 5000);
+            let command = entry["command"].as_str().expect("command string");
+            let expected = format!("\"/usr/local/bin/amux\" gemini-hook {event}");
+            assert_eq!(command, expected);
+        }
+    }
+
+    #[test]
+    fn build_settings_json_escapes_windows_paths() {
+        let json = build_settings_json(
+            Path::new("C:\\Program Files\\amux\\amux.exe"),
+            &["BeforeAgent"],
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let command = parsed["hooks"]["BeforeAgent"][0]["hooks"][0]["command"]
+            .as_str()
+            .expect("command string");
+        assert_eq!(
+            command,
+            "\"C:\\Program Files\\amux\\amux.exe\" gemini-hook BeforeAgent"
+        );
     }
 
     #[test]

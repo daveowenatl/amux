@@ -82,6 +82,9 @@ dependencies = [
 [[package]]
 name = "amux-agent-wrapper"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "amux-app"

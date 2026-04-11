@@ -10,3 +10,6 @@ name = "amux-agent-wrapper"
 path = "src/main.rs"
 
 [dependencies]
+
+[dev-dependencies]
+serde_json = { workspace = true }

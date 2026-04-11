@@ -100,25 +100,32 @@ mod tests {
     #[test]
     fn build_hooks_json_registers_each_event() {
         let json = build_hooks_json(Path::new("/usr/local/bin/amux"), &["SessionStart", "Stop"]);
-        // Two events, each with the claude-hook command.
-        assert!(json.contains("\"SessionStart\":"));
-        assert!(json.contains("\"Stop\":"));
-        assert!(json.contains("\"/usr/local/bin/amux\" claude-hook SessionStart"));
-        assert!(json.contains("\"/usr/local/bin/amux\" claude-hook Stop"));
-        // JSON structure sanity check — must parse as valid JSON.
-        // We don't have serde here, so check balance by counting braces.
-        let opens = json.matches('{').count();
-        let closes = json.matches('}').count();
-        assert_eq!(opens, closes, "json braces unbalanced: {json}");
+        // Must parse as valid JSON with the expected structure.
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let hooks = parsed["hooks"].as_object().expect("hooks object");
+        assert!(hooks.contains_key("SessionStart"));
+        assert!(hooks.contains_key("Stop"));
+        for event in ["SessionStart", "Stop"] {
+            let command = hooks[event][0]["hooks"][0]["command"]
+                .as_str()
+                .expect("command string");
+            let expected = format!("\"/usr/local/bin/amux\" claude-hook {event}");
+            assert_eq!(command, expected);
+        }
     }
 
     #[test]
     fn build_hooks_json_escapes_windows_paths() {
         let json = build_hooks_json(Path::new("C:\\Program Files\\amux\\amux.exe"), &["Stop"]);
-        // The backslashes must appear doubled in the JSON string literal.
-        assert!(
-            json.contains("\"C:\\\\Program Files\\\\amux\\\\amux.exe\" claude-hook Stop"),
-            "expected JSON-escaped Windows path in output: {json}"
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let command = parsed["hooks"]["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .expect("command string");
+        // After JSON decoding, the command field must contain the raw
+        // Windows path (single backslashes) wrapped in shell quotes.
+        assert_eq!(
+            command,
+            "\"C:\\Program Files\\amux\\amux.exe\" claude-hook Stop"
         );
     }
 
@@ -126,5 +133,7 @@ mod tests {
     fn build_hooks_json_empty_events_still_parses() {
         let json = build_hooks_json(Path::new("/usr/local/bin/amux"), &[]);
         assert_eq!(json, "{\"hooks\":{}}");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert!(parsed["hooks"].as_object().unwrap().is_empty());
     }
 }
