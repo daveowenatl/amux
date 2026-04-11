@@ -3,6 +3,11 @@
 //! Reads JSON from stdin and translates Codex CLI hook events (SessionStart,
 //! UserPromptSubmit, PreToolUse, PostToolUse, Stop) into amux IPC calls that
 //! update workspace status.
+//!
+//! Codex currently exposes no hook event for approval prompts or "needs
+//! input" transitions, so unlike Claude Code and Gemini CLI this integration
+//! never emits `state: "waiting"` / `label: "Needs input"`. Revisit once
+//! Codex adds a hook for approval requests.
 
 use amux_ipc::IpcClient;
 use serde_json::{json, Value};

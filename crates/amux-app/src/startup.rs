@@ -141,43 +141,15 @@ fn cleanup_stale_gemini_settings_files() {
     }
 }
 
-/// Remove stale `amux-codex-home-*` directories from the system temp dir.
-/// The codex wrapper creates one per pane launch to use as `CODEX_HOME`; on
-/// clean shutdown there's nothing that removes them. Only deletes entries
-/// older than one hour so we don't race a concurrent amux process whose
-/// Codex panes may still be alive.
-fn cleanup_stale_codex_home_dirs() {
-    let tmp_dir = std::env::temp_dir();
-    let Ok(entries) = std::fs::read_dir(&tmp_dir) else {
-        return;
-    };
-    let Some(cutoff) =
-        std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(3600))
-    else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name_str) = name.to_str() else {
-            continue;
-        };
-        if !name_str.starts_with("amux-codex-home-") {
-            continue;
-        }
-        let Ok(meta) = entry.metadata() else {
-            continue;
-        };
-        if !meta.is_dir() {
-            continue;
-        }
-        let Ok(modified) = meta.modified() else {
-            continue;
-        };
-        if modified < cutoff {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
-}
+/// Placeholder for `amux-codex-home-*` cleanup. Intentionally a no-op.
+///
+/// A prior version deleted entries older than one hour, but mtime-based
+/// cleanup can race a long-running amux instance: once a Codex session has
+/// been alive longer than the cutoff, any second amux startup would wipe
+/// its live `CODEX_HOME` out from under it. Safer to leak the tempdirs
+/// until we add a verifiable liveness signal (e.g. a pid-backed lockfile
+/// or per-process directory naming) to the wrapper.
+fn cleanup_stale_codex_home_dirs() {}
 
 pub(crate) fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();

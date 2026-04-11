@@ -93,14 +93,17 @@ fi
 # Write amux hooks.json. Don't merge with the user's hooks.json — the nominal
 # integration keeps things simple. If users ask for merged hooks, follow up
 # with a jq-free JSON merger.
+# matcher "*" matches all events for the given key; the empty string is not a
+# valid matcher per the Codex hooks schema. 30s timeout is well above the
+# local IPC roundtrip the hook performs while still bounding a hung socket.
 if ! cat > "$CODEX_HOME_TMP/hooks.json" <<EOF
 {
   "hooks": {
-    "SessionStart":     [{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" codex-hook SessionStart","timeout":5}]}],
-    "UserPromptSubmit": [{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" codex-hook UserPromptSubmit","timeout":5}]}],
-    "PreToolUse":       [{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" codex-hook PreToolUse","timeout":5}]}],
-    "PostToolUse":      [{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" codex-hook PostToolUse","timeout":5}]}],
-    "Stop":             [{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" codex-hook Stop","timeout":5}]}]
+    "SessionStart":     [{"matcher":"*","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" codex-hook SessionStart","timeout":30}]}],
+    "UserPromptSubmit": [{"matcher":"*","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" codex-hook UserPromptSubmit","timeout":30}]}],
+    "PreToolUse":       [{"matcher":"*","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" codex-hook PreToolUse","timeout":30}]}],
+    "PostToolUse":      [{"matcher":"*","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" codex-hook PostToolUse","timeout":30}]}],
+    "Stop":             [{"matcher":"*","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" codex-hook Stop","timeout":30}]}]
   }
 }
 EOF
