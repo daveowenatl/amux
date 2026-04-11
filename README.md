@@ -250,6 +250,12 @@ font_family = "JetBrains Mono"
 font_size = 13.0
 theme = "dark"            # dark | light | system
 
+# Shell to spawn in new panes. Accepts a bare name ("pwsh", "bash", "fish")
+# that amux resolves against PATH, or an absolute path.
+# When unset, amux uses $SHELL on Unix and prefers pwsh.exe on Windows if
+# installed, otherwise falls back to $COMSPEC (cmd.exe).
+# shell = "pwsh"
+
 [notifications]
 sound = true
 system_notifications = true

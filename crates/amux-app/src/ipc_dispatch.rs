@@ -779,6 +779,7 @@ impl AmuxApp {
                                 sf_id,
                                 cwd.as_deref(),
                                 None,
+                                self.app_config.shell.as_deref(),
                             ) {
                                 Ok(surface) => {
                                     let managed = self

@@ -5,7 +5,16 @@
 
 use portable_pty::CommandBuilder;
 
-/// Return the user's default shell.
+/// Return the default shell amux should spawn in new panes.
+///
+/// Unix: `$SHELL`, falling back to `/bin/bash`.
+///
+/// Windows: prefers `pwsh.exe` (PowerShell 7+) if it's on `PATH` so the
+/// user automatically gets the amux shell integration that ships in
+/// `resources/shell-integration/amux-pwsh-integration.ps1`. Falls back
+/// to `$COMSPEC` (typically `cmd.exe`) when pwsh isn't installed. Users
+/// who want a specific shell can override this in `config.toml` via the
+/// top-level `shell` key — see [`resolve_shell`].
 pub fn default_shell() -> String {
     #[cfg(unix)]
     {
@@ -13,8 +22,73 @@ pub fn default_shell() -> String {
     }
     #[cfg(windows)]
     {
+        if let Some(pwsh) = find_on_path("pwsh.exe") {
+            return pwsh;
+        }
         std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
     }
+}
+
+/// Resolve the shell amux should spawn for a new pane. Config override
+/// wins, falling through to [`default_shell`]. An absolute-path override
+/// is returned verbatim; a bare name (`"pwsh"`, `"bash"`) is resolved
+/// against `PATH` — if resolution fails, the bare name is still returned
+/// so portable-pty can surface a clearer spawn error than "not found".
+pub fn resolve_shell(config_override: Option<&str>) -> String {
+    if let Some(override_value) = config_override {
+        let trimmed = override_value.trim();
+        if !trimmed.is_empty() {
+            let path = std::path::Path::new(trimmed);
+            if path.is_absolute() {
+                return trimmed.to_string();
+            }
+            if let Some(resolved) = find_on_path(trimmed) {
+                return resolved;
+            }
+            return trimmed.to_string();
+        }
+    }
+    default_shell()
+}
+
+/// Walk `PATH` looking for an executable with the given file name. On
+/// Windows, honours `PATHEXT` so `find_on_path("pwsh")` matches `pwsh.exe`.
+/// Returns the first match as an absolute path string, or `None`.
+fn find_on_path(name: &str) -> Option<String> {
+    let path_var = std::env::var_os("PATH")?;
+    #[cfg(windows)]
+    let extensions: Vec<String> = {
+        let raw = std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".to_string());
+        // An empty entry represents the original `name` without any extension
+        // appended — matches the behaviour of `where.exe` and `Get-Command`.
+        std::iter::once(String::new())
+            .chain(
+                raw.split(';')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+            )
+            .collect()
+    };
+    #[cfg(unix)]
+    let extensions: Vec<String> = vec![String::new()];
+
+    for dir in std::env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        for ext in &extensions {
+            let candidate = if ext.is_empty() {
+                dir.join(name)
+            } else {
+                dir.join(format!("{name}{ext}"))
+            };
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
 }
 
 /// Normalize a shell file name to its stem. On Windows the shell binary is
@@ -231,6 +305,56 @@ pub fn install_agent_wrappers_at(bin_dir: &std::path::Path) -> Option<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_shell_honours_absolute_override() {
+        // Absolute paths are returned verbatim, even if they don't exist —
+        // portable-pty surfaces the spawn error with context. We don't
+        // stat-check here because the override is an explicit user choice.
+        let path = if cfg!(windows) {
+            "C:\\Program Files\\Fish\\bin\\fish.exe"
+        } else {
+            "/opt/homebrew/bin/fish"
+        };
+        assert_eq!(resolve_shell(Some(path)), path);
+    }
+
+    #[test]
+    fn resolve_shell_ignores_empty_or_whitespace_override() {
+        // `shell = ""` or `shell = "   "` in config.toml falls back to
+        // default_shell() — we don't want to spawn an empty command.
+        let fallback = default_shell();
+        assert_eq!(resolve_shell(Some("")), fallback);
+        assert_eq!(resolve_shell(Some("   ")), fallback);
+    }
+
+    #[test]
+    fn resolve_shell_none_falls_back_to_default() {
+        assert_eq!(resolve_shell(None), default_shell());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_shell_bare_name_resolves_against_path() {
+        // `sh` is guaranteed to exist on every Unix runner, so this test
+        // doubles as a sanity check for `find_on_path` on Unix.
+        let resolved = resolve_shell(Some("sh"));
+        assert!(
+            resolved.ends_with("/sh") || resolved == "sh",
+            "expected resolved sh path or bare fallback, got {resolved}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_shell_bare_name_returns_input_when_missing() {
+        // A made-up name must not crash — we return it verbatim so the
+        // subsequent CommandBuilder::new gives a clean "not found" error.
+        assert_eq!(
+            resolve_shell(Some("definitely-not-a-real-shell-xyz")),
+            "definitely-not-a-real-shell-xyz"
+        );
+    }
 
     #[test]
     fn shell_stem_strips_extensions_and_directories() {

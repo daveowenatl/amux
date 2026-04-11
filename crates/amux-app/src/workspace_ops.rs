@@ -53,6 +53,7 @@ impl AmuxApp {
             sf_id,
             cwd.as_deref(),
             None,
+            self.app_config.shell.as_deref(),
         ) {
             Ok(surface) => {
                 let pane_id = self.next_pane_id;
@@ -92,6 +93,7 @@ impl AmuxApp {
             sf_id,
             cwd.as_deref(),
             None,
+            self.app_config.shell.as_deref(),
         ) {
             Ok(surface) => {
                 self.next_workspace_id += 1;
@@ -146,6 +148,7 @@ impl AmuxApp {
             sf_id,
             cwd.as_deref(),
             None,
+            self.app_config.shell.as_deref(),
         ) {
             Ok(surface) => {
                 if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&focused) {
@@ -390,6 +393,7 @@ impl AmuxApp {
             sf_id,
             cwd.as_deref(),
             None,
+            self.app_config.shell.as_deref(),
         ) {
             Ok(new_surface) => {
                 let idx = managed.active_tab_idx;
