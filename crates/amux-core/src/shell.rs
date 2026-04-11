@@ -126,9 +126,10 @@ fn ensure_shell_integration_dir() -> Option<std::path::PathBuf> {
     Some(config_dir)
 }
 
-/// Ensure the claude wrapper script is written to ~/.config/amux/bin/claude.
-/// Returns the bin directory path, or None on failure.
-pub fn ensure_claude_wrapper_dir() -> Option<std::path::PathBuf> {
+/// Ensure agent wrapper scripts are written to ~/.config/amux/bin/.
+/// Writes both the `claude` and `gemini` wrappers on Unix. Returns the
+/// bin directory path, or None on failure.
+pub fn ensure_agent_wrapper_dir() -> Option<std::path::PathBuf> {
     // Use ~/.config/amux/bin/ instead of dirs::config_dir() because on macOS
     // that returns ~/Library/Application Support/ which has a space — spaces
     // in PATH entries break many tools.
@@ -139,23 +140,28 @@ pub fn ensure_claude_wrapper_dir() -> Option<std::path::PathBuf> {
 
     #[cfg(unix)]
     {
-        let wrapper_path = bin_dir.join("claude");
-        let wrapper_content = include_str!("../../../resources/bin/claude");
-
-        let needs_write = std::fs::read_to_string(&wrapper_path)
-            .map(|existing| existing != wrapper_content)
-            .unwrap_or(true);
-
-        if needs_write && std::fs::write(&wrapper_path, wrapper_content).is_err() {
-            return None;
-        }
-        if needs_write {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755));
+        let wrappers: &[(&str, &str)] = &[
+            ("claude", include_str!("../../../resources/bin/claude")),
+            ("gemini", include_str!("../../../resources/bin/gemini")),
+        ];
+        for (name, content) in wrappers {
+            let path = bin_dir.join(name);
+            let needs_write = std::fs::read_to_string(&path)
+                .map(|existing| existing != *content)
+                .unwrap_or(true);
+            if needs_write {
+                if std::fs::write(&path, content).is_err() {
+                    return None;
+                }
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+            }
         }
     }
     #[cfg(windows)]
     {
+        // PowerShell/pwsh support for Gemini is issue #166; for now only the
+        // claude.cmd shim is installed on Windows.
         let wrapper_path = bin_dir.join("claude.cmd");
         let wrapper_content = "@echo off\r\nclaude.exe %*\r\n";
 
@@ -169,4 +175,25 @@ pub fn ensure_claude_wrapper_dir() -> Option<std::path::PathBuf> {
     }
 
     Some(bin_dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_agent_wrapper_dir_writes_both_wrappers() {
+        let bin_dir = ensure_agent_wrapper_dir().expect("should return dir");
+        #[cfg(unix)]
+        {
+            assert!(bin_dir.join("claude").exists(), "claude wrapper missing");
+            assert!(bin_dir.join("gemini").exists(), "gemini wrapper missing");
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(bin_dir.join("gemini"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o111, 0o111, "gemini wrapper not executable");
+        }
+    }
 }

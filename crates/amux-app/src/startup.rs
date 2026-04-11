@@ -599,7 +599,7 @@ pub(crate) fn spawn_surface(
 
     // Prepend amux bin dir (containing claude wrapper) to PATH so hooks are
     // injected at runtime via --settings, scoped to amux sessions only.
-    if let Some(bin_dir) = shell::ensure_claude_wrapper_dir() {
+    if let Some(bin_dir) = shell::ensure_agent_wrapper_dir() {
         let current_path = std::env::var("PATH").unwrap_or_default();
         let bin_str = bin_dir.to_string_lossy();
         if !current_path.split(':').any(|d| d == bin_str.as_ref()) {
