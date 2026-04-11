@@ -20,6 +20,8 @@ mod startup;
 mod system_notify;
 mod tab_icons;
 mod theme;
+#[cfg(target_os = "windows")]
+mod windows_chrome;
 mod workspace_ops;
 
 use std::collections::HashMap;

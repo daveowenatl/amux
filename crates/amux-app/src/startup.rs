@@ -272,6 +272,15 @@ fn cleanup_legacy_claude_hooks_in_settings() {
 
 pub(crate) fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+
+    // Windows: opt the process into dark-mode themed controls before any
+    // windows are created. Must happen before `eframe::run_native` so the
+    // main window is born with dark chrome — the per-window follow-up
+    // call (in menu_bar::attach_to_window) handles controls whose state
+    // is HWND-scoped. See `windows_chrome.rs` for the full rationale.
+    #[cfg(target_os = "windows")]
+    crate::windows_chrome::enable_process_dark_mode();
+
     cleanup_stale_scrollback_files();
     cleanup_stale_gemini_settings_files();
     cleanup_stale_codex_home_dirs();

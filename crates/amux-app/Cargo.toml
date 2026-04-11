@@ -45,3 +45,11 @@ objc2-foundation = { workspace = true }
 objc2-app-kit = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# Used by `windows_chrome` to enable dark-mode themed controls + dark
+# title bar (see amux #190). Kept on 0.60 to align with versions
+# already in Cargo.lock via transitive deps.
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_System_LibraryLoader",
+] }

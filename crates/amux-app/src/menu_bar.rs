@@ -256,12 +256,22 @@ pub(crate) fn build() -> Menu {
 /// On Windows, attach the menu bar to the window once the HWND is available.
 /// Call from the first `App::update()` frame. Returns `true` if the menu was
 /// successfully attached; `false` if the window handle wasn't ready yet.
+///
+/// Before attaching the menu, this function also applies the per-window
+/// dark-mode chrome (title bar + themed controls) via `windows_chrome`.
+/// The per-window call needs to happen before `menu.init_for_hwnd` so the
+/// menu bar paints in dark mode from its first draw — `init_for_hwnd`
+/// triggers an immediate `DrawMenuBar`, and if dark mode isn't enabled
+/// on the HWND yet the menu bar caches light-mode chrome and doesn't
+/// re-theme until the next WM_THEMECHANGED.
 #[cfg(target_os = "windows")]
 pub(crate) fn attach_to_window(menu: &Menu, frame: &eframe::Frame) -> bool {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     if let Ok(handle) = frame.window_handle() {
         if let RawWindowHandle::Win32(win32) = handle.as_raw() {
-            match unsafe { menu.init_for_hwnd(win32.hwnd.get() as _) } {
+            let hwnd = win32.hwnd.get() as _;
+            crate::windows_chrome::apply_dark_mode_to_window(hwnd);
+            match unsafe { menu.init_for_hwnd(hwnd) } {
                 Ok(()) => return true,
                 Err(e) => {
                     tracing::error!("Failed to attach menu bar to HWND: {e}");
