@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# amux codex wrapper — builds a per-session CODEX_HOME that symlinks the
+# user's real ~/.codex/ and overlays amux-owned hooks.json and
+# managed_config.toml. Zero modification of ~/.codex/.
+#
+# When running inside an amux terminal (AMUX_SURFACE_ID is set), this wrapper
+# creates $TMPDIR/amux-codex-home-<surface_id>/, symlinks every entry in the
+# user's real ~/.codex/ except hooks.json and managed_config.toml, writes our
+# own hooks.json with amux hook commands, writes a managed_config.toml that
+# enables the codex_hooks feature flag, exports CODEX_HOME=<tempdir>, and
+# execs the real codex binary. Outside amux (or when the socket is down), it
+# passes through unchanged.
+
+set -u
+
+# Find the real codex binary, skipping our own directory.
+find_real_codex() {
+    local self_dir
+    self_dir="$(cd "$(dirname "$0")" && pwd)"
+    local IFS=:
+    for d in $PATH; do
+        [[ "$d" == "$self_dir" ]] && continue
+        [[ -x "$d/codex" ]] && printf '%s' "$d/codex" && return 0
+    done
+    return 1
+}
+
+# Resolve the amux binary exactly once. Prefer AMUX_BIN, fall back to PATH.
+# Embed the resolved path in the generated hooks.json so a stale AMUX_BIN
+# doesn't poison every hook invocation.
+resolve_amux_bin() {
+    local amux_bin="${AMUX_BIN:-}"
+    if [[ -n "$amux_bin" && -x "$amux_bin" ]]; then
+        printf '%s' "$amux_bin"
+        return 0
+    fi
+    amux_bin="$(command -v amux 2>/dev/null || true)"
+    [[ -n "$amux_bin" ]] || return 1
+    printf '%s' "$amux_bin"
+}
+
+# Return 0 only when AMUX_SOCKET_PATH points to a live amux socket.
+amux_socket_available() {
+    local socket="${AMUX_SOCKET_PATH:-}"
+    [[ -n "$socket" && -S "$socket" ]] || return 1
+
+    local amux_bin
+    amux_bin="$(resolve_amux_bin)" || return 1
+
+    # Bounded check so codex startup doesn't block behind a hung socket.
+    "$amux_bin" --socket "$socket" ping >/dev/null 2>&1
+}
+
+REAL_CODEX="$(find_real_codex)" || { echo "Error: codex not found in PATH" >&2; exit 127; }
+
+# Passthrough if not in amux or socket is down.
+if [[ -z "${AMUX_SURFACE_ID:-}" ]] || ! amux_socket_available; then
+    exec "$REAL_CODEX" "$@"
+fi
+
+# Resolve amux binary path for hook commands; if it fails, launch unhooked.
+if ! AMUX_CMD="$(resolve_amux_bin)"; then
+    exec "$REAL_CODEX" "$@"
+fi
+
+# Build the per-surface CODEX_HOME tempdir.
+TMPDIR_BASE="${TMPDIR:-/tmp}"
+CODEX_HOME_TMP="${TMPDIR_BASE%/}/amux-codex-home-${AMUX_SURFACE_ID}"
+USER_CODEX_HOME="${HOME}/.codex"
+
+# Fresh tempdir per launch — easier than keeping symlinks in sync with
+# whatever the user may have added/removed since the last launch.
+rm -rf "$CODEX_HOME_TMP" 2>/dev/null || true
+if ! mkdir -p "$CODEX_HOME_TMP"; then
+    echo "amux: failed to create CODEX_HOME tempdir; launching unhooked" >&2
+    exec "$REAL_CODEX" "$@"
+fi
+
+# Symlink every entry from the user's real ~/.codex/ EXCEPT hooks.json and
+# managed_config.toml. If ~/.codex/ doesn't exist yet, skip — Codex will
+# create files on first run as though this were a fresh install.
+if [[ -d "$USER_CODEX_HOME" ]]; then
+    # Use find -print0 to handle dotfiles and filenames with spaces.
+    while IFS= read -r -d '' entry; do
+        name="$(basename "$entry")"
+        case "$name" in
+            hooks.json|managed_config.toml) continue ;;
+        esac
+        ln -sf "$entry" "$CODEX_HOME_TMP/$name" 2>/dev/null || true
+    done < <(find "$USER_CODEX_HOME" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+fi
+
+# Write amux hooks.json. Don't merge with the user's hooks.json — the nominal
+# integration keeps things simple. If users ask for merged hooks, follow up
+# with a jq-free JSON merger.
+if ! cat > "$CODEX_HOME_TMP/hooks.json" <<EOF
+{
+  "hooks": {
+    "SessionStart":     [{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" codex-hook SessionStart","timeout":5}]}],
+    "UserPromptSubmit": [{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" codex-hook UserPromptSubmit","timeout":5}]}],
+    "PreToolUse":       [{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" codex-hook PreToolUse","timeout":5}]}],
+    "PostToolUse":      [{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" codex-hook PostToolUse","timeout":5}]}],
+    "Stop":             [{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" codex-hook Stop","timeout":5}]}]
+  }
+}
+EOF
+then
+    rm -rf "$CODEX_HOME_TMP" 2>/dev/null || true
+    echo "amux: failed to write Codex hooks.json; launching unhooked" >&2
+    exec "$REAL_CODEX" "$@"
+fi
+
+# Write managed_config.toml enabling the codex_hooks feature flag. This is a
+# separate config layer from the user's config.toml, so the user's config is
+# preserved (via the symlink) and we only override the features.codex_hooks
+# key. See codex-rs/core/src/config_loader/README.md for the layering model.
+if ! cat > "$CODEX_HOME_TMP/managed_config.toml" <<'EOF'
+# amux-managed config overlay. Do not edit by hand — regenerated on every
+# pane launch. This file lives under a per-session CODEX_HOME tempdir and is
+# swept away by amux on app startup.
+
+[features]
+codex_hooks = true
+EOF
+then
+    rm -rf "$CODEX_HOME_TMP" 2>/dev/null || true
+    echo "amux: failed to write Codex managed_config.toml; launching unhooked" >&2
+    exec "$REAL_CODEX" "$@"
+fi
+
+export CODEX_HOME="$CODEX_HOME_TMP"
+exec "$REAL_CODEX" "$@"
