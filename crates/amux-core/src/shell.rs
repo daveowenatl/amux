@@ -151,6 +151,7 @@ pub fn install_agent_wrappers_at(bin_dir: &std::path::Path) -> Option<()> {
         let wrappers: &[(&str, &str)] = &[
             ("claude", include_str!("../../../resources/bin/claude")),
             ("gemini", include_str!("../../../resources/bin/gemini")),
+            ("codex", include_str!("../../../resources/bin/codex")),
         ];
         for (name, content) in wrappers {
             let path = bin_dir.join(name);
@@ -192,15 +193,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn install_agent_wrappers_at_writes_both_wrappers() {
+    fn install_agent_wrappers_at_writes_all_wrappers() {
         let tmp = tempfile::tempdir().expect("tempdir");
         install_agent_wrappers_at(tmp.path()).expect("install");
         #[cfg(unix)]
         {
-            assert!(tmp.path().join("claude").exists(), "claude wrapper missing");
-            assert!(tmp.path().join("gemini").exists(), "gemini wrapper missing");
             use std::os::unix::fs::PermissionsExt;
-            for name in ["claude", "gemini"] {
+            for name in ["claude", "gemini", "codex"] {
+                assert!(tmp.path().join(name).exists(), "{name} wrapper missing");
                 let mode = std::fs::metadata(tmp.path().join(name))
                     .unwrap()
                     .permissions()
@@ -212,6 +212,7 @@ mod tests {
 
     /// Regression: if a wrapper already exists with correct contents but the
     /// execute bit got stripped, re-running the installer should restore it.
+    /// Covers every wrapper so a bug in the chmod loop can't silently miss one.
     #[cfg(unix)]
     #[test]
     fn install_agent_wrappers_at_reapplies_chmod() {
@@ -219,17 +220,28 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         install_agent_wrappers_at(tmp.path()).expect("first install");
 
-        let gemini = tmp.path().join("gemini");
-        std::fs::set_permissions(&gemini, std::fs::Permissions::from_mode(0o644))
-            .expect("strip +x");
-        assert_eq!(
-            std::fs::metadata(&gemini).unwrap().permissions().mode() & 0o111,
-            0,
-            "precondition: +x stripped"
-        );
+        for name in ["claude", "gemini", "codex"] {
+            let path = tmp.path().join(name);
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+                .expect("strip +x");
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o111,
+                0,
+                "precondition: +x stripped on {name}"
+            );
+        }
 
         install_agent_wrappers_at(tmp.path()).expect("second install");
-        let mode = std::fs::metadata(&gemini).unwrap().permissions().mode();
-        assert_eq!(mode & 0o111, 0o111, "installer should re-enforce +x");
+        for name in ["claude", "gemini", "codex"] {
+            let mode = std::fs::metadata(tmp.path().join(name))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o111,
+                0o111,
+                "installer should re-enforce +x on {name}"
+            );
+        }
     }
 }
