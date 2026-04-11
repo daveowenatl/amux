@@ -16,8 +16,11 @@ _amux_restore_scrollback_once() {
     unset AMUX_RESTORE_SCROLLBACK_FILE
 
     if [[ -r "$path" ]]; then
-        command cat < "$path" 2>/dev/null || true
-        command rm -f "$path" >/dev/null 2>&1 || true
+        # Use absolute paths: during the first precmd of a freshly-launched
+        # amux shell, $PATH may not yet include /bin or /usr/bin, so
+        # unqualified `cat` fails with "command not found" (exit 127).
+        /bin/cat -- "$path" 2>/dev/null || true
+        /bin/rm -f -- "$path" >/dev/null 2>&1 || true
     fi
 }
 _amux_restore_scrollback_once
