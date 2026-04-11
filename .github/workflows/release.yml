@@ -131,20 +131,53 @@ jobs:
           # table. Without shipping the DLL alongside the exe, launching
           # amux-app.exe fails with STATUS_DLL_NOT_FOUND (0xC0000135)
           # before `main` runs, producing a silent startup crash with
-          # no stderr output. Hard-fail the job if the DLL is missing
-          # from the build output — that would mean the linker walked
-          # a different path than we expect, which is a bug we want
-          # surfaced loudly rather than shipped as a broken archive.
+          # no stderr output.
+          #
+          # Selection strategy:
+          # - Match the exact expected cargo/libghostty-vt-sys output
+          #   path (`libghostty-vt-sys-*/out/ghostty-install/bin/`)
+          #   rather than a bare filename. With warm `rust-cache`
+          #   restoration, stale `libghostty-vt-sys-<oldhash>` dirs
+          #   can linger alongside the current one, and `find -name`
+          #   + `head -n1` would arbitrarily pick one.
+          # - Use `mapfile` rather than `find | head -n1`. Under
+          #   `set -o pipefail` (set at the top of this step), `head`
+          #   closing its stdin after reading one line would make
+          #   `find` exit with SIGPIPE, aborting the whole step
+          #   before reaching the friendly error branch below.
+          # - Hard-fail on both zero matches (build graph walked a
+          #   different path than we expect) and multiple matches
+          #   (nondeterministic packaging from cache pollution) —
+          #   both are bugs we want surfaced loudly rather than
+          #   shipped as a broken or stale archive.
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            dll_src=$(find "target/${{ matrix.target }}/release/build" \
-              -type f -name "ghostty-vt.dll" 2>/dev/null | head -n1)
-            if [[ -n "$dll_src" && -f "$dll_src" ]]; then
-              cp "$dll_src" "$staging/ghostty-vt.dll"
-              echo "Staged ghostty-vt.dll from $dll_src"
-            else
-              echo "::error::ghostty-vt.dll not found under target/${{ matrix.target }}/release/build"
-              exit 1
+            dll_build_dir="target/${{ matrix.target }}/release/build"
+            dll_matches=()
+            if [[ -d "$dll_build_dir" ]]; then
+              mapfile -t dll_matches < <(
+                find "$dll_build_dir" \
+                  -type f \
+                  -path '*/libghostty-vt-sys-*/out/ghostty-install/bin/ghostty-vt.dll' \
+                  2>/dev/null | sort
+              )
             fi
+
+            case "${#dll_matches[@]}" in
+              1)
+                dll_src="${dll_matches[0]}"
+                cp "$dll_src" "$staging/ghostty-vt.dll"
+                echo "Staged ghostty-vt.dll from $dll_src"
+                ;;
+              0)
+                echo "::error::ghostty-vt.dll not found under $dll_build_dir/libghostty-vt-sys-*/out/ghostty-install/bin/"
+                exit 1
+                ;;
+              *)
+                echo "::error::multiple ghostty-vt.dll candidates found (stale cache entries?); refusing to pick arbitrarily:"
+                printf '  %s\n' "${dll_matches[@]}"
+                exit 1
+                ;;
+            esac
           fi
 
           # Include README and LICENSE so end users have something to
