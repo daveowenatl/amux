@@ -60,20 +60,19 @@ pub(crate) fn status_update_for(event: &str, data: &Value, ws_id: &str) -> Optio
             // Claude needs attention. Claude's Notification payload includes
             // a `message` field with context-specific text (permission prompt,
             // idle warning, etc.) — surface it rather than the generic label.
-            let message = data
-                .get("message")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let mut params = json!({
+            //
+            // Always set the `message` field explicitly (defaulting to "" when
+            // the payload omits it) so set_status clears any stale per-tool
+            // message from a prior PreToolUse. Passing `None` would *preserve*
+            // the previous message, leaving the user looking at "Running cargo
+            // test" while the state has already flipped to "waiting".
+            let message = data.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            Some(json!({
                 "workspace_id": ws_id,
                 "state": "waiting",
                 "label": "Needs input",
-            });
-            if !message.is_empty() {
-                params["message"] = json!(message);
-            }
-            Some(params)
+                "message": message,
+            }))
         }
         "Stop" => Some(json!({
             "workspace_id": ws_id,
@@ -331,13 +330,21 @@ mod tests {
         );
     }
 
+    /// Regression: Notification without a payload `message` must still send
+    /// `message: ""` so the IPC `status.set` handler clears any stale
+    /// per-tool message from a prior PreToolUse. Passing nothing would
+    /// preserve the previous message and leave the UI showing "Running
+    /// cargo test" while the state has already flipped to "waiting".
     #[test]
-    fn notification_without_message_omits_message_field() {
+    fn notification_without_message_sends_empty_string_to_clear() {
         let payload = json!({});
         let params = status_update_for("Notification", &payload, "1").unwrap();
         assert_eq!(params["state"], "waiting");
         assert_eq!(params["label"], "Needs input");
-        assert!(params.get("message").is_none() || params["message"] == "");
+        assert_eq!(
+            params["message"], "",
+            "message must be explicit empty string, not absent, so set_status clears"
+        );
     }
 
     // ---- Stop ----
