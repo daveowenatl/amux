@@ -56,8 +56,14 @@ pub fn install_shell_integration() -> anyhow::Result<()> {
     );
     println!();
     println!("  # For PowerShell 7+ ($PROFILE):");
+    // Escape apostrophes in the displayed path because we print a
+    // single-quoted PowerShell string literal — PowerShell escapes `'`
+    // inside `'...'` as `''`. Without this, a user whose home directory
+    // is something like `C:\Users\O'Connor\...` gets a syntax error
+    // when they paste the snippet into their $PROFILE.
+    let pwsh_path_escaped = pwsh_path.display().to_string().replace('\'', "''");
     println!("  if ($env:AMUX_SOCKET_PATH) {{");
-    println!("      . '{}'", pwsh_path.display());
+    println!("      . '{pwsh_path_escaped}'");
     println!("  }}");
 
     Ok(())
