@@ -123,6 +123,30 @@ jobs:
             fi
           done
 
+          # Windows only: stage ghostty-vt.dll next to the exes. The
+          # libghostty-rs fork we patch to (see workspace Cargo.toml)
+          # builds ghostty-vt as a shared library on Windows — so
+          # `ghostty-vt.lib` is an import library, not a true static
+          # lib, and `amux-app.exe` has `ghostty-vt.dll` in its import
+          # table. Without shipping the DLL alongside the exe, launching
+          # amux-app.exe fails with STATUS_DLL_NOT_FOUND (0xC0000135)
+          # before `main` runs, producing a silent startup crash with
+          # no stderr output. Hard-fail the job if the DLL is missing
+          # from the build output — that would mean the linker walked
+          # a different path than we expect, which is a bug we want
+          # surfaced loudly rather than shipped as a broken archive.
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            dll_src=$(find "target/${{ matrix.target }}/release/build" \
+              -type f -name "ghostty-vt.dll" 2>/dev/null | head -n1)
+            if [[ -n "$dll_src" && -f "$dll_src" ]]; then
+              cp "$dll_src" "$staging/ghostty-vt.dll"
+              echo "Staged ghostty-vt.dll from $dll_src"
+            else
+              echo "::error::ghostty-vt.dll not found under target/${{ matrix.target }}/release/build"
+              exit 1
+            fi
+          fi
+
           # Include README and LICENSE so end users have something to
           # read after extracting. Skip if either file is missing so
           # the archive still builds.
