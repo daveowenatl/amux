@@ -1,39 +1,28 @@
-<h1 align="center">amux</h1>
-<p align="center">A cross-platform terminal multiplexer for AI coding agents — Claude Code, Gemini CLI, and Codex CLI, all first-class</p>
+# amux
 
-<p align="center">
-  <a href="https://github.com/daveowenatl/amux/releases"><img src="https://img.shields.io/github/v/release/daveowenatl/amux?color=555&label=latest" alt="Latest release" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-555" alt="License: MIT" /></a>
-  <img src="https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-555" alt="Platforms" />
-  <img src="https://img.shields.io/badge/built%20with-Rust-555?logo=rust" alt="Built with Rust" />
-</p>
+amux is a terminal multiplexer for AI coding agents (Claude Code, Gemini CLI, Codex CLI). It's a clone of [cmux](https://github.com/manaflow-ai/cmux), rebuilt in Rust to run on Windows and Linux alongside macOS. The sidebar, notification ring, and "which pane needs my attention" model are cmux's design; credit goes there.
 
-## Features
+**Status: MVP.** Pre-1.0. The UI, CLI, and socket protocol still move between commits; don't depend on them being stable yet. Windows is the newest platform and the least tested. Codex-on-Windows is not wired up yet (Claude Code and Gemini CLI work on Windows; Codex still passthroughs).
 
-### Notification rings
-Panes get a blue ring and sidebar tabs light up when agents need your attention — works across Claude Code, Gemini CLI, and Codex CLI.
+[![Latest release](https://img.shields.io/github/v/release/daveowenatl/amux?color=555&label=latest)](https://github.com/daveowenatl/amux/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-555)](LICENSE)
+![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-555)
+![Built with Rust](https://img.shields.io/badge/built%20with-Rust-555?logo=rust)
 
-### Notification panel
-See all pending notifications in one place. Jump to the most recent unread across all workspaces and agents.
+## What it does
 
-### Agent status sidebar
-Live status pills per workspace — which agent is thinking, which tool it's running, and which pane needs your input right now.
-
-### Vertical + horizontal tabs
-Sidebar shows git branch, PR status, working directory, listening ports, and latest notification text. Split panes horizontally and vertically.
-
----
-
-- **All three agentic CLIs, first-class** — Claude Code, Gemini CLI, and Codex CLI each get hook integration, live status indicators, and tool visibility in the sidebar. Hooks inject automatically when the agent launches inside an amux pane, without touching the user's native agent config. Unix uses bash wrappers; Windows uses a compiled Rust wrapper (`amux-agent-wrapper.exe`) that ships alongside `amux.exe`. Zero-setup on Unix for all three agents, and on Windows for Claude Code and Gemini CLI; **Codex on Windows is tracked as follow-up work** because its wrapper needs a symlinked `CODEX_HOME`, which in turn requires Windows Developer Mode.
-- **Scriptable** — CLI and socket API to create workspaces, split panes, send keystrokes, and drive agents programmatically. tmux-compat shim included for agent scripts that call tmux directly.
-- **Native on every platform** — Built in Rust with wgpu for GPU-accelerated rendering. Runs natively on Windows (DX12/Vulkan), macOS (Metal), and Linux (Vulkan). Not Electron. Not Tauri.
-- **Cross-platform config** — Reads `~/.config/amux/config.toml`. No platform-specific config format.
+- Runs Claude Code, Gemini CLI, and Codex CLI in panes. A blue ring appears on any pane whose agent needs input.
+- Sidebar shows per-workspace status: which agent is active, which tool it's running, which pane is waiting on you.
+- Hook integration is auto-injected. No `install-hooks` step. Your `~/.claude/settings.json`, `~/.gemini/settings.json`, and `~/.codex/` are not touched.
+- Workspaces, horizontal and vertical splits, surface tabs within a workspace.
+- GPU-rendered via wgpu (Metal / DX12 / Vulkan) backed by wezterm-term for the VT state machine.
+- CLI and Unix / named-pipe socket for driving it from scripts. tmux-compat shim so agent scripts calling `tmux` route to amux.
 
 ## Install
 
-### GitHub Releases (recommended)
+### GitHub Releases
 
-Download the latest archive for your platform from the [Releases page](https://github.com/daveowenatl/amux/releases/latest):
+Grab the archive for your platform from the [Releases page](https://github.com/daveowenatl/amux/releases/latest):
 
 | Platform | File |
 |---|---|
@@ -42,172 +31,122 @@ Download the latest archive for your platform from the [Releases page](https://g
 | Linux (x86_64) | `amux-x86_64-unknown-linux-gnu.tar.gz` |
 | Windows (x86_64) | `amux-x86_64-pc-windows-msvc.zip` |
 
-Extract and place the contents on your `PATH`. Each archive contains:
+Extract and put the contents on your `PATH`. Each archive contains:
 
-- `amux` — the CLI (shell integration, notifications, session control)
-- `amux-app` — the GUI terminal multiplexer
-- `amux-agent-wrapper` *(Windows only)* — agent hook injector; runtime dependency used by `amux-app` to wire Claude/Gemini hook integration into new panes
+- `amux` — CLI (shell integration, status, notifications, session control)
+- `amux-app` — the GUI terminal multiplexer itself
+- `amux-agent-wrapper` *(Windows only)* — compiled agent hook injector; copied to `~/.config/amux/bin/{claude,gemini}.exe` on first launch and used by `amux-app` to wire hooks into new panes
 
-### Homebrew (macOS)
-
-```bash
-brew tap daveowenatl/amux
-brew install --cask amux
-```
-
-### Cargo (all platforms)
+### From source
 
 ```bash
-cargo install amux
+git clone https://github.com/daveowenatl/amux
+cd amux
+cargo build --release
+./target/release/amux-app
 ```
 
-### Winget (Windows)
-
-```powershell
-winget install amux
-```
-
-## Why amux?
-
-I run a lot of parallel agent sessions — Claude Code for some projects, Gemini CLI for others, Codex for the rest. No single agentic CLI has won yet and I don't think one will. I wanted a multiplexer that treats all of them the same.
-
-Ghostty and WezTerm are excellent terminals but neither was built for multi-agent workflows. The notification problem is real: agent CLIs fire OS notifications that all say roughly "agent needs input" with no context, and with ten panes open you can't tell which one needs you without tabbing through them all.
-
-cmux solved this beautifully on macOS — the blue ring and sidebar model is exactly right. But it's macOS-only and optimized for Claude Code specifically. amux is the same idea built cross-platform in Rust, with first-class support for all three major agentic CLIs from day one.
-
-The sidebar hooks into each agent's native event system: Claude Code's `PreToolUse`/`Stop` hooks, Gemini CLI's `BeforeTool`/`AfterAgent` hooks, and Codex CLI's `PreToolUse`/`Stop` hooks. You get live "Running: `cargo test`" tool indicators in the sidebar — without writing any glue code. All three agents inject hooks automatically per pane; no manual install step. Richer Codex integration via `codex app-server` — including approval interception from the sidebar — is tracked as future work.
-
-The rendering is wgpu (Metal on macOS, DX12/Vulkan on Windows/Linux) backed by wezterm-term for the VT state machine. It's fast and it's not Electron.
-
-## The Zen of amux
-
-amux is not prescriptive about how developers hold their tools. Which is why it runs on every major operating system and integrates with every major agentic CLI out of the box.
-
-amux is a primitive, not a solution. It gives you a terminal, notifications, workspaces, splits, tabs, agent status indicators, and a CLI to control all of it. It doesn't tell you which AI to use, which OS to run, or how to structure your projects. What you build with the primitives is yours.
-
-The best developers have always built their own tools. Nobody has figured out the best way to work with agents yet, and the teams building closed products definitely haven't either. The developers closest to their own codebases will figure it out first.
-
-Give a million developers composable primitives across every platform and they'll collectively find the most efficient workflows faster than any product team could design top-down.
-
-## Agent Integration
-
-amux auto-detects which agent is running in each pane and activates the appropriate integration. No manual setup for Claude Code or Gemini CLI — launching them inside an amux pane is enough. Wrappers installed to `~/.config/amux/bin/` inject hooks at runtime without touching your global agent settings.
-
-### Claude Code
-
-Hooks into all 9 Claude Code hook events (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`, `SubagentStart`, `SubagentStop`, `SessionEnd`). The sidebar shows the current tool name during `PreToolUse` and clears on `PostToolUse`/`Stop`. `Notification` events surface the underlying permission-prompt or error message text. Completion fires an in-app notification and optional OS notification. Hooks are injected via `--settings` per session — your `~/.claude/settings.json` is untouched.
-
-### Gemini CLI
-
-Hooks into Gemini CLI's BeforeAgent, AfterAgent, BeforeTool, Notification, SessionStart, and SessionEnd events. Status updates, tool indicators, and the "needs input" ring flow to the sidebar automatically. Requires Gemini CLI v0.26.0 or newer for hook support; older versions fall back to parsing Gemini's dynamic window title (◇ Ready / ✦ Working / ✋ Action Required / ⏲ Working…) as a best-effort status signal. Hook injection uses `GEMINI_CLI_SYSTEM_SETTINGS_PATH` pointing at a per-pane temp file, so your `~/.gemini/settings.json` is untouched and any user-defined hooks still fire alongside amux's.
-
-### Codex CLI
-
-Hooks into Codex CLI's SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, and Stop events via a wrapper script that creates a per-session `CODEX_HOME` tempdir symlinking your real `~/.codex/` and overlaying amux hook config. No modification of your real Codex config, credentials, or history. Launching `codex` inside an amux pane on macOS or Linux is enough — no manual install step. Amux observes Codex state for the sidebar but does not intercept approvals or drive the model; full `codex app-server` integration with approval interception is tracked as future work.
-
-> **Windows:** Codex integration via `amux-agent-wrapper.exe` is tracked as follow-up work. The Codex wrapper relies on a symlinked `CODEX_HOME` overlay, and creating symlinks on Windows requires either administrator privileges or [Developer Mode](https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development) to be enabled. Until that's wired up, Codex on Windows runs passthrough — you'll still get a working Codex session, just without amux sidebar status / tool indicators. Claude Code and Gemini CLI are unaffected and work with zero setup on Windows.
-
-### Any other agent
-
-Any script or agent can integrate using environment variables that amux injects into every pane:
-
-```bash
-# Read from environment — amux sets these automatically
-echo $AMUX_WORKSPACE_ID
-echo $AMUX_SURFACE_ID
-echo $AMUX_SOCKET_PATH
-
-# Report state to amux sidebar
-amux set-status active "Running evaluations..."
-amux set-status idle
-amux notify "Tests passed — ready for review"
-```
-
-OSC 9/99/777 sequences are intercepted from the PTY stream and shown as in-app notifications without any CLI call.
+Requirements: Rust 1.80+, a C compiler, and platform graphics drivers. Windows needs the MSVC toolchain (`rustup default stable-x86_64-pc-windows-msvc`). Homebrew / Winget / `cargo install amux` are not set up yet — build from source or use the release archive.
 
 ## Keyboard Shortcuts
 
-Keys shown as `Ctrl` map to `Cmd` on macOS.
+Defaults differ between macOS and Windows/Linux. On Windows/Linux, workspace / tab / edit operations use `Ctrl+Shift` instead of bare `Ctrl` so the terminal's own `Ctrl+C` (SIGINT), `Ctrl+N`, `Ctrl+W`, `Ctrl+S` (XOFF), etc. still reach the shell. Every binding is overridable in `config.toml` under `[keybindings]`.
 
 ### Workspaces
 
-| Shortcut | Action |
-|---|---|
-| `Ctrl N` | New workspace |
-| `Ctrl 1–8` | Jump to workspace 1–8 |
-| `Ctrl 9` | Jump to last workspace |
-| `Ctrl Shift ]` | Next workspace |
-| `Ctrl Shift [` | Previous workspace |
-| `Ctrl Shift W` | Close workspace |
-| `Ctrl Shift R` | Rename workspace |
-| `Ctrl B` | Toggle sidebar |
+| Action | macOS | Windows / Linux |
+|---|---|---|
+| New workspace | `Cmd+N` | `Ctrl+Shift+N` |
+| Next workspace | `Cmd+Shift+]` | `Ctrl+Shift+]` |
+| Previous workspace | `Cmd+Shift+[` | `Ctrl+Shift+[` |
+| Jump to workspace 1–8 | `Cmd+1`…`Cmd+8` | `Ctrl+1`…`Ctrl+8` |
+| Jump to last workspace | `Cmd+9` | `Ctrl+9` |
+| Toggle sidebar | `Cmd+B` | `Ctrl+B` |
 
-### Surfaces (tabs)
+### Surfaces (tabs within a workspace)
 
-| Shortcut | Action |
-|---|---|
-| `Ctrl T` | New surface |
-| `Ctrl Shift ]` | Next surface |
-| `Ctrl Shift [` | Previous surface |
-| `Ctrl Tab` | Next surface |
-| `Ctrl Shift Tab` | Previous surface |
-| `Ctrl 1–8` | Jump to surface 1–8 |
-| `Ctrl W` | Close surface |
+| Action | macOS | Windows / Linux |
+|---|---|---|
+| New tab | `Cmd+T` | `Ctrl+Shift+T` |
+| Close tab | `Cmd+W` | `Ctrl+Shift+W` |
+| New browser tab | `Cmd+Shift+L` | `Ctrl+Shift+L` |
+| Next tab in focused pane | `Ctrl+Tab` | `Ctrl+Tab` |
+| Previous tab in focused pane | `Ctrl+Shift+Tab` | `Ctrl+Shift+Tab` |
 
-### Split Panes
+### Panes (splits)
 
-| Shortcut | Action |
-|---|---|
-| `Ctrl D` | Split right |
-| `Ctrl Shift D` | Split down |
-| `Alt ← → ↑ ↓` | Focus pane directionally |
-| `Ctrl Shift H` | Flash focused pane |
-
-### Notifications
-
-| Shortcut | Action |
-|---|---|
-| `Ctrl I` | Show notification panel |
-| `Ctrl Shift U` | Jump to latest unread |
-
-### Find
-
-| Shortcut | Action |
-|---|---|
-| `Ctrl F` | Find |
-| `Ctrl G` / `Ctrl Shift G` | Find next / previous |
-| `Ctrl Shift F` | Hide find bar |
-| `Ctrl E` | Use selection for find |
+| Action | macOS | Windows / Linux |
+|---|---|---|
+| Split right | `Cmd+D` | `Ctrl+D` |
+| Split down | `Cmd+Shift+D` | `Ctrl+Shift+D` |
+| Focus pane left | `Cmd+Alt+←` | `Ctrl+Alt+←` |
+| Focus pane right | `Cmd+Alt+→` | `Ctrl+Alt+→` |
+| Focus pane up | `Cmd+Alt+↑` | `Ctrl+Alt+↑` |
+| Focus pane down | `Cmd+Alt+↓` | `Ctrl+Alt+↓` |
+| Zoom focused pane | `Cmd+Shift+Enter` | `Ctrl+Shift+Enter` |
 
 ### Terminal
 
-| Shortcut | Action |
-|---|---|
-| `Ctrl K` | Clear scrollback |
-| `Ctrl Shift C` | Copy |
-| `Ctrl Shift V` | Paste |
-| `Ctrl +` / `Ctrl -` | Increase / decrease font size |
-| `Ctrl 0` | Reset font size |
+| Action | macOS | Windows / Linux |
+|---|---|---|
+| Copy | `Cmd+C` | `Ctrl+Shift+C` |
+| Paste | `Cmd+V` | `Ctrl+Shift+V` |
+| Select all | `Cmd+A` | `Ctrl+Shift+A` |
+| Find | `Cmd+F` | `Ctrl+F` |
+| Scrollback / copy mode | `Cmd+Shift+X` | `Ctrl+Shift+X` |
+| Clear scrollback | `Cmd+K` | `Ctrl+Shift+K` |
+| Zoom in (font) | `Cmd+=` | `Ctrl+=` |
+| Zoom out (font) | `Cmd+-` | `Ctrl+-` |
+| Reset font size | `Cmd+0` | `Ctrl+0` |
 
-### Window
+### Notifications
 
-| Shortcut | Action |
-|---|---|
-| `Ctrl Shift N` | New window |
-| `Ctrl ,` | Settings |
-| `Ctrl Shift ,` | Reload configuration |
+| Action | macOS | Windows / Linux |
+|---|---|---|
+| Toggle notification panel | `Cmd+I` | `Ctrl+I` |
+| Jump to latest unread | `Cmd+Shift+U` | `Ctrl+Shift+U` |
+
+### Session / dev
+
+| Action | macOS | Windows / Linux |
+|---|---|---|
+| Save session | `Cmd+S` | `Ctrl+Shift+S` |
+| Open dev tools | `Cmd+Alt+I` | `Ctrl+Shift+I` |
+
+## Agent Integration
+
+amux detects which agent is running in a pane by `argv[0]` and wires its hook events into the sidebar. Wrappers are installed to `~/.config/amux/bin/` and that directory is prepended to `PATH` for every pane, so launching `claude`, `gemini`, or `codex` inside amux finds the wrapper first. The wrapper injects hooks for the current session and execs the real agent binary.
+
+### Claude Code
+
+All 9 hook events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`, `SubagentStart`, `SubagentStop`, `SessionEnd`. Hooks are injected via `--settings` at launch; nothing is persisted to `~/.claude/`.
+
+### Gemini CLI
+
+Six hook events: `BeforeAgent`, `AfterAgent`, `BeforeTool`, `Notification`, `SessionStart`, `SessionEnd`. Requires Gemini CLI `v0.26.0` or newer for hook support. Older versions fall back to parsing Gemini's window-title state machine (`◇ Ready` / `✦ Working` / `✋ Action Required` / `⏲ Working…`) as a best-effort status signal. Hook injection uses `GEMINI_CLI_SYSTEM_SETTINGS_PATH`; `~/.gemini/settings.json` is untouched and any user-defined hooks still fire alongside amux's.
+
+### Codex CLI
+
+Five hook events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`. The wrapper creates a per-session `CODEX_HOME` tempdir that symlinks your real `~/.codex/` and overlays amux's hook config. Your Codex config, credentials, and history are never touched. amux observes Codex state for the sidebar but does not intercept approvals or drive the model.
+
+Codex on Windows is not wired up yet. The wrapper needs a symlinked `CODEX_HOME` overlay, which requires [Windows Developer Mode](https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development) (or admin) to create symlinks. Until that's wired, `codex` on Windows runs passthrough — you get a working Codex session, just without sidebar status or tool indicators. Claude Code and Gemini CLI are unaffected on Windows.
+
+### Any other agent
+
+amux injects `AMUX_WORKSPACE_ID`, `AMUX_SURFACE_ID`, and `AMUX_SOCKET_PATH` into every pane. Any script can report state back:
+
+```bash
+amux set-status active "Running evaluations..."
+amux set-status idle
+amux notify "Tests passed"
+```
+
+OSC 9 / 99 / 777 sequences on the PTY stream also surface as in-app notifications without a CLI call.
 
 ## tmux Compatibility
 
-Agent scripts written for tmux work with amux via the built-in shim:
-
 ```bash
-# Install the shim so `tmux` calls route to amux
-amux install-tmux-shim
-```
-
-Or call directly:
-```bash
+amux install-tmux-shim                              # route `tmux` calls to amux
 amux __tmux-compat new-session -s myproject
 amux __tmux-compat send-keys -t myproject "claude" Enter
 ```
@@ -237,30 +176,23 @@ Full reference: `amux help`.
 
 ## Session Restore
 
-On relaunch, amux restores:
-- Window, workspace, and pane layout
-- Working directories
-- Terminal scrollback (up to 4,000 lines per surface, best-effort)
-- Agent status pills and notification history
-
-amux does **not** restore live process state (active Claude Code / Gemini / Codex sessions are not resumed after restart).
+On relaunch amux restores window, workspace, and pane layout; working directories; terminal scrollback (up to 4,000 lines per surface, best-effort); status pills; and notification history. Live agent process state is **not** restored — Claude, Gemini, and Codex sessions have to be restarted manually after an amux restart.
 
 ## Configuration
 
-Config lives at `~/.config/amux/config.toml` (or `%APPDATA%\amux\config.toml` on Windows):
+Config lives at `~/.config/amux/config.toml` on Unix and `%APPDATA%\amux\config.toml` on Windows. Every section and key is optional.
 
 ```toml
-# Shell to spawn in new panes. Accepts a bare name ("pwsh", "bash", "fish")
-# that amux resolves against PATH, or an absolute path.
-# When unset, amux uses $SHELL on Unix and prefers pwsh.exe on Windows if
-# installed, otherwise falls back to $COMSPEC (cmd.exe).
+# Shell to spawn in new panes. Bare name ("pwsh", "bash", "fish") is
+# resolved against PATH, or an absolute path. Defaults to $SHELL on Unix
+# and prefers pwsh.exe on Windows, falling back to $COMSPEC (cmd.exe).
 # shell = "pwsh"
 
 [appearance]
 sidebar_width = 220
-font_family = "JetBrains Mono"
-font_size = 13.0
-theme = "dark"            # dark | light | system
+font_family = "IBM Plex Mono"
+font_size = 14.0
+theme = "dark"             # dark | light | system
 
 [notifications]
 sound = true
@@ -269,34 +201,30 @@ ring = true
 auto_reorder_workspaces = true
 
 [keybindings]
-new_workspace = "ctrl+n"
-toggle_sidebar = "ctrl+b"
-# ... full list in docs
-
-[agents]
-# Override auto-detection if needed
-# default_agent = "claude"   # claude | gemini | codex
+# Override any default. Use "cmd+…" on macOS or "ctrl+…" on Win/Linux.
+# Full list of actions: see `KeybindingsConfig` in
+# crates/amux-core/src/config.rs.
+new_workspace = "cmd+n"
+toggle_sidebar = "cmd+b"
 ```
 
 ## Building from Source
 
-Requirements: Rust 1.80+, a C compiler, and platform graphics drivers.
-
 ```bash
 git clone https://github.com/daveowenatl/amux
 cd amux
-cargo build --release
-./target/release/amux
+cargo build --workspace
+cargo test --workspace
 ```
 
-On Windows, the MSVC toolchain is required (`rustup default stable-x86_64-pc-windows-msvc`).
+Requirements: Rust 1.80+, a C compiler, platform graphics drivers. Windows needs the MSVC toolchain. Before pushing, run `cargo fmt --check` and `cargo clippy --workspace -- -D warnings`; CI enforces both.
 
 ## Contributing
 
-- Open [GitHub Issues](https://github.com/daveowenatl/amux/issues) for bugs and feature requests
-- Start a [Discussion](https://github.com/daveowenatl/amux/discussions) for questions and ideas
-- PRs welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md)
+- Bugs and feature requests: [GitHub Issues](https://github.com/daveowenatl/amux/issues)
+- Questions and ideas: [Discussions](https://github.com/daveowenatl/amux/discussions)
+- PRs welcome.
 
 ## License
 
-MIT — see [LICENSE](./LICENSE) for the full text.
+MIT. See [LICENSE](./LICENSE).
