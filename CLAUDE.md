@@ -39,7 +39,7 @@ Cargo workspace with 9 crates under `crates/`:
 | `amux-notify` | lib | OSC notification parsing + in-app store |
 | `amux-session` | lib | Session persistence (save/restore JSON) |
 
-Key dependency: `libghostty-vt` is patched to a fork at `github.com/daveowenatl/libghostty-rs` rev `cabcfb81cc3f4f20ef9b62312df6bb04c929abb5`. The fork cherry-picks unpublished fixes for Windows — upstream's `build.rs` hardcodes `libghostty-vt.so.0.1.0` as the expected shared-library filename, which panics on Windows where Zig emits `ghostty-vt.dll` + `ghostty-vt.lib`.
+Key dependency: `libghostty-vt` is patched to a fork at `github.com/daveowenatl/libghostty-rs`. The authoritative rev lives in the workspace `Cargo.toml` `[patch.crates-io]` block — don't reference a specific rev in this doc, it will drift. The fork carries Windows-specific fixes not yet upstreamed: (1) the artifact-detection patches (upstream hardcodes `libghostty-vt.so.0.1.0` as the expected shared-library filename, which panics on Windows where Zig emits `ghostty-vt.dll` + `ghostty-vt.lib`), and (2) a uucode v0.2.0 workaround that bypasses `uucode_build_tables` via a pre-generated `tables.zig` committed to the fork (avoids a runtime-CWD bug in uucode's build.zig that breaks ARM64 Windows builds — see amux #188). Both workarounds should be dropped when upstream libghostty-rs ships a new crates.io version and/or ghostty bumps past uucode 0.2.0.
 
 ## Architecture
 
