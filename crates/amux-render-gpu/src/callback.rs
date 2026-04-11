@@ -3,7 +3,7 @@
 //! This struct carries the terminal snapshot and physical rect for a single
 //! pane into egui's render pass. The `CallbackTrait` implementation that
 //! actually walks the snapshot, shapes glyphs, and emits GPU instances lives
-//! in `screen_line.rs` (modeled on wezterm-gui's `termwindow/render/`).
+//! in `screen_line.rs`.
 
 use crate::snapshot::TerminalSnapshot;
 use crate::state::PhysRect;

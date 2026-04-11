@@ -6,8 +6,7 @@
 //! and repaint scheduling) and `on_exit()` which saves or clears the
 //! session.
 //!
-//! Mirrors wezterm-gui's `termwindow/render/paint.rs` — the top-level
-//! per-frame entry that dispatches to per-concern helpers.
+//! Top-level per-frame entry that dispatches to per-concern helpers.
 
 use crate::*;
 

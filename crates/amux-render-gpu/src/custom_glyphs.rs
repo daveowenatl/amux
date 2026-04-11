@@ -5,9 +5,6 @@
 //! rectangles in normalized cell coordinates (0.0–1.0). The GPU callback
 //! emits these as foreground-colored background quads, producing pixel-perfect
 //! lines that connect seamlessly across adjacent cells.
-//!
-//! This matches the approach used by wezterm and Ghostty, both of which render
-//! these characters procedurally rather than from fonts.
 
 /// A filled rectangle in normalized cell coordinates.
 /// (0.0, 0.0) is the top-left corner; (1.0, 1.0) is the bottom-right.

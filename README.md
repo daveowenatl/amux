@@ -15,7 +15,7 @@ amux is a terminal multiplexer for AI coding agents (Claude Code, Gemini CLI, Co
 - Sidebar shows per-workspace status: which agent is active, which tool it's running, which pane is waiting on you.
 - Hook integration is auto-injected. No `install-hooks` step. Your `~/.claude/settings.json`, `~/.gemini/settings.json`, and `~/.codex/` are not touched.
 - Workspaces, horizontal and vertical splits, surface tabs within a workspace.
-- GPU-rendered via wgpu (Metal / DX12 / Vulkan) backed by wezterm-term for the VT state machine.
+- GPU-rendered via wgpu (Metal / DX12 / Vulkan) backed by [libghostty-vt](https://github.com/uzaaft/libghostty-rs) for the VT state machine.
 - CLI and Unix / named-pipe socket for driving it from scripts. tmux-compat shim so agent scripts calling `tmux` route to amux.
 
 ## Install

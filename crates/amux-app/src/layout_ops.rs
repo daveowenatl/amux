@@ -1,8 +1,8 @@
 //! Pane layout operations: PTY resize when a pane's rect changes, and
 //! interactive divider dragging to resize splits.
 //!
-//! Mirrors wezterm-gui's `termwindow/render/split.rs` and `resize.rs`
-//! (grouped here because both operate on the PaneTree layout).
+//! Split rendering and resize handling are grouped in one module because
+//! both operate on the `PaneTree` layout.
 
 use crate::*;
 
