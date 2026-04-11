@@ -35,9 +35,18 @@
 
 #![cfg(target_os = "windows")]
 
-use windows_sys::Win32::Foundation::{BOOL, HMODULE, HWND, TRUE};
+use windows_sys::Win32::Foundation::{HMODULE, HWND};
 use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+
+// `BOOL` / `TRUE` used to live in `windows_sys::Win32::Foundation`, but
+// windows-sys 0.60 moved or renamed them. We only need them as a plain
+// 4-byte integer for the DWM attribute, so declare them locally instead
+// of chasing the re-export. `BOOL` on Win32 is always a signed 32-bit
+// int where 0 = FALSE and any non-zero value = TRUE.
+#[allow(non_camel_case_types)]
+type BOOL = i32;
+const TRUE: BOOL = 1;
 
 /// PreferredAppMode — the arg to `SetPreferredAppMode` (uxtheme.dll
 /// ordinal 135). Values are from leaked Windows SDK headers and match
@@ -125,18 +134,28 @@ pub fn enable_process_dark_mode() {
 /// the process-wide `SetPreferredAppMode` for themed Win32 controls
 /// hosted inside the window.
 ///
+/// Takes the HWND as a raw `isize` to match the shape that
+/// `raw_window_handle::Win32WindowHandle::hwnd` and `muda::Menu::init_for_hwnd`
+/// both use — this lets the caller pass the same handle to both APIs
+/// without fighting two different pointer types. We convert internally
+/// to `windows-sys`'s `HWND` (which is `*mut c_void`).
+///
 /// Call after `enable_process_dark_mode()`, once the window's HWND is
 /// available (first `App::update()` frame).
-pub fn apply_dark_mode_to_window(hwnd: HWND) {
+pub fn apply_dark_mode_to_window(hwnd_raw: isize) {
+    let hwnd: HWND = hwnd_raw as HWND;
     unsafe {
         // Documented path: immersive dark mode for the title bar.
         // Attribute 20 (`DWMWA_USE_IMMERSIVE_DARK_MODE`) on Windows
         // 10 2004+. Older Windows 10 builds used attribute 19 — we
         // only target modern builds.
+        //
+        // windows-sys 0.60 declares the attribute constant as `i32`
+        // but `DwmSetWindowAttribute` takes `u32`, so we have to cast.
         let enable: BOOL = TRUE;
         let _ = DwmSetWindowAttribute(
             hwnd,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
             &enable as *const BOOL as _,
             std::mem::size_of::<BOOL>() as u32,
         );

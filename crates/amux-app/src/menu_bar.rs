@@ -269,7 +269,12 @@ pub(crate) fn attach_to_window(menu: &Menu, frame: &eframe::Frame) -> bool {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     if let Ok(handle) = frame.window_handle() {
         if let RawWindowHandle::Win32(win32) = handle.as_raw() {
-            let hwnd = win32.hwnd.get() as _;
+            // `raw_window_handle::Win32WindowHandle::hwnd` is an
+            // `NonZeroIsize`. Both `muda::Menu::init_for_hwnd` and
+            // our `windows_chrome::apply_dark_mode_to_window` take
+            // the handle as a plain `isize`, so we extract it once
+            // and share.
+            let hwnd: isize = win32.hwnd.get();
             crate::windows_chrome::apply_dark_mode_to_window(hwnd);
             match unsafe { menu.init_for_hwnd(hwnd) } {
                 Ok(()) => return true,
