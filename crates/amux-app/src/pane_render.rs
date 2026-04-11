@@ -4,9 +4,6 @@
 //! content rendering to either the GPU or software renderer. Handles
 //! tab interactions: click to activate, middle-click to close, right-click
 //! context menu, drag to reorder, and the trailing "+" to add a surface.
-//!
-//! Mirrors wezterm-gui's `termwindow/render/pane.rs` — the per-pane
-//! renderer that emits tab chrome plus the terminal content call.
 
 use crate::*;
 

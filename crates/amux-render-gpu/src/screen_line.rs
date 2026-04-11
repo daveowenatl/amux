@@ -4,8 +4,7 @@
 //! `TerminalPaintCallback` — the large `prepare()` method that walks
 //! the `TerminalSnapshot`, builds text runs, shapes them via cosmic-text,
 //! emits background/foreground/image instances, rasterizes decorations,
-//! and uploads the per-pane instance buffers. Modeled on wezterm-gui's
-//! `termwindow/render/screen_line.rs`.
+//! and uploads the per-pane instance buffers.
 //!
 //! The `paint()` method (draw call submission) also lives here; it is
 //! trivially small but must be part of the same `impl` block.

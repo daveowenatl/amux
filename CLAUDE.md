@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-amux is a cross-platform terminal multiplexer for AI coding agents (Claude Code, Gemini CLI, Codex CLI). Built in Rust with GPU-accelerated rendering via wgpu (Metal on macOS, DX12/Vulkan on Windows, Vulkan on Linux) and wezterm-term for VT state machine.
+amux is a cross-platform terminal multiplexer for AI coding agents (Claude Code, Gemini CLI, Codex CLI). Built in Rust with GPU-accelerated rendering via wgpu (Metal on macOS, DX12/Vulkan on Windows, Vulkan on Linux) and `libghostty-vt` for the VT state machine.
 
 ## Build Commands
 
@@ -29,7 +29,7 @@ Cargo workspace with 9 crates under `crates/`:
 
 | Crate | Type | Purpose |
 |---|---|---|
-| `amux-term` | lib | Terminal pane abstraction (wezterm-term + portable-pty). Key/mouse encoders, OSC handling, color resolution. |
+| `amux-term` | lib | Terminal pane abstraction (`libghostty-vt` + portable-pty). Key/mouse encoders, OSC handling, color resolution. |
 | `amux-app` | bin | Main binary: GUI + event loop (eframe/winit) |
 | `amux-cli` | bin | CLI binary (socket client) |
 | `amux-render-soft` | lib | Softbuffer renderer (Phase 1–7) |
@@ -39,12 +39,12 @@ Cargo workspace with 9 crates under `crates/`:
 | `amux-notify` | lib | OSC notification parsing + in-app store |
 | `amux-session` | lib | Session persistence (save/restore JSON) |
 
-Key dependency: `wezterm-term` is a git dependency pinned to rev `05343b3` from the wezterm monorepo.
+Key dependency: `libghostty-vt` is patched to a fork at `github.com/daveowenatl/libghostty-rs` rev `cabcfb81cc3f4f20ef9b62312df6bb04c929abb5`. The fork cherry-picks unpublished fixes for Windows — upstream's `build.rs` hardcodes `libghostty-vt.so.0.1.0` as the expected shared-library filename, which panics on Windows where Zig emits `ghostty-vt.dll` + `ghostty-vt.lib`.
 
 ## Architecture
 
 ### Rendering
-wgpu for GPU rendering with platform-specific backends. wezterm-term handles VT/terminal state machine. PTY streams are monitored for OSC 9/99/777 sequences.
+wgpu for GPU rendering with platform-specific backends. `libghostty-vt` handles the VT / terminal state machine. PTY streams are monitored for OSC 9/99/777 sequences.
 
 ### Agent Integrations
 Three first-class agent integrations, each using the agent's native event system:

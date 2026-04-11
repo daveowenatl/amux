@@ -2,9 +2,8 @@
 //!
 //! The three `*Instance` structs below are the per-cell (or per-glyph / per-image)
 //! records uploaded into the instance buffers consumed by the background,
-//! foreground, and image render pipelines. Modeled on wezterm-gui's `quad.rs`,
-//! which similarly separates instance/vertex type definitions from pipeline
-//! construction.
+//! foreground, and image render pipelines. Instance and vertex type
+//! definitions live here; pipeline construction lives in `pipeline.rs`.
 //!
 //! `ensure_instance_buffer` is a shared helper for creating or growing an
 //! instance buffer when the number of instances exceeds the current capacity.
