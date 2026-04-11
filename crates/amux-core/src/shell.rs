@@ -416,6 +416,19 @@ mod tests {
     fn resolve_shell_ignores_empty_or_whitespace_override() {
         // `shell = ""` or `shell = "   "` in config.toml falls back to
         // default_shell() — we don't want to spawn an empty command.
+        //
+        // On Windows this test must hold `WINDOWS_PATH_TEST_LOCK` because
+        // `default_shell()` reads `PATH` (via `find_on_path("pwsh.exe")`),
+        // and the `windows_find_on_path_*` tests in this module mutate
+        // `PATH` via `EnvGuard`. Without the lock, a concurrent mutation
+        // can cause `resolve_shell` and `default_shell` to observe
+        // different `PATH` values mid-assertion and return cmd.exe vs
+        // pwsh.exe non-deterministically. See #187 CI run where this
+        // race finally tripped.
+        #[cfg(windows)]
+        let _guard = WINDOWS_PATH_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let fallback = default_shell();
         assert_eq!(resolve_shell(Some("")), fallback);
         assert_eq!(resolve_shell(Some("   ")), fallback);
@@ -423,6 +436,12 @@ mod tests {
 
     #[test]
     fn resolve_shell_none_falls_back_to_default() {
+        // Same Windows PATH race fix as
+        // `resolve_shell_ignores_empty_or_whitespace_override`.
+        #[cfg(windows)]
+        let _guard = WINDOWS_PATH_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         assert_eq!(resolve_shell(None), default_shell());
     }
 
