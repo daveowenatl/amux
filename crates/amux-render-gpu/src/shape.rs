@@ -98,11 +98,28 @@ pub(crate) fn shape_run(
         resources.metrics.font_size * pixels_per_point,
         resources.metrics.line_height * pixels_per_point,
     );
-    let buffer_width = f32::max(run.col_count as f32 * cell_width, cell_width * 2.0);
+    // `None` for width disables cosmic-text's word wrapping entirely: the
+    // whole run is laid out on a single line regardless of its shaped width.
+    //
+    // An earlier version of this code passed `Some(run.col_count * cell_width)`
+    // (plus a 2-cell minimum) as the buffer width. That was subtly wrong —
+    // if HarfBuzz's shaped advance for the run exceeded that width by even a
+    // fraction of a pixel (kerning, contextual shaping, fallback-font metrics
+    // on Windows, sub-pixel accumulation), cosmic-text would wrap the
+    // trailing character to a second visual line. The glyph loop below then
+    // positioned wrapped glyphs at `base_y + layout_run.line_y + physical.y`,
+    // placing them one terminal row below their intended column and leaving
+    // a blank cell behind. See amux #186 — manifested as random trailing
+    // characters dropping from `dir` output, git log, Claude Code banners,
+    // etc. on Windows.
+    //
+    // A run is always exactly one terminal row by construction (the
+    // run-builder in `screen_line.rs` breaks runs on row changes), so
+    // wrapping is never the right behavior here.
     let mut buffer = Buffer::new_empty(phys_metrics);
     {
         let mut borrowed = buffer.borrow_with(&mut resources.font_system);
-        borrowed.set_size(Some(buffer_width), Some(cell_height));
+        borrowed.set_size(None, Some(cell_height));
         borrowed.set_text(&run.text, attrs, Shaping::Advanced);
         borrowed.shape_until_scroll(true);
     }
@@ -110,6 +127,18 @@ pub(crate) fn shape_run(
     let mut shaped_entries = Vec::new();
 
     for layout_run in buffer.layout_runs() {
+        // Defense in depth: even with `set_size(None, ..)`, if cosmic-text
+        // somehow produces a second layout line (future regression, font
+        // quirk, whatever), skip it loudly rather than silently drawing
+        // glyphs at the wrong row.
+        if layout_run.line_i != 0 {
+            tracing::warn!(
+                "shape_run: unexpected wrapped layout line {} for run {:?} — skipping",
+                layout_run.line_i,
+                run.text
+            );
+            continue;
+        }
         for glyph in layout_run.glyphs.iter() {
             let physical = glyph.physical((0.0, 0.0), 1.0);
 
@@ -247,10 +276,16 @@ pub(crate) fn shape_and_rasterize(
         resources.metrics.font_size * pixels_per_point,
         resources.metrics.line_height * pixels_per_point,
     );
+    // See `shape_run` for the full explanation of why this is `None`.
+    // Short version: we never want cosmic-text to wrap our single-cell
+    // text to a second line, and passing a finite width here opens the
+    // door to the same wrap-at-sub-pixel-overflow bug that dropped
+    // trailing characters on Windows in amux #186.
+    let _ = cell_width; // still used by callers for positioning, kept in sig
     let mut buffer = Buffer::new_empty(phys_metrics);
     {
         let mut borrowed = buffer.borrow_with(&mut resources.font_system);
-        borrowed.set_size(Some(cell_width * 2.0), Some(cell_height));
+        borrowed.set_size(None, Some(cell_height));
         borrowed.set_text(text, attrs, Shaping::Advanced);
         borrowed.shape_until_scroll(true);
     }
@@ -258,6 +293,14 @@ pub(crate) fn shape_and_rasterize(
     let mut shaped_entries = Vec::new();
 
     for run in buffer.layout_runs() {
+        if run.line_i != 0 {
+            tracing::warn!(
+                "shape_and_rasterize: unexpected wrapped layout line {} for text {:?} — skipping",
+                run.line_i,
+                text
+            );
+            continue;
+        }
         for glyph in run.glyphs.iter() {
             let physical = glyph.physical((0.0, 0.0), 1.0);
 
