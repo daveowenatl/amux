@@ -151,11 +151,131 @@ fn cleanup_stale_gemini_settings_files() {
 /// or per-process directory naming) to the wrapper.
 fn cleanup_stale_codex_home_dirs() {}
 
+/// Returns true if a single hook command string is one that amux installed.
+/// Matches on both `amux` and `claude-hook` substrings so a user-defined
+/// command that happens to contain `claude-hook` in some other context
+/// (comment, log prefix, etc.) is preserved.
+fn is_amux_claude_hook_command(command: &str) -> bool {
+    command.contains("claude-hook") && command.contains("amux")
+}
+
+/// Pure helper: strip amux `claude-hook` entries from a parsed Claude Code
+/// settings.json value. Filters the inner hook arrays so a matcher entry
+/// holding a mix of the user's hooks and amux's only loses the amux
+/// command(s); the matcher entry itself is removed only when its inner
+/// hooks array becomes empty. Returns the mutated value and a flag
+/// indicating whether anything was removed. Extracted from the startup
+/// migration so it can be unit-tested without touching the real
+/// `~/.claude/settings.json`.
+fn remove_legacy_claude_hook_entries(mut settings: serde_json::Value) -> (serde_json::Value, bool) {
+    let mut removed_any = false;
+    if let Some(hooks_obj) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+        for entries in hooks_obj.values_mut() {
+            let Some(arr) = entries.as_array_mut() else {
+                continue;
+            };
+            for entry in arr.iter_mut() {
+                let Some(inner) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) else {
+                    continue;
+                };
+                let before = inner.len();
+                inner.retain(|h| {
+                    !h.get("command")
+                        .and_then(|c| c.as_str())
+                        .is_some_and(is_amux_claude_hook_command)
+                });
+                if inner.len() < before {
+                    removed_any = true;
+                }
+            }
+            // Drop matcher entries whose inner hooks are now empty.
+            arr.retain(|entry| {
+                entry
+                    .get("hooks")
+                    .and_then(|h| h.as_array())
+                    .map(|inner| !inner.is_empty())
+                    .unwrap_or(true)
+            });
+        }
+        hooks_obj.retain(|_, v| v.as_array().map(|a| !a.is_empty()).unwrap_or(true));
+        if hooks_obj.is_empty() {
+            if let Some(obj) = settings.as_object_mut() {
+                obj.remove("hooks");
+            }
+        }
+    }
+    (settings, removed_any)
+}
+
+/// Atomically write `content` to `dest` by writing to a sibling temp file
+/// in the same directory and renaming into place. Prevents corrupting the
+/// destination file if amux crashes mid-write.
+fn atomic_write(dest: &std::path::Path, content: &str) -> std::io::Result<()> {
+    let parent = dest.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "destination has no parent directory",
+        )
+    })?;
+    let filename = dest.file_name().and_then(|f| f.to_str()).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "destination has no name")
+    })?;
+    let tmp = parent.join(format!(".{filename}.amux-tmp"));
+    std::fs::write(&tmp, content)?;
+    match std::fs::rename(&tmp, dest) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// One-time migration: remove amux `claude-hook` entries from
+/// `~/.claude/settings.json`. Older amux versions asked users to run
+/// `amux install-hooks --claude`, which wrote hook commands persistently
+/// into the user's Claude settings file. The current flow injects hooks at
+/// runtime via the `~/.config/amux/bin/claude` wrapper script, so those
+/// persistent entries are stale — they point at a historical command
+/// invocation style and clutter the user's config. Running this on every
+/// amux startup is safe: the substring early-return makes it a sub-millisecond
+/// no-op once the cleanup has happened, and nothing writes those entries anymore.
+fn cleanup_legacy_claude_hooks_in_settings() {
+    let Some(settings_path) = dirs::home_dir().map(|h| h.join(".claude").join("settings.json"))
+    else {
+        return;
+    };
+    if !settings_path.exists() {
+        return;
+    }
+    let Ok(content) = std::fs::read_to_string(&settings_path) else {
+        return;
+    };
+    // Fast path: if the raw content doesn't mention `claude-hook` at all,
+    // there's nothing to clean. Avoids JSON parse work on every startup
+    // after the first cleanup.
+    if !content.contains("claude-hook") {
+        return;
+    }
+    let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+
+    let (cleaned, removed_any) = remove_legacy_claude_hook_entries(settings);
+    if !removed_any {
+        return;
+    }
+    if let Ok(formatted) = serde_json::to_string_pretty(&cleaned) {
+        let _ = atomic_write(&settings_path, &formatted);
+    }
+}
+
 pub(crate) fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     cleanup_stale_scrollback_files();
     cleanup_stale_gemini_settings_files();
     cleanup_stale_codex_home_dirs();
+    cleanup_legacy_claude_hooks_in_settings();
 
     let mut app_config = config::load_app_config();
     let mut font_size = app_config.font_size;
@@ -739,4 +859,153 @@ pub(crate) fn spawn_surface(
         user_title: None,
         exited: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_amux_claude_hook_command, remove_legacy_claude_hook_entries};
+    use serde_json::json;
+
+    #[test]
+    fn command_matcher_requires_both_amux_and_claude_hook() {
+        assert!(is_amux_claude_hook_command("amux claude-hook PreToolUse"));
+        assert!(is_amux_claude_hook_command(
+            "/usr/local/bin/amux claude-hook Stop"
+        ));
+        assert!(is_amux_claude_hook_command(
+            "\"/Applications/amux.app/Contents/MacOS/amux\" claude-hook PreToolUse"
+        ));
+        // Commands containing only one of the two markers must NOT match.
+        assert!(!is_amux_claude_hook_command("my-tool claude-hook-wrapper"));
+        assert!(!is_amux_claude_hook_command("amux set-status active"));
+        assert!(!is_amux_claude_hook_command("echo running amux tests"));
+    }
+
+    /// Regression for Copilot #3067519947: a matcher entry containing both
+    /// the user's own hook and amux's hook must lose only the amux command,
+    /// not the whole entry.
+    #[test]
+    fn mixed_matcher_entry_preserves_user_hook_drops_amux() {
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Bash",
+                    "hooks": [
+                        { "type": "command", "command": "my-custom-script" },
+                        { "type": "command", "command": "amux claude-hook PreToolUse" }
+                    ]
+                }]
+            }
+        });
+        let (cleaned, removed) = remove_legacy_claude_hook_entries(settings);
+        assert!(removed);
+        let entries = cleaned["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(entries.len(), 1, "matcher entry should survive");
+        let inner = entries[0]["hooks"].as_array().unwrap();
+        assert_eq!(inner.len(), 1, "only the amux hook should be removed");
+        assert_eq!(inner[0]["command"], "my-custom-script");
+        assert_eq!(entries[0]["matcher"], "Bash");
+    }
+
+    /// A user-defined command containing the substring `claude-hook` but
+    /// not `amux` must be preserved — the tightened matcher requires both.
+    #[test]
+    fn preserves_user_hook_containing_claude_hook_substring() {
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "",
+                    "hooks": [
+                        { "type": "command", "command": "log-for-claude-hook-debugging.sh" }
+                    ]
+                }]
+            }
+        });
+        let (cleaned, removed) = remove_legacy_claude_hook_entries(settings.clone());
+        assert!(!removed);
+        assert_eq!(cleaned, settings);
+    }
+
+    #[test]
+    fn removes_amux_claude_hook_entries() {
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "amux claude-hook PreToolUse",
+                        "timeout": 5
+                    }]
+                }]
+            }
+        });
+        let (cleaned, removed) = remove_legacy_claude_hook_entries(settings);
+        assert!(removed);
+        // Entire `hooks` key should be gone because the only entry was amux's.
+        assert!(cleaned.get("hooks").is_none());
+    }
+
+    #[test]
+    fn preserves_non_amux_hook_entries() {
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{ "type": "command", "command": "my-custom-script" }]
+                    },
+                    {
+                        "matcher": "",
+                        "hooks": [{ "type": "command", "command": "amux claude-hook PreToolUse" }]
+                    }
+                ]
+            }
+        });
+        let (cleaned, removed) = remove_legacy_claude_hook_entries(settings);
+        assert!(removed);
+        let entries = cleaned["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["matcher"], "Bash");
+    }
+
+    #[test]
+    fn no_op_on_settings_without_hooks() {
+        let settings = json!({ "theme": "dark" });
+        let (cleaned, removed) = remove_legacy_claude_hook_entries(settings.clone());
+        assert!(!removed);
+        assert_eq!(cleaned, settings);
+    }
+
+    #[test]
+    fn no_op_on_settings_without_amux_entries() {
+        let settings = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Bash",
+                    "hooks": [{ "type": "command", "command": "my-custom-script" }]
+                }]
+            }
+        });
+        let (cleaned, removed) = remove_legacy_claude_hook_entries(settings.clone());
+        assert!(!removed);
+        assert_eq!(cleaned, settings);
+    }
+
+    #[test]
+    fn removes_multiple_events_leaving_others_intact() {
+        let settings = json!({
+            "hooks": {
+                "PreToolUse":       [{"matcher":"","hooks":[{"command":"amux claude-hook PreToolUse"}]}],
+                "Stop":             [{"matcher":"","hooks":[{"command":"amux claude-hook Stop"}]}],
+                "UserPromptSubmit": [{"matcher":"","hooks":[{"command":"my-own-script"}]}]
+            }
+        });
+        let (cleaned, removed) = remove_legacy_claude_hook_entries(settings);
+        assert!(removed);
+        let hooks = cleaned["hooks"].as_object().unwrap();
+        assert!(!hooks.contains_key("PreToolUse"));
+        assert!(!hooks.contains_key("Stop"));
+        assert!(hooks.contains_key("UserPromptSubmit"));
+    }
 }

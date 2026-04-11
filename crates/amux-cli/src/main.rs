@@ -12,7 +12,7 @@ use claude_hook::handle_claude_hook;
 use cli::{Cli, Command};
 use codex_hook::handle_codex_hook;
 use gemini_hook::handle_gemini_hook;
-use install::{install_claude_hooks, install_shell_integration, uninstall_claude_hooks};
+use install::install_shell_integration;
 use print::{print_hierarchy, print_pane_list, print_response, print_workspace_list};
 
 #[tokio::main(flavor = "current_thread")]
@@ -22,19 +22,6 @@ async fn main() -> anyhow::Result<()> {
     // These commands are direct filesystem operations — handle before IPC connection.
     if matches!(cli.command, Command::InstallShellIntegration) {
         install_shell_integration()?;
-        return Ok(());
-    }
-    if let Command::InstallHooks { claude, uninstall } = &cli.command {
-        if *claude {
-            if *uninstall {
-                uninstall_claude_hooks()?;
-            } else {
-                install_claude_hooks()?;
-            }
-        } else {
-            eprintln!("Specify --claude to install Claude Code hooks");
-            std::process::exit(1);
-        }
         return Ok(());
     }
     if matches!(cli.command, Command::SessionClear) {
@@ -849,7 +836,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Command::SessionClear | Command::InstallShellIntegration | Command::InstallHooks { .. } => {
+        Command::SessionClear | Command::InstallShellIntegration => {
             unreachable!("handled before IPC connection");
         }
     }

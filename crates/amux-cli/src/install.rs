@@ -1,87 +1,19 @@
-//! Agent hook installation and shell integration setup.
+//! Manual shell integration setup.
 //!
-//! Installs/uninstalls Claude Code hooks into the user's settings file
-//! and installs shell integration scripts (bash/zsh precmd hooks that
-//! report CWD changes to amux).
-
-pub fn install_claude_hooks() -> anyhow::Result<()> {
-    // Hooks are now injected automatically via a claude wrapper script that
-    // amux-app writes to ~/.config/amux/bin/claude and prepends to PATH.
-    // This command cleans up any old settings.json hooks and informs the user.
-    let removed = cleanup_legacy_claude_hooks()?;
-    if removed {
-        println!("Cleaned up legacy hooks from ~/.claude/settings.json.");
-    }
-    println!("Claude Code hooks are now automatic — no manual installation needed.");
-    println!("amux injects hooks via a wrapper script when Claude Code is launched inside amux.");
-    println!("Hooks only activate inside amux terminals; outside amux, Claude Code runs normally.");
-    Ok(())
-}
-
-/// Remove any amux claude-hook entries from ~/.claude/settings.json.
-/// Returns true if any were removed.
-pub fn cleanup_legacy_claude_hooks() -> anyhow::Result<bool> {
-    let settings_path = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
-        .join(".claude")
-        .join("settings.json");
-
-    if !settings_path.exists() {
-        return Ok(false);
-    }
-
-    let content = std::fs::read_to_string(&settings_path)?;
-    let mut settings: serde_json::Value = serde_json::from_str(&content)?;
-
-    let mut removed_any = false;
-    if let Some(hooks) = settings.get_mut("hooks") {
-        if let Some(hooks_obj) = hooks.as_object_mut() {
-            for (_event, entries) in hooks_obj.iter_mut() {
-                if let Some(arr) = entries.as_array_mut() {
-                    let before = arr.len();
-                    arr.retain(|entry| {
-                        !entry
-                            .get("hooks")
-                            .and_then(|h| h.as_array())
-                            .map(|hooks| {
-                                hooks.iter().any(|h| {
-                                    h.get("command")
-                                        .and_then(|c| c.as_str())
-                                        .is_some_and(|c| c.contains("claude-hook"))
-                                })
-                            })
-                            .unwrap_or(false)
-                    });
-                    if arr.len() < before {
-                        removed_any = true;
-                    }
-                }
-            }
-            // Remove empty event arrays
-            hooks_obj.retain(|_, v| v.as_array().map(|a| !a.is_empty()).unwrap_or(true));
-            if hooks_obj.is_empty() {
-                settings.as_object_mut().unwrap().remove("hooks");
-            }
-        }
-    }
-
-    if removed_any {
-        let formatted = serde_json::to_string_pretty(&settings)?;
-        std::fs::write(&settings_path, formatted)?;
-    }
-
-    Ok(removed_any)
-}
-
-pub fn uninstall_claude_hooks() -> anyhow::Result<()> {
-    let removed = cleanup_legacy_claude_hooks()?;
-    if removed {
-        println!("Claude Code hooks removed from ~/.claude/settings.json.");
-    } else {
-        println!("No amux hooks found in ~/.claude/settings.json.");
-    }
-    Ok(())
-}
+//! Installs shell integration scripts to `~/.config/amux/shell/` and prints
+//! instructions for sourcing them. This is the opt-in path for users with
+//! custom shell setups who don't want amux's automatic ZDOTDIR/PROMPT_COMMAND
+//! injection. Users launching shells inside amux panes don't need this — the
+//! same scripts are written automatically by `ensure_shell_integration_dir`
+//! in `amux_core::shell` and sourced via environment overrides.
+//!
+//! Historical note: this module previously held `install_claude_hooks`,
+//! `uninstall_claude_hooks`, and `cleanup_legacy_claude_hooks`. Those were
+//! removed when the `install-hooks` CLI became a no-op — Claude Code hooks
+//! now inject at runtime via the `~/.config/amux/bin/claude` wrapper script
+//! (see `crates/amux-core/src/shell.rs::ensure_agent_wrapper_dir`). The
+//! one-time cleanup of legacy `~/.claude/settings.json` entries left by old
+//! amux versions now happens automatically at app startup.
 
 pub fn install_shell_integration() -> anyhow::Result<()> {
     let config_dir = dirs::config_dir()
