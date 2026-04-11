@@ -101,3 +101,20 @@ amux-session = { path = "crates/amux-session" }
 amux-render-gpu = { path = "crates/amux-render-gpu" }
 amux-ghostty-config = { path = "crates/amux-ghostty-config" }
 amux-browser = { path = "crates/amux-browser" }
+
+# Patch libghostty-vt and libghostty-vt-sys to a fork that extends the build
+# script's artifact detection to Windows (MSVC + GNU targets). The crates.io
+# release hardcodes `libghostty-vt.so.0.1.0` as the expected shared library
+# filename, which panics on Windows because Zig emits `ghostty-vt.dll` +
+# `ghostty-vt.lib` instead. The fork cherry-picks the two unpublished
+# `feat/windows-ci` commits from upstream on top of upstream/master, with the
+# ghostty commit pinned back to `bebca84` (matching crates.io 0.1.1) to avoid
+# a newer ghostty xcframework build-step regression that breaks macOS.
+#
+# Upstream tracking: https://github.com/uzaaft/libghostty-rs branches
+# `feat/windows-ci` + `static-linking`. Plan: open a PR against upstream once
+# amux's Windows CI is green with this patch, then drop the patch block when
+# a new crates.io version ships.
+[patch.crates-io]
+libghostty-vt = { git = "https://github.com/daveowenatl/libghostty-rs", rev = "cabcfb81cc3f4f20ef9b62312df6bb04c929abb5" }
+libghostty-vt-sys = { git = "https://github.com/daveowenatl/libghostty-rs", rev = "cabcfb81cc3f4f20ef9b62312df6bb04c929abb5" }
