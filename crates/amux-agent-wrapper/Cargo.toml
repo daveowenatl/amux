@@ -1,0 +1,15 @@
+[package]
+name = "amux-agent-wrapper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-platform amux agent wrapper binary. Self-dispatches on argv[0] to intercept claude/gemini invocations inside an amux pane and inject hook settings."
+
+[[bin]]
+name = "amux-agent-wrapper"
+path = "src/main.rs"
+
+[dependencies]
+
+[dev-dependencies]
+serde_json = { workspace = true }

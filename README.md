@@ -24,7 +24,7 @@ Sidebar shows git branch, PR status, working directory, listening ports, and lat
 
 ---
 
-- **All three agentic CLIs, first-class** — Claude Code, Gemini CLI, and Codex CLI each get hook integration, live status indicators, and tool visibility in the sidebar. Zero-setup on Unix — hooks inject automatically when the agent launches inside an amux pane, without touching the user's native agent config. On Windows, automatic wrapper installation currently covers Claude Code only (Gemini: [#166](https://github.com/daveowenatl/amux/issues/166); Codex CLI wrapper is POSIX-only).
+- **All three agentic CLIs, first-class** — Claude Code, Gemini CLI, and Codex CLI each get hook integration, live status indicators, and tool visibility in the sidebar. Hooks inject automatically when the agent launches inside an amux pane, without touching the user's native agent config. Unix uses bash wrappers; Windows uses a compiled Rust wrapper (`amux-agent-wrapper.exe`) that ships alongside `amux.exe`. Zero-setup on Unix for all three agents, and on Windows for Claude Code and Gemini CLI; **Codex on Windows is tracked as follow-up work** because its wrapper needs a symlinked `CODEX_HOME`, which in turn requires Windows Developer Mode.
 - **Scriptable** — CLI and socket API to create workspaces, split panes, send keystrokes, and drive agents programmatically. tmux-compat shim included for agent scripts that call tmux directly.
 - **Native on every platform** — Built in Rust with wgpu for GPU-accelerated rendering. Runs natively on Windows (DX12/Vulkan), macOS (Metal), and Linux (Vulkan). Not Electron. Not Tauri.
 - **Cross-platform config** — Reads `~/.config/amux/config.toml`. No platform-specific config format.
@@ -99,7 +99,9 @@ Hooks into Gemini CLI's BeforeAgent, AfterAgent, BeforeTool, Notification, Sessi
 
 ### Codex CLI
 
-Hooks into Codex CLI's SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, and Stop events via a wrapper script that creates a per-session `CODEX_HOME` tempdir symlinking your real `~/.codex/` and overlaying amux hook config. No modification of your real Codex config, credentials, or history. Launching `codex` inside an amux pane is enough — no manual install step. Amux observes Codex state for the sidebar but does not intercept approvals or drive the model; full `codex app-server` integration with approval interception is tracked as future work.
+Hooks into Codex CLI's SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, and Stop events via a wrapper script that creates a per-session `CODEX_HOME` tempdir symlinking your real `~/.codex/` and overlaying amux hook config. No modification of your real Codex config, credentials, or history. Launching `codex` inside an amux pane on macOS or Linux is enough — no manual install step. Amux observes Codex state for the sidebar but does not intercept approvals or drive the model; full `codex app-server` integration with approval interception is tracked as future work.
+
+> **Windows:** Codex integration via `amux-agent-wrapper.exe` is tracked as follow-up work. The Codex wrapper relies on a symlinked `CODEX_HOME` overlay, and creating symlinks on Windows requires either administrator privileges or [Developer Mode](https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development) to be enabled. Until that's wired up, Codex on Windows runs passthrough — you'll still get a working Codex session, just without amux sidebar status / tool indicators. Claude Code and Gemini CLI are unaffected and work with zero setup on Windows.
 
 ### Any other agent
 
