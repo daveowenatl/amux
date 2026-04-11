@@ -16,8 +16,11 @@ _amux_restore_scrollback_once() {
     unset AMUX_RESTORE_SCROLLBACK_FILE
 
     if [[ -r "$path" ]]; then
-        command cat < "$path" 2>/dev/null || true
-        command rm -f "$path" >/dev/null 2>&1 || true
+        # Use absolute paths: during early shell startup in a freshly-launched
+        # amux shell, $PATH may not yet include /bin or /usr/bin, so
+        # unqualified `cat` fails with "command not found" (exit 127).
+        /bin/cat -- "$path" 2>/dev/null || true
+        /bin/rm -f -- "$path" >/dev/null 2>&1 || true
     fi
 }
 _amux_restore_scrollback_once
@@ -228,6 +231,11 @@ _amux_start_head_watch() {
 # Hook: preexec (before command runs)
 # ---------------------------------------------------------------------------
 _amux_preexec() {
+    # OSC 133;B — command input finished (user pressed Enter)
+    printf '\e]133;B\a'
+    # OSC 133;C — command output starts
+    printf '\e]133;C\a'
+
     # Force git refresh after git-related commands
     local cmd="${1## }"
     case "$cmd" in
@@ -244,6 +252,13 @@ _amux_preexec() {
 # Hook: precmd (before prompt)
 # ---------------------------------------------------------------------------
 _amux_precmd() {
+    local _amux_exit=$?
+
+    # OSC 133;D — command finished (with exit code)
+    printf '\e]133;D;%s\a' "$_amux_exit"
+    # OSC 133;A — prompt starts
+    printf '\e]133;A\a'
+
     _amux_stop_head_watch
 
     local now=$EPOCHSECONDS

@@ -16,8 +16,11 @@ _amux_restore_scrollback_once() {
     unset AMUX_RESTORE_SCROLLBACK_FILE
 
     if [ -r "$path" ]; then
-        command cat < "$path" 2>/dev/null || true
-        command rm -f "$path" >/dev/null 2>&1 || true
+        # Use absolute paths: during early shell startup in a freshly-launched
+        # amux shell, $PATH may not yet include /bin or /usr/bin, so
+        # unqualified `cat` fails with "command not found" (exit 127).
+        /bin/cat -- "$path" 2>/dev/null || true
+        /bin/rm -f -- "$path" >/dev/null 2>&1 || true
     fi
 }
 _amux_restore_scrollback_once
@@ -145,6 +148,13 @@ _amux_start_pr_poll() {
 # PROMPT_COMMAND hook
 # ---------------------------------------------------------------------------
 _amux_prompt_command() {
+    local _amux_exit=$?
+
+    # OSC 133;D — command finished (with exit code)
+    printf '\e]133;D;%s\a' "$_amux_exit"
+    # OSC 133;A — prompt starts
+    printf '\e]133;A\a'
+
     local now
     now="$(date +%s)"
     local pwd="$PWD"
@@ -201,6 +211,11 @@ _amux_preexec_trap() {
     # Only trigger for interactive commands, not PROMPT_COMMAND itself
     [[ "$BASH_COMMAND" == "_amux_prompt_command" ]] && return
     [[ "$BASH_COMMAND" == "$PROMPT_COMMAND" ]] && return
+
+    # OSC 133;B — command input finished
+    printf '\e]133;B\a'
+    # OSC 133;C — command output starts
+    printf '\e]133;C\a'
 
     local cmd="$BASH_COMMAND"
     case "$cmd" in

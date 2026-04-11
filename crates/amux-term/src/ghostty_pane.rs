@@ -199,6 +199,36 @@ where
         }
     }
 
+    /// Return the set of row indices (in viewport order) whose semantic_prompt
+    /// state is Prompt or Continuation. Requires the shell integration to emit
+    /// OSC 133 marks for populated data; returns empty set otherwise.
+    fn prompt_row_indices(&self) -> std::collections::HashSet<usize> {
+        use libghostty_vt::screen::RowSemanticPrompt;
+        let mut result = std::collections::HashSet::new();
+        let mut rs = self.render_state.borrow_mut();
+        let Ok(snapshot) = rs.update(&self.terminal) else {
+            return result;
+        };
+        let Ok(mut row_iter) = RowIterator::new() else {
+            return result;
+        };
+        let Ok(mut row_iteration) = row_iter.update(&snapshot) else {
+            return result;
+        };
+        let mut idx: usize = 0;
+        while let Some(row) = row_iteration.next() {
+            if let Ok(raw) = row.raw_row() {
+                if let Ok(state) = raw.semantic_prompt() {
+                    if !matches!(state, RowSemanticPrompt::None) {
+                        result.insert(idx);
+                    }
+                }
+            }
+            idx += 1;
+        }
+        result
+    }
+
     /// Read all visible lines from a render state snapshot.
     /// Returns a Vec of lines (trimmed on the right).
     fn snapshot_lines(&self) -> Vec<String> {
@@ -610,9 +640,23 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
         let total = lines.len();
         let start = total.saturating_sub(max_lines);
         let mut selected: Vec<&str> = lines[start..].iter().map(|s| s.as_str()).collect();
-        while selected.last().is_some_and(|l| l.is_empty()) {
-            selected.pop();
+
+        // Drop trailing blank lines AND trailing prompt rows.
+        // Prompt rows are identified via libghostty-vt's per-row semantic_prompt
+        // metadata, populated by OSC 133 marks that our shell integration emits.
+        // This prevents prompt lines from accumulating across save/restore cycles.
+        let prompt_row_indices = self.prompt_row_indices();
+        while let Some(last_idx) = selected.len().checked_sub(1) {
+            let row_idx = start + last_idx;
+            let is_blank = selected[last_idx].trim().is_empty();
+            let is_prompt = prompt_row_indices.contains(&row_idx);
+            if is_blank || is_prompt {
+                selected.pop();
+            } else {
+                break;
+            }
         }
+
         selected.join("\n")
     }
 
