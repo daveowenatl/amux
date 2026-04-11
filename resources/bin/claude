@@ -72,9 +72,15 @@ export AMUX_CLAUDE_PID=$$
 # Resolve the amux CLI binary for hook commands.
 AMUX_CMD="${AMUX_BIN:-amux}"
 
-# Build hooks settings JSON.
-# Claude Code merges --settings additively with the user's own settings.json.
-HOOKS_JSON="{\"hooks\":{\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"\\\"${AMUX_CMD}\\\" claude-hook UserPromptSubmit\",\"timeout\":5}]}],\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"\\\"${AMUX_CMD}\\\" claude-hook PreToolUse\",\"timeout\":5}]}],\"Notification\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"\\\"${AMUX_CMD}\\\" claude-hook Notification\",\"timeout\":5}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"\\\"${AMUX_CMD}\\\" claude-hook Stop\",\"timeout\":5}]}],\"SubagentStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"\\\"${AMUX_CMD}\\\" claude-hook SubagentStart\",\"timeout\":5}]}]}}"
+# Build hooks settings JSON. Claude Code merges --settings additively with
+# the user's own settings.json, so these entries coexist with whatever the
+# user has configured. All 9 Claude hook events are registered — amux's
+# handlers return null for events it doesn't model, which Claude treats as
+# a no-op.
+HOOKS_JSON=$(cat <<EOF
+{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" claude-hook SessionStart","timeout":5}]}],"UserPromptSubmit":[{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" claude-hook UserPromptSubmit","timeout":5}]}],"PreToolUse":[{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" claude-hook PreToolUse","timeout":5}]}],"PostToolUse":[{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" claude-hook PostToolUse","timeout":5}]}],"Notification":[{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" claude-hook Notification","timeout":5}]}],"Stop":[{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" claude-hook Stop","timeout":5}]}],"SubagentStart":[{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" claude-hook SubagentStart","timeout":5}]}],"SubagentStop":[{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" claude-hook SubagentStop","timeout":5}]}],"SessionEnd":[{"matcher":"","hooks":[{"type":"command","command":"\"${AMUX_CMD}\" claude-hook SessionEnd","timeout":5}]}]}}
+EOF
+)
 
 if [[ "$SKIP_SESSION_ID" == true ]]; then
     exec "$REAL_CLAUDE" --settings "$HOOKS_JSON" "$@"

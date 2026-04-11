@@ -91,7 +91,7 @@ amux auto-detects which agent is running in each pane and activates the appropri
 
 ### Claude Code
 
-Hooks into Claude Code's PreToolUse, UserPromptSubmit, Notification, Stop, and SubagentStart events. The sidebar shows the current tool name during `PreToolUse` and clears on `Stop`. Completion fires an in-app notification and optional OS notification. Hooks are injected via `--settings` per session — your `~/.claude/settings.json` is untouched.
+Hooks into all 9 Claude Code hook events (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`, `SubagentStart`, `SubagentStop`, `SessionEnd`). The sidebar shows the current tool name during `PreToolUse` and clears on `PostToolUse`/`Stop`. `Notification` events surface the underlying permission-prompt or error message text. Completion fires an in-app notification and optional OS notification. Hooks are injected via `--settings` per session — your `~/.claude/settings.json` is untouched.
 
 ### Gemini CLI
 
