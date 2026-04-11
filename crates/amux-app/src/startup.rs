@@ -109,9 +109,10 @@ fn cleanup_stale_scrollback_files() {
 /// Gemini panes alive — multiple amux instances share $TMPDIR, so newer
 /// files are presumed to belong to a live sibling.
 fn cleanup_stale_gemini_settings_files() {
-    let tmp_dir = std::env::var_os("TMPDIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    // Use std::env::temp_dir() rather than hand-rolling a $TMPDIR fallback
+    // so we resolve the real system temp dir consistently across Unix
+    // (honours $TMPDIR, falls back to /tmp) and Windows (honours %TMP%/%TEMP%).
+    let tmp_dir = std::env::temp_dir();
     let Ok(entries) = std::fs::read_dir(&tmp_dir) else {
         return;
     };

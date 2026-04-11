@@ -69,40 +69,51 @@ fn describe_tool_use(tool_name: &str, tool_input: Option<&Value>) -> String {
                 .or_else(|| input.get("absolute_path"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            format!("Reading {}", filename_of(path))
+            format_with_target("Reading", filename_of(path), "file")
         }
         "edit_file" | "edit" => {
             let path = input
                 .get("file_path")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            format!("Editing {}", filename_of(path))
+            format_with_target("Editing", filename_of(path), "file")
         }
         "write_file" => {
             let path = input
                 .get("file_path")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            format!("Writing {}", filename_of(path))
+            format_with_target("Writing", filename_of(path), "file")
         }
         "run_shell_command" => {
             let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            format!("Running {}", truncate(cmd, 60))
+            format_with_target("Running", &truncate(cmd, 60), "command")
         }
         "glob" => {
             let pat = input.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
-            format!("Searching {pat}")
+            format_with_target("Searching", pat, "files")
         }
         "search_file_content" | "grep" => {
             let pat = input.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
-            format!("Grep {pat}")
+            format_with_target("Grep", pat, "files")
         }
         "web_fetch" => "Fetching URL".to_string(),
         "google_web_search" => {
             let q = input.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            format!("Search: {q}")
+            format_with_target("Search:", q, "web")
         }
         _ => tool_name.to_string(),
+    }
+}
+
+/// Produce `"<verb> <target>"`, falling back to `"<verb> <fallback>"`
+/// when the target is empty so we never render trailing whitespace like
+/// `"Reading "`.
+fn format_with_target(verb: &str, target: &str, fallback: &str) -> String {
+    if target.is_empty() {
+        format!("{verb} {fallback}")
+    } else {
+        format!("{verb} {target}")
     }
 }
 
@@ -194,6 +205,23 @@ mod tests {
         });
         let params = status_update_for("BeforeTool", &payload, "1").unwrap();
         assert_eq!(params["message"], "Editing main.rs");
+    }
+
+    #[test]
+    fn before_tool_missing_filename_falls_back_to_generic_label() {
+        // Regression: empty file_path must not render as "Reading " with
+        // a trailing space.
+        let payload = json!({ "tool_name": "read_file", "tool_input": {} });
+        let params = status_update_for("BeforeTool", &payload, "1").unwrap();
+        assert_eq!(params["message"], "Reading file");
+
+        let payload = json!({ "tool_name": "edit_file", "tool_input": { "file_path": "" } });
+        let params = status_update_for("BeforeTool", &payload, "1").unwrap();
+        assert_eq!(params["message"], "Editing file");
+
+        let payload = json!({ "tool_name": "run_shell_command", "tool_input": {} });
+        let params = status_update_for("BeforeTool", &payload, "1").unwrap();
+        assert_eq!(params["message"], "Running command");
     }
 
     #[test]
