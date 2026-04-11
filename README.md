@@ -13,7 +13,7 @@ amux is a terminal multiplexer for AI coding agents (Claude Code, Gemini CLI, Co
 
 - Runs Claude Code, Gemini CLI, and Codex CLI in panes. A blue ring appears on any pane whose agent needs input.
 - Sidebar shows per-workspace status: which agent is active, which tool it's running, which pane is waiting on you.
-- Hook integration is auto-injected. No `install-hooks` step. Your `~/.claude/settings.json`, `~/.gemini/settings.json`, and `~/.codex/` are not touched.
+- Hook integration is auto-injected. No `install-hooks` step. amux does not add persistent hook entries to `~/.claude/settings.json`, `~/.gemini/settings.json`, or `~/.codex/`. (Older installs get a one-time startup cleanup that removes legacy amux hook entries left in `~/.claude/settings.json` by earlier versions — a migration, not ongoing writes.)
 - Workspaces, horizontal and vertical splits, surface tabs within a workspace.
 - GPU-rendered via wgpu (Metal / DX12 / Vulkan) backed by [libghostty-vt](https://github.com/uzaaft/libghostty-rs) for the VT state machine.
 - CLI and Unix / named-pipe socket for driving it from scripts. tmux-compat shim so agent scripts calling `tmux` route to amux.
@@ -42,15 +42,16 @@ Extract and put the contents on your `PATH`. Each archive contains:
 ```bash
 git clone https://github.com/daveowenatl/amux
 cd amux
-cargo build --release
-./target/release/amux-app
+cargo run -p amux-app --release
 ```
+
+`cargo run -p amux-app --release` builds and launches the GUI in one step and works on every platform without hard-coding the binary path.
 
 Requirements: Rust 1.80+, a C compiler, and platform graphics drivers. Windows needs the MSVC toolchain (`rustup default stable-x86_64-pc-windows-msvc`). Homebrew / Winget / `cargo install amux` are not set up yet — build from source or use the release archive.
 
 ## Keyboard Shortcuts
 
-Defaults differ between macOS and Windows/Linux. On Windows/Linux, workspace / tab / edit operations use `Ctrl+Shift` instead of bare `Ctrl` so the terminal's own `Ctrl+C` (SIGINT), `Ctrl+N`, `Ctrl+W`, `Ctrl+S` (XOFF), etc. still reach the shell. Every binding is overridable in `config.toml` under `[keybindings]`.
+Defaults differ between macOS and Windows/Linux. On Windows/Linux, most workspace, tab, and edit operations use `Ctrl+Shift` instead of bare `Ctrl` so the terminal's own `Ctrl+C` (SIGINT), `Ctrl+N`, `Ctrl+T`, `Ctrl+S` (XOFF), etc. still reach the shell. `Ctrl+W` is the exception — amux claims it as the close-pane binding on non-macOS (shells tend not to rely on it). Every binding is overridable in `config.toml` under `[keybindings]`.
 
 ### Workspaces
 
@@ -68,7 +69,7 @@ Defaults differ between macOS and Windows/Linux. On Windows/Linux, workspace / t
 | Action | macOS | Windows / Linux |
 |---|---|---|
 | New tab | `Cmd+T` | `Ctrl+Shift+T` |
-| Close tab | `Cmd+W` | `Ctrl+Shift+W` |
+| Close tab | `Cmd+W` | `Ctrl+W` |
 | New browser tab | `Cmd+Shift+L` | `Ctrl+Shift+L` |
 | Next tab in focused pane | `Ctrl+Tab` | `Ctrl+Tab` |
 | Previous tab in focused pane | `Ctrl+Shift+Tab` | `Ctrl+Shift+Tab` |
@@ -113,13 +114,20 @@ Defaults differ between macOS and Windows/Linux. On Windows/Linux, workspace / t
 | Save session | `Cmd+S` | `Ctrl+Shift+S` |
 | Open dev tools | `Cmd+Alt+I` | `Ctrl+Shift+I` |
 
+### Platform caveats
+
+A few actions are fired through the native menu bar rather than the configurable keybinding handler. That matters because:
+
+- **Linux has no menu bar yet.** The GTK menu bar is not wired up (`muda` supports it but eframe doesn't yet expose the `GtkWindow`). So `Cmd`/`Ctrl+=`, `Ctrl+-`, `Ctrl+0` (font zoom) and `Cmd`/`Ctrl+Shift+S` (save session) currently don't fire on Linux. Track `crates/amux-app/src/menu_bar.rs`.
+- **`Open dev tools` on Windows.** `Ctrl+Shift+I` is bound both to `Action::DevTools` in the keybinding handler and to "Toggle Notifications" in the Windows native menu bar. The menu bar consumes the key event first, so on Windows this combo opens the notification panel instead of the dev tools. macOS and Linux are unaffected. A fix is tracked as a code-level follow-up.
+
 ## Agent Integration
 
 amux detects which agent is running in a pane by `argv[0]` and wires its hook events into the sidebar. Wrappers are installed to `~/.config/amux/bin/` and that directory is prepended to `PATH` for every pane, so launching `claude`, `gemini`, or `codex` inside amux finds the wrapper first. The wrapper injects hooks for the current session and execs the real agent binary.
 
 ### Claude Code
 
-All 9 hook events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`, `SubagentStart`, `SubagentStop`, `SessionEnd`. Hooks are injected via `--settings` at launch; nothing is persisted to `~/.claude/`.
+All 9 hook events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`, `SubagentStart`, `SubagentStop`, `SessionEnd`. Hooks are injected via `--settings` at launch; amux does not add persistent hook entries to `~/.claude/settings.json`. Startup may perform a one-time migration that removes legacy amux hook entries left there by older installs.
 
 ### Gemini CLI
 
@@ -201,23 +209,33 @@ ring = true
 auto_reorder_workspaces = true
 
 [keybindings]
-# Override any default. Use "cmd+…" on macOS or "ctrl+…" on Win/Linux.
+# Override any default. On non-macOS the parser treats `cmd` as `ctrl`,
+# so mac-style combos aren't safe to copy verbatim — a bare `ctrl+n`
+# would collide with the terminal's own Ctrl+N.
 # Full list of actions: see `KeybindingsConfig` in
 # crates/amux-core/src/config.rs.
-new_workspace = "cmd+n"
-toggle_sidebar = "cmd+b"
+#
+# macOS:
+# new_workspace = "cmd+n"
+# toggle_sidebar = "cmd+b"
+#
+# Windows / Linux (these ARE the defaults — shown for reference):
+# new_workspace = "ctrl+shift+n"
+# toggle_sidebar = "ctrl+b"
 ```
 
 ## Building from Source
 
+For contributors. The [From source](#from-source) section above covers the quick-start path for *using* amux; this section covers the workspace-wide commands you'll want when *developing* it.
+
 ```bash
-git clone https://github.com/daveowenatl/amux
-cd amux
 cargo build --workspace
 cargo test --workspace
+cargo fmt --check
+cargo clippy --workspace -- -D warnings
 ```
 
-Requirements: Rust 1.80+, a C compiler, platform graphics drivers. Windows needs the MSVC toolchain. Before pushing, run `cargo fmt --check` and `cargo clippy --workspace -- -D warnings`; CI enforces both.
+Requirements: Rust 1.80+, a C compiler, platform graphics drivers. Windows needs the MSVC toolchain. CI enforces `fmt --check` and `clippy -D warnings` on every PR — run both before pushing.
 
 ## Contributing
 
