@@ -24,7 +24,7 @@ Sidebar shows git branch, PR status, working directory, listening ports, and lat
 
 ---
 
-- **All three agentic CLIs, first-class** — Claude Code, Gemini CLI, and Codex CLI each get hook integration, live status indicators, and tool visibility in the sidebar. Zero-setup on Unix — hooks inject automatically when the agent launches inside an amux pane, without touching the user's native agent config. On Windows, automatic wrapper installation currently covers Claude Code only (Gemini: [#166](https://github.com/daveowenatl/amux/issues/166); Codex CLI wrapper is POSIX-only).
+- **All three agentic CLIs, first-class** — Claude Code, Gemini CLI, and Codex CLI each get hook integration, live status indicators, and tool visibility in the sidebar. Zero-setup everywhere — hooks inject automatically when the agent launches inside an amux pane, without touching the user's native agent config. Unix uses bash wrappers; Windows uses a compiled Rust wrapper (`amux-agent-wrapper.exe`) that ships alongside `amux.exe`. Codex on Windows is still a follow-up — it needs a symlinked `CODEX_HOME` which requires Developer Mode.
 - **Scriptable** — CLI and socket API to create workspaces, split panes, send keystrokes, and drive agents programmatically. tmux-compat shim included for agent scripts that call tmux directly.
 - **Native on every platform** — Built in Rust with wgpu for GPU-accelerated rendering. Runs natively on Windows (DX12/Vulkan), macOS (Metal), and Linux (Vulkan). Not Electron. Not Tauri.
 - **Cross-platform config** — Reads `~/.config/amux/config.toml`. No platform-specific config format.

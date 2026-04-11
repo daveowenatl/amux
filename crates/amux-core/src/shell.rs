@@ -316,21 +316,83 @@ pub fn install_agent_wrappers_at(bin_dir: &std::path::Path) -> Option<()> {
     }
     #[cfg(windows)]
     {
-        // PowerShell/pwsh support for Gemini is issue #166; for now only the
-        // claude.cmd shim is installed on Windows.
-        let wrapper_path = bin_dir.join("claude.cmd");
-        let wrapper_content = "@echo off\r\nclaude.exe %*\r\n";
+        // On Windows we install copies of `amux-agent-wrapper.exe` (built as
+        // a workspace member — see `crates/amux-agent-wrapper`) renamed to
+        // `claude.exe` and `gemini.exe`. The wrapper self-dispatches on its
+        // argv[0] filename so one source binary handles all agents. This
+        // replaces the legacy `claude.cmd` passthrough shim that gave zero
+        // hook integration on Windows.
+        //
+        // Codex on Windows is still deferred — its integration needs a
+        // symlink farm that requires Developer Mode on Windows. Tracked as
+        // a follow-up to the Windows gap plan.
+        let Some(wrapper_src) = locate_agent_wrapper_binary() else {
+            tracing::warn!(
+                "Windows agent wrappers skipped: amux-agent-wrapper.exe not found \
+                 next to the running amux binary. Claude/Gemini hook injection \
+                 will not work in new panes until the wrapper is available."
+            );
+            return Some(());
+        };
 
-        let needs_write = std::fs::read_to_string(&wrapper_path)
-            .map(|existing| existing != wrapper_content)
-            .unwrap_or(true);
-
-        if needs_write && std::fs::write(&wrapper_path, wrapper_content).is_err() {
-            return None;
+        let targets: &[&str] = &["claude.exe", "gemini.exe"];
+        for name in targets {
+            let dest = bin_dir.join(name);
+            if needs_wrapper_copy(&wrapper_src, &dest) {
+                // Remove first — `std::fs::copy` on Windows fails if the
+                // destination is currently executing (a running claude.exe
+                // from a prior pane). Falling through on removal failure
+                // lets the copy surface the real error.
+                let _ = std::fs::remove_file(&dest);
+                if std::fs::copy(&wrapper_src, &dest).is_err() {
+                    return None;
+                }
+            }
         }
     }
 
     Some(())
+}
+
+/// Locate `amux-agent-wrapper.exe` on Windows. Expected to live next to
+/// the running `amux.exe` / `amux-app.exe` — the release distribution
+/// ships all three binaries in the same directory, and `cargo build
+/// --workspace` during development puts them in the same `target/<profile>`.
+#[cfg(windows)]
+fn locate_agent_wrapper_binary() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let candidate = dir.join("amux-agent-wrapper.exe");
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+/// Returns true when `dest` is missing or has different content than
+/// `src`. Avoids redundant copies on every pane launch. Compared via
+/// file length first (cheap) then byte content as a fallback. The
+/// wrapper binary is small (a few hundred KB) so a full-file read is
+/// acceptable on mismatch.
+#[cfg(windows)]
+fn needs_wrapper_copy(src: &std::path::Path, dest: &std::path::Path) -> bool {
+    let Ok(src_meta) = std::fs::metadata(src) else {
+        return false; // source missing — refuse to copy anyway
+    };
+    let Ok(dest_meta) = std::fs::metadata(dest) else {
+        return true;
+    };
+    if src_meta.len() != dest_meta.len() {
+        return true;
+    }
+    let Ok(src_bytes) = std::fs::read(src) else {
+        return false;
+    };
+    let Ok(dest_bytes) = std::fs::read(dest) else {
+        return true;
+    };
+    src_bytes != dest_bytes
 }
 
 #[cfg(test)]
