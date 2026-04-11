@@ -2,7 +2,7 @@
 <p align="center">A cross-platform terminal multiplexer for AI coding agents — Claude Code, Gemini CLI, and Codex CLI, all first-class</p>
 
 <p align="center">
-  <a href="https://github.com/yourusername/amux/releases"><img src="https://img.shields.io/github/v/release/yourusername/amux?color=555&label=latest" alt="Latest release" /></a>
+  <a href="https://github.com/daveowenatl/amux/releases"><img src="https://img.shields.io/github/v/release/daveowenatl/amux?color=555&label=latest" alt="Latest release" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-555" alt="License: MIT" /></a>
   <img src="https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-555" alt="Platforms" />
   <img src="https://img.shields.io/badge/built%20with-Rust-555?logo=rust" alt="Built with Rust" />
@@ -33,7 +33,7 @@ Sidebar shows git branch, PR status, working directory, listening ports, and lat
 
 ### GitHub Releases (recommended)
 
-Download the latest binary for your platform from the [Releases page](https://github.com/yourusername/amux/releases/latest):
+Download the latest archive for your platform from the [Releases page](https://github.com/daveowenatl/amux/releases/latest):
 
 | Platform | File |
 |---|---|
@@ -42,12 +42,16 @@ Download the latest binary for your platform from the [Releases page](https://gi
 | Linux (x86_64) | `amux-x86_64-unknown-linux-gnu.tar.gz` |
 | Windows (x86_64) | `amux-x86_64-pc-windows-msvc.zip` |
 
-amux auto-updates on launch. You only need to download once.
+Extract and place the contents on your `PATH`. Each archive contains:
+
+- `amux` — the CLI (shell integration, notifications, session control)
+- `amux-app` — the GUI terminal multiplexer
+- `amux-agent-wrapper` *(Windows only)* — agent hook injector; runtime dependency used by `amux-app` to wire Claude/Gemini hook integration into new panes
 
 ### Homebrew (macOS)
 
 ```bash
-brew tap yourusername/amux
+brew tap daveowenatl/amux
 brew install --cask amux
 ```
 
@@ -277,7 +281,7 @@ toggle_sidebar = "ctrl+b"
 Requirements: Rust 1.80+, a C compiler, and platform graphics drivers.
 
 ```bash
-git clone https://github.com/yourusername/amux
+git clone https://github.com/daveowenatl/amux
 cd amux
 cargo build --release
 ./target/release/amux
@@ -287,8 +291,8 @@ On Windows, the MSVC toolchain is required (`rustup default stable-x86_64-pc-win
 
 ## Contributing
 
-- Open [GitHub Issues](https://github.com/yourusername/amux/issues) for bugs and feature requests
-- Start a [Discussion](https://github.com/yourusername/amux/discussions) for questions and ideas
+- Open [GitHub Issues](https://github.com/daveowenatl/amux/issues) for bugs and feature requests
+- Start a [Discussion](https://github.com/daveowenatl/amux/discussions) for questions and ideas
 - PRs welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md)
 
 ## License
