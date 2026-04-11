@@ -1,6 +1,7 @@
 mod find_bar;
 mod fonts;
 mod frame_update;
+mod gemini_title;
 mod hyperlinks;
 mod ime;
 mod input;
