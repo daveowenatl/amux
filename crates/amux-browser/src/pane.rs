@@ -96,7 +96,12 @@ fn profiles_base_dir() -> PathBuf {
     }
     #[cfg(target_os = "windows")]
     {
-        dirs::data_dir()
+        // Browser profiles contain cache, session cookies, and user data
+        // that should NOT roam across machines via %APPDATA%. Use
+        // %LOCALAPPDATA% (dirs::data_local_dir) so the profile stays
+        // machine-local — matches the convention Chrome / Edge / Firefox
+        // follow on Windows.
+        dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("amux/browser-profiles")
     }

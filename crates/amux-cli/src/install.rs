@@ -25,16 +25,21 @@ pub fn install_shell_integration() -> anyhow::Result<()> {
     let zsh_script = include_str!("../../../resources/shell-integration/amux-zsh-integration.zsh");
     let bash_script =
         include_str!("../../../resources/shell-integration/amux-bash-integration.bash");
+    let pwsh_script =
+        include_str!("../../../resources/shell-integration/amux-pwsh-integration.ps1");
 
     let zsh_path = config_dir.join("amux-zsh-integration.zsh");
     let bash_path = config_dir.join("amux-bash-integration.bash");
+    let pwsh_path = config_dir.join("amux-pwsh-integration.ps1");
 
     std::fs::write(&zsh_path, zsh_script)?;
     std::fs::write(&bash_path, bash_script)?;
+    std::fs::write(&pwsh_path, pwsh_script)?;
 
     println!("Shell integration scripts installed to:");
     println!("  {}", zsh_path.display());
     println!("  {}", bash_path.display());
+    println!("  {}", pwsh_path.display());
     println!();
     println!("Add one of the following to your shell config:");
     println!();
@@ -49,6 +54,11 @@ pub fn install_shell_integration() -> anyhow::Result<()> {
         "  [[ -n \"$AMUX_SOCKET_PATH\" ]] && source \"{}\"",
         bash_path.display()
     );
+    println!();
+    println!("  # For PowerShell 7+ ($PROFILE):");
+    println!("  if ($env:AMUX_SOCKET_PATH) {{");
+    println!("      . '{}'", pwsh_path.display());
+    println!("  }}");
 
     Ok(())
 }
