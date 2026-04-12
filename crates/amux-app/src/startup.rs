@@ -789,9 +789,13 @@ pub(crate) fn spawn_surface(
 
     // Point AMUX_BIN to the CLI binary so shell integration scripts can invoke it
     // without relying on PATH (macOS path_helper in /etc/zprofile rebuilds PATH).
+    // On Windows the binary is `amux.exe` — Rust's `Path::exists()` does NOT
+    // append PATHEXT the way cmd.exe / PowerShell `Get-Command` do, so we
+    // must use the platform-correct filename.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
-            let cli_bin = exe_dir.join("amux");
+            let cli_name = if cfg!(windows) { "amux.exe" } else { "amux" };
+            let cli_bin = exe_dir.join(cli_name);
             if cli_bin.exists() {
                 cmd.env("AMUX_BIN", cli_bin.to_string_lossy().as_ref());
             }
