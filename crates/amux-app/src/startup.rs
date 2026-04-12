@@ -913,7 +913,7 @@ fn resolve_cli_binary() -> Option<std::path::PathBuf> {
         if let Some(exe_dir) = exe.parent() {
             // Primary: same directory.
             let candidate = exe_dir.join(cli_name);
-            if candidate.exists() {
+            if candidate.is_file() {
                 return Some(candidate);
             }
 
@@ -923,7 +923,7 @@ fn resolve_cli_binary() -> Option<std::path::PathBuf> {
             if let Some(profile_dir) = exe_dir.file_name() {
                 if let Some(target_root) = exe_dir.parent().and_then(|p| p.parent()) {
                     let candidate = target_root.join(profile_dir).join(cli_name);
-                    if candidate.exists() {
+                    if candidate.is_file() {
                         return Some(candidate);
                     }
                 }
