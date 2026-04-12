@@ -43,11 +43,20 @@ if ($env:AMUX_RESTORE_SCROLLBACK_FILE) {
     Remove-Item Env:AMUX_RESTORE_SCROLLBACK_FILE -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $scrollbackFile) {
         try {
-            # Use Get-Content -Raw + [Console]::Write to emit the saved
-            # scrollback verbatim, with no added encoding or formatting —
-            # analogous to the `/bin/cat` call in the bash/zsh integration.
-            $content = Get-Content -Raw -LiteralPath $scrollbackFile -ErrorAction Stop
-            [Console]::Write($content)
+            # Write the saved scrollback as raw bytes to stdout,
+            # bypassing .NET's text encoding layer entirely.
+            # [Console]::Write(string) encodes through
+            # [Console]::OutputEncoding, which can mangle the ANSI
+            # escape sequences (0x1B bytes) in the saved text
+            # depending on the console's code page. Writing raw
+            # bytes via [Console]::OpenStandardOutput() is the
+            # direct Windows equivalent of `/bin/cat` in the
+            # bash/zsh integration — the bytes flow straight to
+            # ConPTY without any encoding conversion.
+            $bytes = [System.IO.File]::ReadAllBytes($scrollbackFile)
+            $stdout = [Console]::OpenStandardOutput()
+            $stdout.Write($bytes, 0, $bytes.Length)
+            $stdout.Flush()
         } catch {
             # Restore is best-effort; a failure must not block the shell.
         }
