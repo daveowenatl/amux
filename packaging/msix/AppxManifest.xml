@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX packaging manifest for amux.
+
+  Publisher must exactly match the signing certificate subject.
+  Update the placeholder Publisher value below when a signing certificate
+  is provisioned (see packaging/msix/README.md for setup instructions).
+
+  The desktop6:MutablePackageDirectories extension is intentionally NOT
+  used — amux stores config and session data in %APPDATA%\amux\ which
+  is outside the package directory and unaffected by MSIX virtualisation
+  under runFullTrust.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 desktop rescap">
+
+  <Identity
+    Name="DaveOwen.amux"
+    Version="0.1.0.0"
+    Publisher="CN=PLACEHOLDER, O=PLACEHOLDER, L=PLACEHOLDER, S=PLACEHOLDER, C=US"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>amux</DisplayName>
+    <PublisherDisplayName>Dave Owen</PublisherDisplayName>
+    <Description>Cross-platform terminal multiplexer for AI coding agents</Description>
+    <Logo>Assets\StoreLogo.scale-100.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <!-- Windows 10 1903+ (build 18362) for ConPTY stability -->
+    <TargetDeviceFamily
+      Name="Windows.Desktop"
+      MinVersion="10.0.18362.0"
+      MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <!--
+      GUI application: amux-app.exe
+      EntryPoint="Windows.FullTrustApplication" is required for PTY
+      process spawning, named-pipe IPC, and direct GPU (DX12/Vulkan)
+      access — MSIX sandbox restrictions would break all three.
+    -->
+    <Application
+      Id="AmuxApp"
+      Executable="amux-app.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="amux"
+        Description="Terminal multiplexer for AI coding agents"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.scale-100.png"
+        Square44x44Logo="Assets\Square44x44Logo.scale-100.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.scale-100.png" />
+      </uap:VisualElements>
+    </Application>
+
+    <!--
+      CLI application: amux.exe
+      AppExecutionAlias lets users run `amux` from any terminal without
+      manually adding the install directory to PATH.
+    -->
+    <Application
+      Id="AmuxCli"
+      Executable="amux.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="amux CLI"
+        Description="amux command-line interface"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.scale-100.png"
+        Square44x44Logo="Assets\Square44x44Logo.scale-100.png"
+        AppListEntry="none" />
+      <Extensions>
+        <uap3:Extension Category="windows.appExecutionAlias">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="amux.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- Required: PTY spawning, named-pipe IPC, GPU access, file I/O -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+</Package>

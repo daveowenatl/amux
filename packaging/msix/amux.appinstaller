@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  App Installer file for MSIX auto-update via GitHub Releases.
+
+  When installed via this .appinstaller file (double-click or
+  Add-AppxPackage -AppInstallerFile), Windows checks for updates
+  on launch and in the background every 24 hours.
+
+  The URI below must point to the signed .msix package on the
+  GitHub Release matching this version. Update the Version and
+  Uri fields when cutting a new release.
+-->
+<AppInstaller
+  xmlns="http://schemas.microsoft.com/appx/appinstaller/2018"
+  Version="0.1.0.0"
+  Uri="https://github.com/daveowenatl/amux/releases/latest/download/amux.appinstaller">
+
+  <MainPackage
+    Name="DaveOwen.amux"
+    Version="0.1.0.0"
+    Publisher="CN=PLACEHOLDER, O=PLACEHOLDER, L=PLACEHOLDER, S=PLACEHOLDER, C=US"
+    ProcessorArchitecture="x64"
+    Uri="https://github.com/daveowenatl/amux/releases/latest/download/amux.msix" />
+
+  <UpdateSettings>
+    <OnLaunch HoursBetweenUpdateChecks="24" ShowPrompt="false" />
+    <AutomaticBackgroundTask />
+  </UpdateSettings>
+
+</AppInstaller>
