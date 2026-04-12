@@ -2,6 +2,21 @@
 
 use crate::*;
 
+/// Load the embedded app icon for the window title bar / taskbar.
+/// The 256px PNG is embedded at compile time so there's no file I/O at runtime.
+fn load_app_icon() -> egui::IconData {
+    let png_bytes = include_bytes!("../../../packaging/msix/Assets/icon-1024.png");
+    let img = image::load_from_memory(png_bytes)
+        .expect("embedded icon is valid PNG")
+        .into_rgba8();
+    let (w, h) = img.dimensions();
+    egui::IconData {
+        rgba: img.into_raw(),
+        width: w,
+        height: h,
+    }
+}
+
 /// Per-user scrollback temp directory with restrictive permissions.
 fn scrollback_temp_dir() -> std::path::PathBuf {
     // Prefer XDG_RUNTIME_DIR (per-user, typically 0700) on Linux
@@ -398,7 +413,8 @@ pub(crate) fn run() -> anyhow::Result<()> {
 
     let viewport = egui::ViewportBuilder::default()
         .with_inner_size([1000.0, 600.0])
-        .with_title("amux");
+        .with_title("amux")
+        .with_icon(load_app_icon());
     #[cfg(target_os = "macos")]
     let viewport = viewport
         .with_fullsize_content_view(true)
