@@ -213,6 +213,14 @@ impl eframe::App for AmuxApp {
         // Drain native menu bar actions
         self.handle_menu_actions();
 
+        // If a menu-bar Copy was requested for a focused text field, inject
+        // Event::Copy into egui's input so TextEdit processes it during the
+        // render pass and sets PlatformOutput::copied_text (which eframe
+        // writes to the system clipboard). Must happen BEFORE the render pass.
+        if std::mem::take(&mut self.pending_text_field_copy) {
+            ctx.input_mut(|i| i.events.push(egui::Event::Copy));
+        }
+
         // Handle keyboard/paste input -> focused pane's active surface only
         // (blocked during copy mode — all keys go through handle_copy_mode_key)
         let mut sent_input = false;
