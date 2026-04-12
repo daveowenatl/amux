@@ -576,20 +576,62 @@ impl Default for NotificationSoundConfig {
     }
 }
 
+/// The shipped default config, embedded at compile time.
+const DEFAULT_CONFIG_TOML: &str = include_str!("../../../resources/default-config.toml");
+
+/// Cross-platform amux home directory: `~/.amux/`.
+/// Returns `None` only if the OS has no concept of a home directory.
+pub fn amux_home_dir() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|h| h.join(".amux"))
+}
+
+/// Write the shipped default config to `~/.amux/config.toml` if the
+/// directory doesn't exist yet. Creates `~/.amux/` as well.
+/// Returns the path written to, or `None` if the write was skipped
+/// (directory already exists) or failed.
+fn write_default_config() -> Option<std::path::PathBuf> {
+    let dir = amux_home_dir()?;
+    if dir.exists() {
+        return None; // Don't overwrite anything in an existing .amux dir
+    }
+    if std::fs::create_dir_all(&dir).is_err() {
+        tracing::warn!("Failed to create {}", dir.display());
+        return None;
+    }
+    let path = dir.join("config.toml");
+    match std::fs::write(&path, DEFAULT_CONFIG_TOML) {
+        Ok(()) => {
+            tracing::info!("Wrote default config to {}", path.display());
+            Some(path)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to write default config: {e}");
+            None
+        }
+    }
+}
+
 pub fn load_app_config() -> AppConfig {
-    let config_path = if cfg!(target_os = "windows") {
+    // 1. ~/.amux/config.toml (cross-platform, preferred)
+    let amux_home_path = amux_home_dir().map(|d| d.join("config.toml"));
+
+    // 2. Platform-specific fallback
+    let platform_path = if cfg!(target_os = "windows") {
         dirs::config_dir().map(|d| d.join("amux").join("config.toml"))
     } else {
         dirs::home_dir().map(|d| d.join(".config").join("amux").join("config.toml"))
     };
 
-    if let Some(path) = config_path {
-        match std::fs::read_to_string(&path) {
+    // Try each path in priority order.
+    for path in [amux_home_path.as_ref(), platform_path.as_ref()]
+        .into_iter()
+        .flatten()
+    {
+        match std::fs::read_to_string(path) {
             Ok(contents) => match toml::from_str::<AppConfig>(&contents) {
                 Ok(mut config) => {
                     tracing::info!("Loaded config from {}", path.display());
                     config.font_size = validate_font_size(config.font_size);
-                    // Trim whitespace; treat empty as default.
                     config.font_family = config.font_family.trim().to_owned();
                     if config.font_family.is_empty() {
                         config.font_family = DEFAULT_FONT_FAMILY.to_owned();
@@ -605,6 +647,21 @@ pub fn load_app_config() -> AppConfig {
             }
             Err(e) => {
                 tracing::warn!("Failed to read {}: {}", path.display(), e);
+            }
+        }
+    }
+
+    // No config file found anywhere. Write the default to ~/.amux/config.toml
+    // so the user has a starting point, then parse and return it.
+    if let Some(path) = write_default_config() {
+        match toml::from_str::<AppConfig>(DEFAULT_CONFIG_TOML) {
+            Ok(mut config) => {
+                tracing::info!("Using newly written default config at {}", path.display());
+                config.font_size = validate_font_size(config.font_size);
+                return config;
+            }
+            Err(e) => {
+                tracing::warn!("Default config failed to parse (bug): {e}");
             }
         }
     }
@@ -794,5 +851,23 @@ mod tests {
         assert!(copy.ctrl);
         assert!(copy.shift);
         assert_eq!(copy.key, "y");
+    }
+
+    #[test]
+    fn default_config_toml_parses() {
+        let toml_src = include_str!("../../../resources/default-config.toml");
+        let config: AppConfig = toml::from_str(toml_src)
+            .unwrap_or_else(|e| panic!("default-config.toml failed to parse: {e}"));
+        assert_eq!(config.font_family, "IBM Plex Mono");
+        assert_eq!(config.font_size, 14.0);
+        assert_eq!(config.theme_source, "default");
+    }
+
+    #[test]
+    fn amux_home_dir_is_dot_amux() {
+        let home = amux_home_dir();
+        assert!(home.is_some());
+        let home = home.unwrap();
+        assert!(home.ends_with(".amux"), "expected .amux, got {:?}", home);
     }
 }
