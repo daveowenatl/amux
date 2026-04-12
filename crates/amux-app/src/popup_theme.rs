@@ -207,6 +207,63 @@ pub(crate) fn with_menu_palette<R>(
     result
 }
 
+/// Apply only the modal-relevant subset of a `MenuPalette` to
+/// `visuals`. Used by [`with_modal_palette`] so every `egui::Window`
+/// call site shares the same set of overrides.
+///
+/// Unlike [`apply_menu_palette_to_visuals`], this does NOT touch
+/// widget `bg_fill` / `bg_stroke`. A modal needs visible button
+/// backgrounds and text-field outlines — the menu-style "transparent
+/// button that becomes a hover highlight" look is wrong for a
+/// modal's OK / Cancel controls.
+fn apply_modal_palette_to_visuals(visuals: &mut egui::Visuals, palette: MenuPalette) {
+    // Outer Window Frame.
+    visuals.window_fill = palette.bg;
+    visuals.panel_fill = palette.bg;
+    visuals.window_stroke = Stroke::new(1.0, palette.divider);
+
+    // Text color — labels, RichText, and the button-label path.
+    // We set `override_text_color` (used by `ui.label`) AND the
+    // per-widget `fg_stroke.color` (used by egui Button's label
+    // paint path) so both code paths render readable text. Widget
+    // `bg_fill` / `bg_stroke` are intentionally left untouched so
+    // egui's default chrome for buttons and text fields still
+    // renders normally.
+    visuals.override_text_color = Some(palette.fg);
+    visuals.widgets.noninteractive.fg_stroke.color = palette.fg;
+    visuals.widgets.inactive.fg_stroke.color = palette.fg;
+    visuals.widgets.hovered.fg_stroke.color = palette.fg;
+    visuals.widgets.active.fg_stroke.color = palette.fg;
+    visuals.widgets.open.fg_stroke.color = palette.fg;
+}
+
+/// Run `f` with amux's modal palette temporarily applied to the
+/// `egui::Context`'s style, then restore the previous style.
+///
+/// This is the correct way to theme `egui::Window`-based modals
+/// (rename modal, find bar, notification panel). `Window::show`
+/// reads `ctx.style().visuals.window_fill` / `window_stroke` /
+/// `panel_fill` synchronously during the call to build its outer
+/// Frame, so save / apply / restore wraps the entire modal cleanly.
+///
+/// Unlike [`with_menu_palette`], this variant leaves widget
+/// `bg_fill` / `bg_stroke` untouched — modals want normal-looking
+/// buttons and text-field borders, not the flat hover-only look
+/// that's correct for menus.
+pub(crate) fn with_modal_palette<R>(
+    ctx: &egui::Context,
+    palette: MenuPalette,
+    f: impl FnOnce() -> R,
+) -> R {
+    let saved = ctx.style();
+    ctx.style_mut(|style| {
+        apply_modal_palette_to_visuals(&mut style.visuals, palette);
+    });
+    let result = f();
+    ctx.set_style(saved);
+    result
+}
+
 /// Apply a `MenuPalette` to a UI's visuals so that popups built
 /// from this UI's style (and widgets rendered inside them) pick up
 /// amux's chrome colors instead of egui's light-theme defaults.
