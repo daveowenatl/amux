@@ -196,3 +196,18 @@ pub fn apply_dark_mode_to_window(hwnd_raw: isize) {
         }
     }
 }
+
+/// Call Win32 `SetFocus()` on the given window handle.
+///
+/// Used to steal keyboard focus back from a WebView2 child HWND when the
+/// user clicks an egui widget (e.g. the browser omnibar). wry's
+/// `webview.focus_parent()` doesn't reliably do this on Windows because
+/// WebView2's internal focus arbitration lets the child HWND keep Win32
+/// keyboard focus even after wry calls its own release logic.
+pub fn set_focus(hwnd_raw: isize) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+    let hwnd: HWND = hwnd_raw as HWND;
+    unsafe {
+        SetFocus(hwnd);
+    }
+}

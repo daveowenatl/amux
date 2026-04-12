@@ -1086,8 +1086,21 @@ impl AmuxApp {
             .get(&pane_id)
             .and_then(|e| e.as_browser())
             .is_some_and(|b| b.take_got_focus());
+        let clicked = response.clicked();
         if webview_got_focus && response.has_focus() {
             response.surrender_focus();
+        }
+        // On Windows, clicking the omnibar TextEdit fires `clicked()` but
+        // does not grant egui focus — WebView2's child HWND keeps Win32
+        // keyboard focus after the click so egui skips its auto-focus step.
+        // Force egui focus and then SetFocus() the parent HWND so the
+        // keyboard events reach egui's TextEdit.
+        if clicked && !response.has_focus() {
+            response.request_focus();
+            #[cfg(target_os = "windows")]
+            if let Some(hwnd) = self.cached_hwnd {
+                crate::windows_chrome::set_focus(hwnd);
+            }
         }
         state.focused = response.has_focus();
         state.text = text;
