@@ -235,6 +235,10 @@ struct AmuxApp {
     /// field. Applied during the omnibar render pass so that egui can update
     /// the TextEdit cursor selection state.
     pending_text_field_select_all: bool,
+    /// Whether a menu-bar Copy action is pending for the focused text field.
+    /// Injected as `egui::Event::Copy` before the render pass so egui's
+    /// TextEdit processes it and sets `PlatformOutput::copied_text`.
+    pending_text_field_copy: bool,
     /// Path to the config file that was loaded at startup (for hot-reload polling).
     config_file_path: Option<std::path::PathBuf>,
     /// Last known modification time of the config file.
