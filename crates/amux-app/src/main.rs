@@ -422,9 +422,14 @@ impl AmuxApp {
 
         let ua = self.app_config.browser.user_agent.clone();
         let dl_dir = self.app_config.browser.download_dir.clone();
+        // Match the webview's initial background to the current terminal
+        // background so any paint before content loads blends with chrome
+        // on both dark and light themes.
+        let [bg_r, bg_g, bg_b] = self.theme.terminal.background;
         let options = amux_browser::BrowserOptions {
             user_agent: ua.as_deref(),
             download_dir: dl_dir.as_deref(),
+            background_color: Some((bg_r, bg_g, bg_b, 255)),
         };
 
         // New browser panes — added as tabs in their originating pane

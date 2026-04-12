@@ -66,6 +66,14 @@ pub struct BrowserPane {
     #[allow(dead_code)]
     web_context: Option<WebContext>,
     download_dir: PathBuf,
+    /// Created hidden; flipped to `false` on the first successful `set_bounds`
+    /// call so the webview only becomes visible once positioned correctly.
+    hidden_until_positioned: std::cell::Cell<bool>,
+    /// Visibility the app *wants* the webview to have. `set_visible` records
+    /// requests here while `hidden_until_positioned` is set, so the first
+    /// `set_bounds` can apply the right state (e.g. stay hidden if an overlay
+    /// was already open when the pane was created). Defaults to `true`.
+    desired_visible: std::cell::Cell<bool>,
 }
 
 /// Logical rectangle for positioning the webview within its parent window.
@@ -170,7 +178,17 @@ pub fn delete_profile(name: &str) -> std::io::Result<()> {
 pub struct BrowserOptions<'a> {
     pub user_agent: Option<&'a str>,
     pub download_dir: Option<&'a str>,
+    /// Initial webview background color (R, G, B, A). Shown if the webview
+    /// paints before its content loads. Callers should pass the terminal
+    /// background so the webview blends with the surrounding chrome on both
+    /// dark and light themes. Defaults to `DEFAULT_BROWSER_BG` when `None`.
+    pub background_color: Option<(u8, u8, u8, u8)>,
 }
+
+/// Fallback webview background — neutral dark grey. Used only when the caller
+/// doesn't supply a theme-aware color via `BrowserOptions::background_color`.
+/// Will be visibly wrong on light themes, so callers should prefer setting it.
+pub const DEFAULT_BROWSER_BG: (u8, u8, u8, u8) = (30, 30, 30, 255);
 
 impl BrowserPane {
     /// Create a new browser pane as a child view of the given window.
@@ -220,7 +238,12 @@ impl BrowserPane {
         let mut builder = WebViewBuilder::new_with_web_context(&mut web_context)
             .with_bounds(bounds.to_wry_rect())
             .with_url(url)
-            .with_visible(true)
+            .with_visible(false)
+            .with_background_color(
+                options
+                    .and_then(|o| o.background_color)
+                    .unwrap_or(DEFAULT_BROWSER_BG),
+            )
             .with_clipboard(true)
             .with_hotkeys_zoom(true)
             .with_accept_first_mouse(true)
@@ -440,6 +463,8 @@ impl BrowserPane {
             profile: profile_name,
             web_context: Some(web_context),
             download_dir,
+            hidden_until_positioned: std::cell::Cell::new(true),
+            desired_visible: std::cell::Cell::new(true),
         })
     }
 
@@ -458,8 +483,20 @@ impl BrowserPane {
     }
 
     /// Update the webview's position and size within the parent window.
+    /// The webview starts hidden so the placeholder bounds (0,0 / 800×600)
+    /// are never shown; on the first *successful* call we clear the deferred
+    /// flag and apply whatever visibility the app has requested so far
+    /// (defaulting to visible). If `set_bounds` itself fails, the webview
+    /// stays hidden so it can't be revealed at stale bounds.
     pub fn set_bounds(&self, bounds: BrowserRect) {
-        let _ = self.webview.set_bounds(bounds.to_wry_rect());
+        if let Err(e) = self.webview.set_bounds(bounds.to_wry_rect()) {
+            tracing::warn!("failed to set webview bounds: {e}");
+            return;
+        }
+        if self.hidden_until_positioned.get() {
+            self.hidden_until_positioned.set(false);
+            let _ = self.webview.set_visible(self.desired_visible.get());
+        }
     }
 
     /// Navigate to a URL.
@@ -533,7 +570,18 @@ impl BrowserPane {
     }
 
     /// Show or hide the webview.
+    /// While `hidden_until_positioned` is set, requests are recorded in
+    /// `desired_visible` instead of being applied, so the webview stays
+    /// invisible until `set_bounds` places it correctly — at which point the
+    /// most recently requested visibility is applied. This means a caller
+    /// that asked to hide the webview (e.g. because an overlay is open)
+    /// during the deferred window will still get the intended state once
+    /// positioning lands, without a one-frame flash over the overlay.
     pub fn set_visible(&self, visible: bool) {
+        if self.hidden_until_positioned.get() {
+            self.desired_visible.set(visible);
+            return;
+        }
         let _ = self.webview.set_visible(visible);
     }
 
