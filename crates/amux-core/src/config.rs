@@ -580,25 +580,28 @@ impl Default for NotificationSoundConfig {
 const DEFAULT_CONFIG_TOML: &str = include_str!("../../../resources/default-config.toml");
 
 /// Cross-platform amux home directory: `~/.amux/`.
-/// Returns `None` only if the OS has no concept of a home directory.
+/// Returns `None` if `dirs::home_dir()` can't determine a home
+/// directory (e.g. missing env vars in daemon/test environments).
 pub fn amux_home_dir() -> Option<std::path::PathBuf> {
     dirs::home_dir().map(|h| h.join(".amux"))
 }
 
 /// Write the shipped default config to `~/.amux/config.toml` if the
-/// directory doesn't exist yet. Creates `~/.amux/` as well.
+/// file doesn't exist yet. Creates `~/.amux/` if needed.
 /// Returns the path written to, or `None` if the write was skipped
-/// (directory already exists) or failed.
+/// (file already exists) or failed.
 fn write_default_config() -> Option<std::path::PathBuf> {
     let dir = amux_home_dir()?;
-    if dir.exists() {
-        return None; // Don't overwrite anything in an existing .amux dir
-    }
-    if std::fs::create_dir_all(&dir).is_err() {
-        tracing::warn!("Failed to create {}", dir.display());
-        return None;
-    }
     let path = dir.join("config.toml");
+    if path.exists() {
+        return None; // Don't overwrite an existing config
+    }
+    if !dir.exists() {
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            tracing::warn!("Failed to create {}: {e}", dir.display());
+            return None;
+        }
+    }
     match std::fs::write(&path, DEFAULT_CONFIG_TOML) {
         Ok(()) => {
             tracing::info!("Wrote default config to {}", path.display());
@@ -615,12 +618,11 @@ pub fn load_app_config() -> AppConfig {
     // 1. ~/.amux/config.toml (cross-platform, preferred)
     let amux_home_path = amux_home_dir().map(|d| d.join("config.toml"));
 
-    // 2. Platform-specific fallback
-    let platform_path = if cfg!(target_os = "windows") {
-        dirs::config_dir().map(|d| d.join("amux").join("config.toml"))
-    } else {
-        dirs::home_dir().map(|d| d.join(".config").join("amux").join("config.toml"))
-    };
+    // 2. Platform-specific fallback via dirs::config_dir():
+    //    Linux:   ~/.config/amux/config.toml (respects XDG_CONFIG_HOME)
+    //    macOS:   ~/Library/Application Support/amux/config.toml
+    //    Windows: %APPDATA%\amux\config.toml
+    let platform_path = dirs::config_dir().map(|d| d.join("amux").join("config.toml"));
 
     // Try each path in priority order.
     for path in [amux_home_path.as_ref(), platform_path.as_ref()]

@@ -221,10 +221,12 @@ applying layers in this order, lowest priority first:
 1. **Built-in defaults** — hard-coded in `amux-app/src/theme.rs` and
    `amux-core/src/config.rs::KeybindingsConfig::platform_defaults()`.
 2. **Config file** — `~/.amux/config.toml` (preferred) or the platform-
-   specific fallback. On first launch, amux writes a default config with
-   every field populated, so users always have a starting point.
+   specific fallback (`dirs::config_dir()/amux/config.toml`). On first
+   launch, amux writes a default config with every field populated.
 3. **Theme source overlay** — if `theme_source = "ghostty"`, Ghostty's
-   config overlays the built-in theme before user color overrides apply.
+   config overlays the built-in theme.
+4. **`[colors]` / `[keybindings]` overrides** — per-field overrides from
+   the config file are applied on top of the theme source.
 
 Later layers only override the specific fields they set. Unset fields
 inherit from below. This means you can start with a Ghostty theme and

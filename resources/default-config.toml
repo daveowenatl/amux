@@ -23,7 +23,7 @@ font_size = 14.0
 
 # Color/font theme source.
 #   "default"  — amux's built-in Monokai Classic dark palette (see [colors] below)
-#   "ghostty"  — read colors and font from ~/.config/ghostty/config
+#   "ghostty"  — read colors and font from Ghostty's config (platform-specific path)
 # Individual colors can always be overridden in the [colors] section.
 theme_source = "default"
 
