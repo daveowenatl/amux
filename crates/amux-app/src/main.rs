@@ -12,6 +12,7 @@ mod managed_pane;
 mod menu_bar;
 mod notifications_ui;
 mod pane_render;
+mod popup_theme;
 mod rename_modal;
 mod render;
 mod selection;
@@ -20,6 +21,7 @@ mod startup;
 mod system_notify;
 mod tab_icons;
 mod theme;
+mod title_sanitize;
 #[cfg(target_os = "windows")]
 mod windows_chrome;
 mod workspace_ops;
@@ -529,7 +531,11 @@ impl AmuxApp {
                                 let (cols, rows) = sf.pane.dimensions();
                                 amux_session::SavedSurface {
                                     id: sf.id,
-                                    title: sf.pane.title().to_string(),
+                                    // Sanitize before saving so a
+                                    // restored session shows `pwsh`
+                                    // not the full WindowsApps path.
+                                    title: title_sanitize::sanitize_pane_title(sf.pane.title())
+                                        .into_owned(),
                                     working_dir,
                                     scrollback,
                                     scrollback_vt,

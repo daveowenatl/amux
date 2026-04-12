@@ -88,6 +88,12 @@ impl AmuxApp {
             self.theme.terminal_bg(),
         );
 
+        // The tab context menu is themed per-call-site below using
+        // `popup_theme::with_menu_palette` — we no longer mutate
+        // this `ui`'s style here, because that would leak into
+        // every widget rendered later in `render_single_pane`
+        // (terminal overlays, modals, etc.).
+
         {
             let painter = ui.painter();
             painter.rect_filled(tab_rect, 0.0, self.theme.tab_bar_bg());
@@ -132,10 +138,18 @@ impl AmuxApp {
                 .iter()
                 .map(|tab| match tab {
                     managed_pane::TabEntry::Terminal(surface) => {
-                        let raw_title = surface
+                        // Run the pane's own title (the OSC-set /
+                        // ConPTY-inherited value) through
+                        // `sanitize_pane_title` to collapse ugly
+                        // shell exe paths. `user_title` is
+                        // passed through unchanged because that's
+                        // explicitly user-set.
+                        let sanitized_pane_title =
+                            crate::title_sanitize::sanitize_pane_title(surface.pane.title());
+                        let raw_title: &str = surface
                             .user_title
                             .as_deref()
-                            .unwrap_or_else(|| surface.pane.title());
+                            .unwrap_or(sanitized_pane_title.as_ref());
                         let raw = if raw_title.is_empty() || raw_title == "?" {
                             surface
                                 .metadata
@@ -321,18 +335,27 @@ impl AmuxApp {
                     sidebar::paint_close_x(painter, close_center, 3.5, close_color);
                 }
 
-                // Right-click context menu
+                // Right-click context menu. `Response::context_menu`
+                // builds its popup `Frame` from `ui.ctx().style()`,
+                // so we scope the ctx-style mutation via
+                // `with_menu_palette` — the palette is active only
+                // during the synchronous `.context_menu(...)` call,
+                // and the original ctx style is restored before any
+                // other widgets paint.
                 let tab_id = ui.id().with("tab_ctx").with(pane_id).with(idx);
                 let tab_response = ui.interact(this_tab, tab_id, egui::Sense::click());
-                tab_response.context_menu(|ui| {
-                    if !tab.is_browser && ui.button("Rename Tab").clicked() {
-                        start_rename_tab = Some(idx);
-                        ui.close_menu();
-                    }
-                    if ui.button("Close Tab").clicked() {
-                        close_tab = Some(idx);
-                        ui.close_menu();
-                    }
+                let palette = crate::popup_theme::MenuPalette::from_theme(&self.theme);
+                crate::popup_theme::with_menu_palette(ui.ctx(), palette, || {
+                    tab_response.context_menu(|ui| {
+                        if !tab.is_browser && ui.button("Rename Tab").clicked() {
+                            start_rename_tab = Some(idx);
+                            ui.close_menu();
+                        }
+                        if ui.button("Close Tab").clicked() {
+                            close_tab = Some(idx);
+                            ui.close_menu();
+                        }
+                    });
                 });
 
                 // Hit testing (primary button only)
@@ -641,14 +664,16 @@ impl AmuxApp {
                 }
             }
 
-            // Open rename modal for tab (terminal tabs only)
+            // Open rename modal for tab (terminal tabs only).
+            // Sanitize the pane title here too so the rename modal
+            // pre-fills with `pwsh` instead of the ugly exe path.
             if let Some(idx) = start_rename_tab {
                 if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
                     if let Some(surface) = managed.tabs[idx].as_surface() {
-                        let current_title = surface
-                            .user_title
-                            .clone()
-                            .unwrap_or_else(|| surface.pane.title().to_string());
+                        let current_title = surface.user_title.clone().unwrap_or_else(|| {
+                            crate::title_sanitize::sanitize_pane_title(surface.pane.title())
+                                .into_owned()
+                        });
                         self.rename_modal = Some(RenameModal {
                             target: RenameTarget::Tab {
                                 pane_id,

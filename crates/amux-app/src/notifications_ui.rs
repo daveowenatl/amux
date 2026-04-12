@@ -245,10 +245,12 @@ impl AmuxApp {
             .and_then(|mp| mp.active_surface())
             .map(|sf| {
                 let mut meta = sf.metadata.clone();
-                // Capture the surface's OSC title for sidebar display
-                let title = sf.pane.title();
-                if !title.is_empty() {
-                    meta.surface_title = Some(title.to_string());
+                // Capture the surface's OSC title for sidebar display.
+                // Sanitize so the sidebar shows `pwsh` instead of
+                // the full WindowsApps package path.
+                let sanitized = crate::title_sanitize::sanitize_pane_title(sf.pane.title());
+                if !sanitized.is_empty() && sanitized.as_ref() != "?" {
+                    meta.surface_title = Some(sanitized.into_owned());
                 }
                 meta
             })

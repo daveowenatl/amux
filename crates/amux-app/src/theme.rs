@@ -101,8 +101,9 @@ impl Theme {
 impl Theme {
     /// Create a theme from a loaded Ghostty config.
     ///
-    /// Colors present in the Ghostty config override the defaults; missing
-    /// colors fall back to the built-in Tokyo Night theme.
+    /// Colors present in the Ghostty config override the defaults;
+    /// missing colors fall back to the amux built-in default
+    /// palette (see `Theme::default`).
     pub(crate) fn from_ghostty(cfg: &amux_ghostty_config::GhosttyConfig) -> Self {
         let default = Self::default();
         let mut terminal = default.terminal.clone();
@@ -229,46 +230,68 @@ fn lighten_rgb(r: u8, g: u8, b: u8, amount: f32) -> Color32 {
 }
 
 impl Default for Theme {
+    /// amux's built-in default theme: Monokai Classic — the same
+    /// palette that ships as cmux's default and that the author
+    /// uses via Ghostty on macOS. Windows and Linux users get the
+    /// same look out of the box without needing to install Ghostty
+    /// or write a config file; users who want something different
+    /// can set `theme_source = "ghostty"` to read their Ghostty
+    /// config instead, or override individual colors in the
+    /// `[colors]` section of `amux/config.toml`.
+    /// See `docs/configuration.md` for the full layering.
+    ///
+    /// Terminal colors mirror the Ghostty config cmux ships as its
+    /// default: dark gray background (`#252830`), warm off-white
+    /// foreground (`#fdfff1`), Monokai ANSI palette (pink/green/
+    /// yellow/orange/purple/cyan). The chrome accent stays amux
+    /// blue (`#3d7dff`) so the active workspace/tab highlight is
+    /// visually distinct from the Monokai orange.
     fn default() -> Self {
         Self {
             terminal: TerminalColors {
-                // Tokyo Night
-                background: [0x1a, 0x1b, 0x26],
-                foreground: [0xc0, 0xca, 0xf5],
+                // Monokai Classic (cmux default)
+                background: [0x25, 0x28, 0x30],
+                foreground: [0xfd, 0xff, 0xf1],
                 ansi: [
-                    [0x15, 0x16, 0x1e], // 0  black
-                    [0xf7, 0x76, 0x8e], // 1  red
-                    [0x9e, 0xce, 0x6a], // 2  green
-                    [0xe0, 0xaf, 0x68], // 3  yellow
-                    [0x7a, 0xa2, 0xf7], // 4  blue
-                    [0xbb, 0x9a, 0xf7], // 5  magenta
-                    [0x7d, 0xcf, 0xff], // 6  cyan
-                    [0xa9, 0xb1, 0xd6], // 7  white
-                    [0x41, 0x48, 0x68], // 8  bright black
-                    [0xf7, 0x76, 0x8e], // 9  bright red
-                    [0x9e, 0xce, 0x6a], // 10 bright green
-                    [0xe0, 0xaf, 0x68], // 11 bright yellow
-                    [0x7a, 0xa2, 0xf7], // 12 bright blue
-                    [0xbb, 0x9a, 0xf7], // 13 bright magenta
-                    [0x7d, 0xcf, 0xff], // 14 bright cyan
-                    [0xc0, 0xca, 0xf5], // 15 bright white
+                    [0x27, 0x28, 0x22], // 0  black
+                    [0xf9, 0x26, 0x72], // 1  red    (Monokai pink)
+                    [0xa6, 0xe2, 0x2e], // 2  green
+                    [0xe6, 0xdb, 0x74], // 3  yellow
+                    [0xfd, 0x97, 0x1f], // 4  blue   (Monokai orange — slot 4 by convention)
+                    [0xae, 0x81, 0xff], // 5  magenta (Monokai purple)
+                    [0x66, 0xd9, 0xef], // 6  cyan
+                    [0xfd, 0xff, 0xf1], // 7  white
+                    [0x6e, 0x70, 0x66], // 8  bright black
+                    [0xf9, 0x26, 0x72], // 9  bright red
+                    [0xa6, 0xe2, 0x2e], // 10 bright green
+                    [0xe6, 0xdb, 0x74], // 11 bright yellow
+                    [0xfd, 0x97, 0x1f], // 12 bright blue
+                    [0xae, 0x81, 0xff], // 13 bright magenta
+                    [0x66, 0xd9, 0xef], // 14 bright cyan
+                    [0xfd, 0xff, 0xf1], // 15 bright white
                 ],
                 palette_overrides: HashMap::new(),
-                cursor_fg: [0x15, 0x16, 0x1e],
-                cursor_bg: [0xc0, 0xca, 0xf5],
-                selection_fg: [0xc0, 0xca, 0xf5],
-                selection_bg: [0x33, 0x46, 0x7c],
+                cursor_fg: [0x8d, 0x8e, 0x82],
+                cursor_bg: [0xc0, 0xc1, 0xb5],
+                selection_fg: [0xfd, 0xff, 0xf1],
+                selection_bg: [0x57, 0x58, 0x4f],
             },
             chrome: ChromeColors {
-                sidebar_bg: Color32::from_gray(35),
-                sidebar_active_bg: Color32::from_rgb(0, 145, 255), // same as accent
+                // Sidebar: slightly darker than the terminal bg so
+                // the sidebar reads as a distinct panel rather than
+                // blending into the terminal.
+                sidebar_bg: Color32::from_rgb(0x1d, 0x1f, 0x25),
+                // Accent: amux blue — kept distinct from the Monokai
+                // terminal palette so the active workspace/tab
+                // highlight doesn't blend into the orange ANSI cells.
+                sidebar_active_bg: Color32::from_rgb(0x3d, 0x7d, 0xff),
                 tab_bar_bg: None,  // falls back to terminal background
                 titlebar_bg: None, // falls back to tab bar background
-                tab_active_bg: Color32::from_rgb(0x1a, 0x1b, 0x26), // match terminal bg
-                tab_bar_border: Color32::from_gray(55),
-                tab_border: Color32::from_gray(55),
-                divider: Color32::from_gray(60),
-                accent: Color32::from_rgb(0, 145, 255),
+                tab_active_bg: Color32::from_rgb(0x25, 0x28, 0x30), // match terminal bg
+                tab_bar_border: Color32::from_rgb(0x3a, 0x3c, 0x43),
+                tab_border: Color32::from_rgb(0x3a, 0x3c, 0x43),
+                divider: Color32::from_rgb(0x3a, 0x3c, 0x43),
+                accent: Color32::from_rgb(0x3d, 0x7d, 0xff),
             },
         }
     }

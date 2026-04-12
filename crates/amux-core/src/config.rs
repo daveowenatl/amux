@@ -423,8 +423,14 @@ pub struct AppConfig {
     /// Font family for terminal text (e.g. "JetBrains Mono", "Menlo").
     /// Resolved against system-installed fonts by cosmic-text.
     pub font_family: String,
-    /// Theme source: "default" uses built-in Tokyo Night, "ghostty" loads
-    /// colors/fonts from Ghostty's config file (`~/.config/ghostty/config`).
+    /// Theme source. `"default"` uses amux's built-in dark palette
+    /// (Monokai Classic — the same palette cmux ships as its
+    /// default; see `crates/amux-app/src/theme.rs` for the exact
+    /// values); `"ghostty"` loads colors and fonts from Ghostty's
+    /// config file at `~/.config/ghostty/config` (or the
+    /// platform-appropriate equivalent). Individual colors can
+    /// still be overridden in the `[colors]` section on top of
+    /// either source.
     pub theme_source: String,
     /// Shell to spawn in new panes. Accepts either a plain binary name
     /// (`"pwsh"`, `"bash"`) that amux resolves against `PATH`, or an

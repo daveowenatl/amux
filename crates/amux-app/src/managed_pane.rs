@@ -274,6 +274,15 @@ impl ManagedPane {
     }
 
     /// Display title for this pane (user title > OSC title > shell fallback).
+    ///
+    /// The `pane.title()` fallback — which is the raw ghostty-vt
+    /// terminal title — gets run through [`title_sanitize::sanitize_pane_title`]
+    /// to collapse ugly absolute shell exe paths (notably Windows'
+    /// `C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.0.0_arm64__8wekyb3d8bbwe\pwsh.exe`)
+    /// down to a clean shell basename (`pwsh`, `cmd`, `bash`).
+    /// `user_title` and `surface_title` are passed through
+    /// unchanged because those are user-set and we shouldn't
+    /// second-guess what the user typed.
     pub(crate) fn title(&self) -> String {
         if self.active_is_browser() {
             return "Browser".to_string();
@@ -285,7 +294,7 @@ impl ManagedPane {
             if let Some(ref t) = surface.metadata.surface_title {
                 return t.clone();
             }
-            surface.pane.title().to_string()
+            crate::title_sanitize::sanitize_pane_title(surface.pane.title()).into_owned()
         } else {
             String::new()
         }

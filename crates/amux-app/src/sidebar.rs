@@ -396,39 +396,58 @@ fn render_workspace_row(
     }
 
     // --- Context menu ---
-    response.context_menu(|ui| {
-        if ui.button("Rename Workspace").clicked() {
-            actions.push(SidebarAction::StartRenameWorkspace(idx));
-            ui.close_menu();
-        }
-        if ui.button("Close Workspace").clicked() {
-            actions.push(SidebarAction::CloseWorkspace(idx));
-            ui.close_menu();
-        }
-        ui.separator();
-        if ui.button("Mark All Read").clicked() {
-            actions.push(SidebarAction::MarkWorkspaceRead(idx));
-            ui.close_menu();
-        }
-        ui.separator();
-        ui.menu_button("Set Color", |ui| {
-            for &(color, name) in PRESET_COLORS {
-                let c = Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
-                ui.horizontal(|ui| {
-                    let (swatch_rect, _) =
-                        ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                    ui.painter().circle_filled(swatch_rect.center(), 5.0, c);
-                    if ui.button(name).clicked() {
-                        actions.push(SidebarAction::SetWorkspaceColor(idx, Some(color)));
-                        ui.close_menu();
-                    }
-                });
-            }
-            ui.separator();
-            if ui.button("Clear").clicked() {
-                actions.push(SidebarAction::SetWorkspaceColor(idx, None));
+    // `response.context_menu` builds its outer popup `Frame` from
+    // `ctx.style()` (see egui's `menu_ui` → `Frame::menu`). Scope
+    // the ctx-style mutation to just this call via
+    // `with_menu_palette` so unrelated widgets painted later in the
+    // frame don't inherit the menu-specific visuals. The
+    // `.context_menu(...)` call is synchronous — the Frame has
+    // already been built by the time `with_menu_palette`'s closure
+    // returns, so the restore is safe.
+    //
+    // For the nested `Set Color` `ui.menu_button`, we apply the
+    // palette to the *menu_ui* inside the closure because
+    // `menu_button`'s popup reads the parent ui's style (not
+    // `ctx.style()`).
+    let palette = crate::popup_theme::MenuPalette::from_theme(theme);
+    crate::popup_theme::with_menu_palette(ui.ctx(), palette, || {
+        response.context_menu(|ui| {
+            if ui.button("Rename Workspace").clicked() {
+                actions.push(SidebarAction::StartRenameWorkspace(idx));
                 ui.close_menu();
             }
+            if ui.button("Close Workspace").clicked() {
+                actions.push(SidebarAction::CloseWorkspace(idx));
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Mark All Read").clicked() {
+                actions.push(SidebarAction::MarkWorkspaceRead(idx));
+                ui.close_menu();
+            }
+            ui.separator();
+            crate::popup_theme::apply_menu_palette(ui, palette);
+            ui.menu_button("Set Color", |ui| {
+                crate::popup_theme::apply_menu_palette(ui, palette);
+                for &(color, name) in PRESET_COLORS {
+                    let c =
+                        Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
+                    ui.horizontal(|ui| {
+                        let (swatch_rect, _) =
+                            ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                        ui.painter().circle_filled(swatch_rect.center(), 5.0, c);
+                        if ui.button(name).clicked() {
+                            actions.push(SidebarAction::SetWorkspaceColor(idx, Some(color)));
+                            ui.close_menu();
+                        }
+                    });
+                }
+                ui.separator();
+                if ui.button("Clear").clicked() {
+                    actions.push(SidebarAction::SetWorkspaceColor(idx, None));
+                    ui.close_menu();
+                }
+            });
         });
     });
 

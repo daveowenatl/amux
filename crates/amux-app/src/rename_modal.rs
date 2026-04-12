@@ -44,48 +44,64 @@ impl AmuxApp {
         let modal = self.rename_modal.as_mut().unwrap();
         let just_opened = modal.just_opened;
 
-        egui::Window::new(title)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .fixed_size([280.0, 0.0])
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Name:");
-                    let response = ui.text_edit_singleline(&mut modal.buf);
-                    if just_opened {
-                        response.request_focus();
-                        modal.just_opened = false;
-                    }
-                    // Apply pending select-all from menu bar (Cmd+A consumed by muda).
-                    if pending_select_all && response.has_focus() {
-                        if let Some(mut text_state) =
-                            egui::TextEdit::load_state(ui.ctx(), response.id)
-                        {
-                            let char_count = modal.buf.chars().count();
-                            text_state
-                                .cursor
-                                .set_char_range(Some(egui::text::CCursorRange::two(
-                                    egui::text::CCursor::new(0),
-                                    egui::text::CCursor::new(char_count),
-                                )));
-                            text_state.store(ui.ctx(), response.id);
+        // Theme the modal's `egui::Window` Frame. `Window::show` reads
+        // `ctx.style().visuals.window_fill` / `window_stroke` /
+        // `panel_fill` synchronously to build its outer Frame, so
+        // `with_modal_palette` wraps the whole call — the ctx style
+        // is overridden for the duration of the synchronous
+        // `.show()` call and restored afterward. Without this the
+        // Window falls back to egui's default light visuals.
+        //
+        // NOTE: this uses `with_modal_palette`, not
+        // `with_menu_palette`, so widget `bg_fill` / `bg_stroke`
+        // stay at egui's defaults — buttons and the text field
+        // keep their normal chrome instead of rendering as flat
+        // text.
+        let palette = crate::popup_theme::MenuPalette::from_theme(&self.theme);
+        crate::popup_theme::with_modal_palette(ctx, palette, || {
+            egui::Window::new(title)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .fixed_size([280.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Name:");
+                        let response = ui.text_edit_singleline(&mut modal.buf);
+                        if just_opened {
+                            response.request_focus();
+                            modal.just_opened = false;
                         }
-                    }
-                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        apply = Some(modal.buf.trim().to_string());
-                    }
+                        // Apply pending select-all from menu bar (Cmd+A consumed by muda).
+                        if pending_select_all && response.has_focus() {
+                            if let Some(mut text_state) =
+                                egui::TextEdit::load_state(ui.ctx(), response.id)
+                            {
+                                let char_count = modal.buf.chars().count();
+                                text_state.cursor.set_char_range(Some(
+                                    egui::text::CCursorRange::two(
+                                        egui::text::CCursor::new(0),
+                                        egui::text::CCursor::new(char_count),
+                                    ),
+                                ));
+                                text_state.store(ui.ctx(), response.id);
+                            }
+                        }
+                        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            apply = Some(modal.buf.trim().to_string());
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() {
+                            apply = Some(modal.buf.trim().to_string());
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
                 });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui.button("OK").clicked() {
-                        apply = Some(modal.buf.trim().to_string());
-                    }
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                });
-            });
+        });
 
         // Also close on Escape
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {

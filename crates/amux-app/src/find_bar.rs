@@ -21,90 +21,96 @@ impl AmuxApp {
         let mut close = false;
         let mut navigate: Option<isize> = None; // +1 = next, -1 = prev
 
-        egui::Window::new("Find")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::RIGHT_TOP, [-8.0, 8.0])
-            .fixed_size([300.0, 0.0])
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    let response =
-                        ui.text_edit_singleline(&mut self.find_state.as_mut().unwrap().query);
+        // Dark-mode the `egui::Window` Frame; see rename_modal.rs
+        // for the full rationale. Uses `with_modal_palette` so
+        // widget chrome (buttons, text field) stays default.
+        let palette = crate::popup_theme::MenuPalette::from_theme(&self.theme);
+        crate::popup_theme::with_modal_palette(ctx, palette, || {
+            egui::Window::new("Find")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::RIGHT_TOP, [-8.0, 8.0])
+                .fixed_size([300.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        let response =
+                            ui.text_edit_singleline(&mut self.find_state.as_mut().unwrap().query);
 
-                    // Auto-focus the text field on first show
-                    if let Some(fs) = self.find_state.as_mut() {
-                        if fs.just_opened {
-                            response.request_focus();
-                            fs.just_opened = false;
-                        }
-                    }
-
-                    // Apply pending select-all from menu bar (Cmd+A consumed by muda).
-                    if pending_select_all && response.has_focus() {
-                        let query = &self.find_state.as_ref().unwrap().query;
-                        if let Some(mut text_state) =
-                            egui::TextEdit::load_state(ui.ctx(), response.id)
-                        {
-                            let char_count = query.chars().count();
-                            text_state
-                                .cursor
-                                .set_char_range(Some(egui::text::CCursorRange::two(
-                                    egui::text::CCursor::new(0),
-                                    egui::text::CCursor::new(char_count),
-                                )));
-                            text_state.store(ui.ctx(), response.id);
-                        }
-                    }
-
-                    // Enter = next, Shift+Enter = prev
-                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        if ui.input(|i| i.modifiers.shift) {
-                            navigate = Some(-1);
-                        } else {
-                            navigate = Some(1);
-                        }
-                        response.request_focus();
-                    }
-
-                    // Trigger search on text change
-                    if response.changed() {
-                        let find = self.find_state.as_ref().unwrap();
-                        let query = find.query.clone();
-                        let pane_id = find.pane_id;
-                        if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
-                            let matches = managed
-                                .active_surface()
-                                .map(|sf| sf.pane.search_scrollback(&query))
-                                .unwrap_or_default();
-                            let find = self.find_state.as_mut().unwrap();
-                            find.matches = matches;
-                            find.current_match = 0;
-                        }
-                    }
-
-                    if ui.button("X").clicked() {
-                        close = true;
-                    }
-                });
-
-                // Show match count
-                if let Some(find) = &self.find_state {
-                    let total = find.matches.len();
-                    if total > 0 {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("{}/{}", find.current_match + 1, total));
-                            if ui.button("<").clicked() {
-                                navigate = Some(-1);
+                        // Auto-focus the text field on first show
+                        if let Some(fs) = self.find_state.as_mut() {
+                            if fs.just_opened {
+                                response.request_focus();
+                                fs.just_opened = false;
                             }
-                            if ui.button(">").clicked() {
+                        }
+
+                        // Apply pending select-all from menu bar (Cmd+A consumed by muda).
+                        if pending_select_all && response.has_focus() {
+                            let query = &self.find_state.as_ref().unwrap().query;
+                            if let Some(mut text_state) =
+                                egui::TextEdit::load_state(ui.ctx(), response.id)
+                            {
+                                let char_count = query.chars().count();
+                                text_state.cursor.set_char_range(Some(
+                                    egui::text::CCursorRange::two(
+                                        egui::text::CCursor::new(0),
+                                        egui::text::CCursor::new(char_count),
+                                    ),
+                                ));
+                                text_state.store(ui.ctx(), response.id);
+                            }
+                        }
+
+                        // Enter = next, Shift+Enter = prev
+                        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            if ui.input(|i| i.modifiers.shift) {
+                                navigate = Some(-1);
+                            } else {
                                 navigate = Some(1);
                             }
-                        });
-                    } else if !find.query.is_empty() {
-                        ui.label("No matches");
+                            response.request_focus();
+                        }
+
+                        // Trigger search on text change
+                        if response.changed() {
+                            let find = self.find_state.as_ref().unwrap();
+                            let query = find.query.clone();
+                            let pane_id = find.pane_id;
+                            if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
+                                let matches = managed
+                                    .active_surface()
+                                    .map(|sf| sf.pane.search_scrollback(&query))
+                                    .unwrap_or_default();
+                                let find = self.find_state.as_mut().unwrap();
+                                find.matches = matches;
+                                find.current_match = 0;
+                            }
+                        }
+
+                        if ui.button("X").clicked() {
+                            close = true;
+                        }
+                    });
+
+                    // Show match count
+                    if let Some(find) = &self.find_state {
+                        let total = find.matches.len();
+                        if total > 0 {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("{}/{}", find.current_match + 1, total));
+                                if ui.button("<").clicked() {
+                                    navigate = Some(-1);
+                                }
+                                if ui.button(">").clicked() {
+                                    navigate = Some(1);
+                                }
+                            });
+                        } else if !find.query.is_empty() {
+                            ui.label("No matches");
+                        }
                     }
-                }
-            });
+                });
+        });
 
         if close {
             self.find_state = None;
