@@ -210,11 +210,80 @@ jobs:
           # Surface the artifact path for the upload step.
           Add-Content -Path $env:GITHUB_ENV -Value "ARCHIVE_PATH=$staging.zip"
 
+      - name: Build MSIX package — Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $staging = "amux-${{ matrix.target }}"
+          $msixDir = "msix-staging"
+
+          # 1. Stage binaries + manifest + assets into a flat directory
+          New-Item -ItemType Directory -Force -Path $msixDir | Out-Null
+          Copy-Item "$staging/amux-app.exe" "$msixDir/"
+          Copy-Item "$staging/amux.exe" "$msixDir/"
+          # ghostty-vt.dll is required at runtime (import library)
+          if (Test-Path "$staging/ghostty-vt.dll") {
+              Copy-Item "$staging/ghostty-vt.dll" "$msixDir/"
+          }
+          # Optional agent wrapper
+          if (Test-Path "$staging/amux-agent-wrapper.exe") {
+              Copy-Item "$staging/amux-agent-wrapper.exe" "$msixDir/"
+          }
+          Copy-Item "packaging/msix/AppxManifest.xml" "$msixDir/"
+          Copy-Item -Recurse "packaging/msix/Assets" "$msixDir/Assets"
+
+          # 2. Update the version in AppxManifest.xml from the git tag.
+          #    MSIX requires a four-part version (Major.Minor.Patch.Revision).
+          $tag = "${{ github.ref_name }}" -replace '^v', ''
+          $parts = $tag -split '\.'
+          while ($parts.Count -lt 4) { $parts += '0' }
+          $msixVersion = ($parts[0..3]) -join '.'
+          $manifest = Get-Content "$msixDir/AppxManifest.xml" -Raw
+          $manifest = $manifest -replace 'Version="[^"]*"', "Version=`"$msixVersion`""
+          Set-Content "$msixDir/AppxManifest.xml" $manifest
+          Write-Host "MSIX version: $msixVersion"
+
+          # 3. Generate resources.pri (required by MakeAppx for icon assets).
+          #    Find MakePri.exe from Windows SDK.
+          $sdkBin = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\10.*\x64" -Directory |
+                    Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $sdkBin) {
+              Write-Error "Windows SDK not found"
+              exit 1
+          }
+          $makePri = Join-Path $sdkBin.FullName "MakePri.exe"
+          $makeAppx = Join-Path $sdkBin.FullName "MakeAppx.exe"
+          Write-Host "Using SDK: $($sdkBin.FullName)"
+
+          # MakePri needs a priconfig.xml — generate one
+          Push-Location $msixDir
+          & $makePri createconfig /cf priconfig.xml /dq en-US /o
+          & $makePri new /pr . /cf priconfig.xml /of resources.pri /o
+          Pop-Location
+
+          # 4. Build the .msix package (unsigned — signing is a separate step)
+          $msixPath = "amux-${{ matrix.target }}.msix"
+          & $makeAppx pack /d $msixDir /p $msixPath /o
+          Write-Host "Built: $msixPath"
+
+          # Surface for upload
+          Add-Content -Path $env:GITHUB_ENV -Value "MSIX_PATH=$msixPath"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: amux-${{ matrix.target }}
           path: ${{ env.ARCHIVE_PATH }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload MSIX artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: amux-${{ matrix.target }}-msix
+          path: ${{ env.MSIX_PATH }}
           if-no-files-found: error
           retention-days: 7
 
@@ -243,7 +312,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-assets
-          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) \
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.msix' \) \
             -exec cp {} release-assets/ \;
           ls -la release-assets
 
