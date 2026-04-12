@@ -59,3 +59,6 @@ windows-sys = { version = "0.60", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 sysinfo = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winres = "0.1"
