@@ -765,23 +765,43 @@ pub(crate) fn draw_hamburger_button(
         egui::PopupCloseBehavior::CloseOnClickOutside,
         |ui| {
             apply_menu_palette(ui, palette);
-            ui.set_min_width(220.0);
-            // Each top-level submenu is a nested `ui.menu_button`
-            // so the user can hover/click to expand inline. This
-            // keeps the vertical footprint minimal — only the three
-            // top-level labels are visible until the user actively
-            // drills in.
+            ui.set_min_width(240.0);
+
+            // Flat list with section headers. We deliberately DO
+            // NOT use nested `ui.menu_button` calls here because
+            // each nested menu builds its own Area + Frame via
+            // `Frame::menu(ui.style())` where `ui` is a fresh
+            // area ui created by egui before our code runs — so
+            // any palette we apply inside the closure is too late
+            // to affect the Frame's bg/stroke, and the nested
+            // submenus end up rendering with egui's default light
+            // theme while the parent popup renders with our
+            // palette (ugly inconsistency, see screenshot #15).
             //
-            // No wrapping `egui::Frame` here — egui's popup already
-            // paints a Frame using `visuals.window_fill` /
-            // `visuals.window_stroke`, which `apply_menu_palette`
-            // sets. Stacking another Frame on top produces a
-            // visible double border.
-            for submenu in MENU_MODEL {
-                ui.menu_button(submenu.label, |ui| {
-                    apply_menu_palette(ui, palette);
-                    render_submenu_items(ui, submenu.items, /* close_popup_on_click */ false);
-                });
+            // The flat-with-headers layout is also more
+            // discoverable for a hamburger menu: users see every
+            // command at once rather than having to drill into
+            // each submenu.
+            for (i, submenu) in MENU_MODEL.iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(2.0);
+                    ui.separator();
+                    ui.add_space(2.0);
+                }
+                // Section header: the submenu's label drawn as a
+                // smaller, dimmer text above its items.
+                let header_color = egui::Color32::from_rgba_unmultiplied(
+                    palette.fg.r(),
+                    palette.fg.g(),
+                    palette.fg.b(),
+                    180,
+                );
+                ui.label(
+                    egui::RichText::new(submenu.label)
+                        .size(11.0)
+                        .color(header_color),
+                );
+                render_submenu_items(ui, submenu.items, /* close_popup_on_click */ true);
             }
         },
     );
