@@ -226,6 +226,7 @@ impl eframe::App for AmuxApp {
                 .iter()
                 .map(|ws| (ws.id, self.workspace_metadata(ws)))
                 .collect();
+            let top_pad = self.top_pad();
             let sidebar_actions = sidebar::render_sidebar(
                 ctx,
                 &mut self.sidebar,
@@ -234,6 +235,7 @@ impl eframe::App for AmuxApp {
                 &self.notifications,
                 &workspace_metadata,
                 &self.theme,
+                top_pad,
             );
             for action in sidebar_actions {
                 match action {
