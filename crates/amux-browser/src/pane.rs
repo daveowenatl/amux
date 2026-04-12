@@ -66,6 +66,9 @@ pub struct BrowserPane {
     #[allow(dead_code)]
     web_context: Option<WebContext>,
     download_dir: PathBuf,
+    /// Created hidden; flipped to `false` on the first `set_bounds` call
+    /// so the webview only becomes visible once positioned correctly.
+    hidden_until_positioned: std::cell::Cell<bool>,
 }
 
 /// Logical rectangle for positioning the webview within its parent window.
@@ -220,7 +223,8 @@ impl BrowserPane {
         let mut builder = WebViewBuilder::new_with_web_context(&mut web_context)
             .with_bounds(bounds.to_wry_rect())
             .with_url(url)
-            .with_visible(true)
+            .with_visible(false)
+            .with_background_color((30, 30, 30, 255))
             .with_clipboard(true)
             .with_hotkeys_zoom(true)
             .with_accept_first_mouse(true)
@@ -440,6 +444,7 @@ impl BrowserPane {
             profile: profile_name,
             web_context: Some(web_context),
             download_dir,
+            hidden_until_positioned: std::cell::Cell::new(true),
         })
     }
 
@@ -458,8 +463,14 @@ impl BrowserPane {
     }
 
     /// Update the webview's position and size within the parent window.
+    /// On the first call the webview is also made visible — it starts hidden
+    /// so the placeholder bounds (0,0 / 800×600) are never shown.
     pub fn set_bounds(&self, bounds: BrowserRect) {
         let _ = self.webview.set_bounds(bounds.to_wry_rect());
+        if self.hidden_until_positioned.get() {
+            self.hidden_until_positioned.set(false);
+            let _ = self.webview.set_visible(true);
+        }
     }
 
     /// Navigate to a URL.
@@ -533,7 +544,12 @@ impl BrowserPane {
     }
 
     /// Show or hide the webview.
+    /// While `hidden_until_positioned` is set, show requests are suppressed
+    /// so the webview stays invisible until `set_bounds` places it correctly.
     pub fn set_visible(&self, visible: bool) {
+        if visible && self.hidden_until_positioned.get() {
+            return;
+        }
         let _ = self.webview.set_visible(visible);
     }
 
