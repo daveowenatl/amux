@@ -789,13 +789,16 @@ pub(crate) fn spawn_surface(
 
     // Point AMUX_BIN to the CLI binary so shell integration scripts can invoke it
     // without relying on PATH (macOS path_helper in /etc/zprofile rebuilds PATH).
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            let cli_bin = exe_dir.join("amux");
-            if cli_bin.exists() {
-                cmd.env("AMUX_BIN", cli_bin.to_string_lossy().as_ref());
-            }
-        }
+    // On Windows the binary is `amux.exe` — Rust's `Path::exists()` does NOT
+    // append PATHEXT the way cmd.exe / PowerShell `Get-Command` do, so we
+    // must use the platform-correct filename.
+    //
+    // When building with a `--target` flag (e.g. x86_64 on ARM64 Windows),
+    // Cargo places the app binary under `target/<triple>/debug/` but the CLI
+    // binary may only be in `target/debug/`. Fall back to a PATH search so
+    // cross-compiled dev builds still resolve the CLI.
+    if let Some(cli_bin) = resolve_cli_binary() {
+        cmd.env("AMUX_BIN", cli_bin.to_string_lossy().as_ref());
     }
 
     // Prepend amux bin dir (containing claude wrapper) to PATH so hooks are
@@ -893,6 +896,43 @@ pub(crate) fn spawn_surface(
         user_title: None,
         exited: None,
     })
+}
+
+/// Locate the `amux` CLI binary.
+///
+/// Search order:
+/// 1. Next to `current_exe()` — covers release installs and same-target dev builds.
+/// 2. Sibling profile dirs under the same `target/` root — covers cross-compiled
+///    dev builds where `cargo build --target <triple>` places the app binary in
+///    `target/<triple>/<profile>/` while the CLI is in `target/<profile>/`.
+/// 3. PATH search — last resort.
+fn resolve_cli_binary() -> Option<std::path::PathBuf> {
+    let cli_name = if cfg!(windows) { "amux.exe" } else { "amux" };
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            // Primary: same directory.
+            let candidate = exe_dir.join(cli_name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+
+            // Cross-target fallback: exe is at target/<triple>/<profile>/,
+            // CLI may be at target/<profile>/ (two levels up, then into the
+            // same profile dir name — typically "debug" or "release").
+            if let Some(profile_dir) = exe_dir.file_name() {
+                if let Some(target_root) = exe_dir.parent().and_then(|p| p.parent()) {
+                    let candidate = target_root.join(profile_dir).join(cli_name);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+    }
+
+    // Last resort: search PATH.
+    shell::find_on_path(cli_name).map(std::path::PathBuf::from)
 }
 
 #[cfg(test)]
