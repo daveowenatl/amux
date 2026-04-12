@@ -38,8 +38,10 @@ const PROGRESS_BAR_HEIGHT: f32 = 3.0;
 const DROP_INDICATOR_HEIGHT: f32 = 2.0;
 const METADATA_FONT_SIZE: f32 = 10.0;
 const METADATA_LINE_HEIGHT: f32 = 16.0;
-#[cfg(target_os = "macos")]
-const TRAFFIC_LIGHT_SPACER: f32 = 28.0;
+// `TRAFFIC_LIGHT_SPACER` was removed — the sidebar's top padding is
+// now computed by the caller as `AmuxApp::top_pad()` and passed in,
+// so macOS traffic lights, the Windows/Linux titlebar strip, and
+// the optional menubar strip all share one single source of truth.
 
 // Preset workspace colors (8 options matching cmux)
 const PRESET_COLORS: &[([u8; 4], &str)] = &[
@@ -100,6 +102,18 @@ pub(crate) fn paint_close_x(
 // Rendering
 // ---------------------------------------------------------------------------
 
+/// Render the sidebar panel.
+///
+/// `top_pad` is the total top chrome height in logical pixels —
+/// the amount of vertical space the sidebar's first row must skip
+/// past to avoid rendering underneath the titlebar strip (which is
+/// drawn in a background layer across the full screen width and
+/// contains the sidebar-toggle / bell / + icons in a foreground
+/// layer). On macOS this also covers the traffic-light buttons.
+/// Passed in from `frame_update.rs` rather than read from a
+/// constant because the value depends on `menu_bar_style` — Menubar
+/// mode adds a menu strip above the icon strip.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_sidebar(
     ctx: &egui::Context,
     state: &mut SidebarState,
@@ -108,6 +122,7 @@ pub(crate) fn render_sidebar(
     notifications: &NotificationStore,
     workspace_metadata: &HashMap<u64, SurfaceMetadata>,
     theme: &crate::theme::Theme,
+    top_pad: f32,
 ) -> Vec<SidebarAction> {
     let mut actions = Vec::new();
 
@@ -138,10 +153,20 @@ pub(crate) fn render_sidebar(
             // Persist the actual panel width back to state for session save/restore
             state.width = ui.available_width() + ROW_OUTER_H_PAD * 2.0;
 
-            #[cfg(target_os = "macos")]
-            ui.add_space(TRAFFIC_LIGHT_SPACER);
-            #[cfg(not(target_os = "macos"))]
-            ui.add_space(8.0);
+            // Shift content down past the full top chrome (titlebar
+            // strip + optional menu strip in Menubar mode). Using the
+            // same `top_pad` value `frame_update.rs` uses for the
+            // CentralPanel offset keeps the sidebar's first row and
+            // the central panel's first content aligned on a single
+            // horizontal baseline.
+            //
+            // Note that the egui SidePanel itself starts at the top
+            // of the screen (y=0) regardless — it doesn't know about
+            // the titlebar strip. The padding we add here is inside
+            // the panel, so the workspace rows land below the chrome
+            // and don't get painted over by the foreground titlebar
+            // icon Area.
+            ui.add_space(top_pad);
 
             ui.spacing_mut().item_spacing.y = ROW_SPACING;
 
