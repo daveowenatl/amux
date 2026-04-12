@@ -55,4 +55,6 @@ windows-sys = { version = "0.60", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
 ] }
+sysinfo = { workspace = true }

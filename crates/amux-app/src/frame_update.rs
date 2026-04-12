@@ -36,7 +36,9 @@ impl eframe::App for AmuxApp {
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
             if let Ok(handle) = _frame.window_handle() {
                 if let RawWindowHandle::Win32(win32) = handle.as_raw() {
-                    crate::windows_chrome::apply_dark_mode_to_window(win32.hwnd.get());
+                    let hwnd = win32.hwnd.get();
+                    crate::windows_chrome::apply_dark_mode_to_window(hwnd);
+                    self.cached_hwnd = Some(hwnd);
                     self.window_chrome_applied = true;
                 }
             }
@@ -188,6 +190,12 @@ impl eframe::App for AmuxApp {
         if self.app_config.notifications.dock_badge {
             let count = self.notifications.total_unread();
             if count != self.last_badge_count {
+                #[cfg(target_os = "windows")]
+                if !self.app_focused && count > self.last_badge_count {
+                    if let Some(hwnd) = self.cached_hwnd {
+                        system_notify::flash_taskbar_window(hwnd);
+                    }
+                }
                 self.last_badge_count = count;
                 system_notify::set_badge_count(count);
             }

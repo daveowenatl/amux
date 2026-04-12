@@ -85,7 +85,29 @@ fn get_cwd_from_pid(pid: u32) -> Option<String> {
         return None;
     }
 
-    // Windows / other: no fallback yet
+    // Windows: read CWD from the process's PEB via sysinfo.
+    #[cfg(target_os = "windows")]
+    {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+
+        let mut sys = System::new();
+        let sysinfo_pid = Pid::from_u32(pid);
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[sysinfo_pid]),
+            true,
+            ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always),
+        );
+        if let Some(process) = sys.process(sysinfo_pid) {
+            if let Some(cwd) = process.cwd() {
+                let s = cwd.to_string_lossy().to_string();
+                if !s.is_empty() {
+                    return Some(s);
+                }
+            }
+        }
+        return None;
+    }
+
     #[allow(unreachable_code)]
     None
 }
@@ -186,6 +208,10 @@ struct AmuxApp {
     /// once successful so we only do it once.
     #[cfg(target_os = "windows")]
     window_chrome_applied: bool,
+    /// Cached HWND for `FlashWindowEx` taskbar notifications. Populated
+    /// alongside `window_chrome_applied` on the first frame.
+    #[cfg(target_os = "windows")]
+    cached_hwnd: Option<isize>,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
     /// Pending browser pane creation requests (originating_pane_id, URL).
