@@ -540,34 +540,67 @@ pub(crate) fn draw_egui_menu_bar(ctx: &egui::Context, theme: &crate::theme::Them
             visuals.window_fill = bg;
             visuals.panel_fill = bg;
 
-            egui::menu::bar(ui, |ui| {
+            // Diagnostic: draw a plain colored label first. If this is
+            // visible but the menu buttons below aren't, we know the
+            // problem is `egui::menu::bar` or `ui.menu_button` eating
+            // the style — not the panel itself being invisible.
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("[DEBUG: menu bar is rendering]")
+                        .color(fg)
+                        .strong(),
+                );
+                ui.separator();
+
+                // Use plain `ui.horizontal` + top-level buttons instead
+                // of `egui::menu::bar` + `ui.menu_button` so we can
+                // isolate whether menu::bar's internal `set_menu_style`
+                // is clobbering the text color override.
+                //
+                // Each top-level entry is a plain button; clicking one
+                // opens an egui popup with its items. This gives us
+                // full control of the button rendering.
                 for submenu in MENU_MODEL {
-                    ui.menu_button(submenu.label, |ui| {
-                        for item in submenu.items {
-                            match item {
-                                MenuItemDef::Separator => {
-                                    ui.separator();
-                                }
-                                MenuItemDef::Action {
-                                    label,
-                                    shortcut,
-                                    action,
-                                } => {
-                                    // Build the button: with shortcut
-                                    // text on the right when one is
-                                    // configured, plain otherwise.
-                                    let button = match shortcut {
-                                        Some(sc) => egui::Button::new(*label).shortcut_text(*sc),
-                                        None => egui::Button::new(*label),
-                                    };
-                                    if ui.add(button).clicked() {
-                                        push_action(*action);
-                                        ui.close_menu();
+                    let label_button = egui::Button::new(
+                        egui::RichText::new(submenu.label).color(fg),
+                    )
+                    .frame(false);
+                    let response = ui.add(label_button);
+                    let popup_id = ui.make_persistent_id(("amux_menu_popup", submenu.label));
+                    if response.clicked() {
+                        ui.memory_mut(|m| m.toggle_popup(popup_id));
+                    }
+                    egui::popup::popup_below_widget(
+                        ui,
+                        popup_id,
+                        &response,
+                        egui::PopupCloseBehavior::CloseOnClickOutside,
+                        |ui| {
+                            ui.set_min_width(180.0);
+                            for item in submenu.items {
+                                match item {
+                                    MenuItemDef::Separator => {
+                                        ui.separator();
+                                    }
+                                    MenuItemDef::Action {
+                                        label,
+                                        shortcut,
+                                        action,
+                                    } => {
+                                        let button = match shortcut {
+                                            Some(sc) => egui::Button::new(*label)
+                                                .shortcut_text(*sc),
+                                            None => egui::Button::new(*label),
+                                        };
+                                        if ui.add(button).clicked() {
+                                            push_action(*action);
+                                            ui.memory_mut(|m| m.close_popup());
+                                        }
                                     }
                                 }
                             }
-                        }
-                    });
+                        },
+                    );
                 }
             });
         });
