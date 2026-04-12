@@ -88,18 +88,11 @@ impl AmuxApp {
             self.theme.terminal_bg(),
         );
 
-        // Apply amux's popup palette to the tab bar's `ui` once,
-        // BEFORE we take an immutable `painter` borrow below, so
-        // the tab-right-click context menu opened inside this ui
-        // renders in amux's chrome colors instead of egui's
-        // default light theme. The tab-row painting that follows
-        // uses `painter` + explicit colors and ignores the style
-        // overrides this sets (buttons aren't used on the tab row
-        // itself, only inside the context menu popup).
-        {
-            let palette = crate::popup_theme::MenuPalette::from_theme(&self.theme);
-            crate::popup_theme::apply_menu_palette(ui, palette);
-        }
+        // The tab context menu is themed per-call-site below using
+        // `popup_theme::with_menu_palette` — we no longer mutate
+        // this `ui`'s style here, because that would leak into
+        // every widget rendered later in `render_single_pane`
+        // (terminal overlays, modals, etc.).
 
         {
             let painter = ui.painter();
@@ -342,24 +335,27 @@ impl AmuxApp {
                     sidebar::paint_close_x(painter, close_center, 3.5, close_color);
                 }
 
-                // Right-click context menu. The palette was
-                // already applied to this `ui` at the top of the
-                // tab-bar scope (before the painter borrow), so
-                // the context menu popup inherits amux's chrome
-                // colors via the parent-ui style egui reads at
-                // Frame construction time. Same pattern as the
-                // sidebar workspace context menu.
+                // Right-click context menu. `Response::context_menu`
+                // builds its popup `Frame` from `ui.ctx().style()`,
+                // so we scope the ctx-style mutation via
+                // `with_menu_palette` — the palette is active only
+                // during the synchronous `.context_menu(...)` call,
+                // and the original ctx style is restored before any
+                // other widgets paint.
                 let tab_id = ui.id().with("tab_ctx").with(pane_id).with(idx);
                 let tab_response = ui.interact(this_tab, tab_id, egui::Sense::click());
-                tab_response.context_menu(|ui| {
-                    if !tab.is_browser && ui.button("Rename Tab").clicked() {
-                        start_rename_tab = Some(idx);
-                        ui.close_menu();
-                    }
-                    if ui.button("Close Tab").clicked() {
-                        close_tab = Some(idx);
-                        ui.close_menu();
-                    }
+                let palette = crate::popup_theme::MenuPalette::from_theme(&self.theme);
+                crate::popup_theme::with_menu_palette(ui.ctx(), palette, || {
+                    tab_response.context_menu(|ui| {
+                        if !tab.is_browser && ui.button("Rename Tab").clicked() {
+                            start_rename_tab = Some(idx);
+                            ui.close_menu();
+                        }
+                        if ui.button("Close Tab").clicked() {
+                            close_tab = Some(idx);
+                            ui.close_menu();
+                        }
+                    });
                 });
 
                 // Hit testing (primary button only)

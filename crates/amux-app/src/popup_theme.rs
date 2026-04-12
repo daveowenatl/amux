@@ -1,24 +1,39 @@
 //! Shared egui popup theming helpers.
 //!
-//! Egui's popup / menu / context_menu primitives build their outer
-//! `Frame` from the PARENT ui's style at construction time
+//! Egui does not source popup styling from a single place for every
+//! API. `ui.menu_button` / `popup_below_widget` construct their
+//! outer `Frame` from the PARENT ui's style at call time
 //! (`Frame::popup(parent_ui.style())` in `egui::containers::popup`,
-//! `Frame::menu(ui.style())` in `egui::menu`). If the parent ui
-//! hasn't been themed, popups fall back to egui's default visuals —
-//! which is a light-mode look that clashes badly with amux's dark
-//! chrome.
+//! `Frame::menu(ui.style())` in `egui::menu`). By contrast,
+//! `Response::context_menu` constructs its Frame from
+//! `response.ctx.style()` — the parent ui's style has no effect.
+//! If the relevant style source hasn't been themed, the popup falls
+//! back to egui's default visuals, which is a light-mode look that
+//! clashes badly with amux's dark chrome.
 //!
-//! [`apply_menu_palette`] takes a [`MenuPalette`] (derived from the
-//! current theme) and mutates the ui's visuals so that any popup
-//! built afterwards picks up our colors. Call it on the PARENT ui
-//! BEFORE opening the popup, not inside the closure — by the time
-//! the closure runs, egui has already constructed the outer Frame.
+//! There are therefore two theming entry points in this module:
+//!
+//! - [`apply_menu_palette`] mutates a `Ui`'s visuals. Use it on a
+//!   PARENT ui BEFORE calling `ui.menu_button` or
+//!   `popup_below_widget` — by the time the popup's closure runs,
+//!   egui has already constructed the outer Frame from the parent
+//!   style. Note: this mutates the ui's local style, which
+//!   persists for subsequent widgets in that same ui. Call on a
+//!   dedicated child `ui.scope(...)` if you want containment.
+//!
+//! - [`with_menu_palette`] wraps a closure with a save / apply /
+//!   restore of the `egui::Context` style. This is how
+//!   `Response::context_menu` is themed: the ctx style is temporarily
+//!   overridden for the duration of the `.context_menu(...)` call
+//!   (which builds the Frame synchronously), then restored so
+//!   unrelated widgets painted later in the frame don't inherit the
+//!   menu-specific visuals.
 //!
 //! For the inside of a popup (button text colors, hover highlights,
-//! separator lines), [`apply_menu_palette`] also sets the widget
-//! stroke / fill variants that egui Button uses for its label paint
-//! path, since `override_text_color` alone isn't picked up by every
-//! egui widget.
+//! separator lines), the shared [`apply_menu_palette_to_visuals`]
+//! helper also sets the widget stroke / fill variants that egui
+//! Button uses for its label paint path, since `override_text_color`
+//! alone isn't picked up by every egui widget.
 //!
 //! This module is intentionally cross-platform. The menu bar on
 //! macOS uses `muda` native, but egui popups live on every platform
@@ -28,6 +43,14 @@ use egui::{Color32, Stroke, Ui};
 
 use crate::theme::Theme;
 
+/// Rec. 601 perceived luminance of a `Color32`. Shared between
+/// `contrast_text` (dark vs. light foreground) and the hover-bg
+/// branch in `MenuPalette::from_theme` so both use the same
+/// luminance model and can't disagree on colors near the boundary.
+fn perceived_luma(c: Color32) -> f32 {
+    0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32
+}
+
 /// Pick a readable foreground color for a given background by
 /// checking its perceived luminance. Uses Rec. 601 luma — the
 /// approximation most UI toolkits use.
@@ -36,11 +59,7 @@ use crate::theme::Theme;
 /// backgrounds. Deliberately NOT pure white / pure black — both
 /// extremes are harsh against typical chrome colors.
 pub(crate) fn contrast_text(bg: Color32) -> Color32 {
-    let r = bg.r() as f32;
-    let g = bg.g() as f32;
-    let b = bg.b() as f32;
-    let luma = 0.299 * r + 0.587 * g + 0.114 * b;
-    if luma < 128.0 {
+    if perceived_luma(bg) < 128.0 {
         Color32::from_rgb(0xE6, 0xE6, 0xE6)
     } else {
         Color32::from_rgb(0x20, 0x20, 0x20)
@@ -72,8 +91,7 @@ impl MenuPalette {
     pub fn from_theme(theme: &Theme) -> Self {
         let bg = theme.titlebar_bg();
         let fg = contrast_text(bg);
-        let luma_sum: u16 = bg.r() as u16 + bg.g() as u16 + (bg.b() as u16);
-        let hover_bg = if luma_sum < 384 {
+        let hover_bg = if perceived_luma(bg) < 128.0 {
             bg.gamma_multiply(1.5) // dark theme → brighten on hover
         } else {
             bg.gamma_multiply(0.85) // light theme → darken on hover
@@ -133,38 +151,60 @@ pub(crate) fn apply_menu_palette_to_visuals(visuals: &mut egui::Visuals, palette
 }
 
 /// Apply a `MenuPalette` globally to an `egui::Context`'s style.
-/// This is the ONLY way to theme `Response::context_menu` popups,
-/// because egui's `context_menu` implementation reads
-/// `button.ctx.style()` directly (see `egui/src/menu.rs:392`), not
-/// the parent ui's style — so per-call-site `apply_menu_palette`
-/// has no effect on right-click menus.
 ///
-/// Call once per frame from the top of `AmuxApp::update` so the
-/// ctx-level visuals reflect the latest user theme. The operation
-/// is cheap (a handful of `Arc::make_mut` field writes) and idempotent.
+/// Do NOT call this unconditionally at the top of a frame. Because
+/// it also sets widget fills to transparent and widget strokes to
+/// none, it will restyle non-menu widgets (modals, text fields,
+/// buttons) that read from `ctx.style()`. Prefer [`with_menu_palette`],
+/// which scopes the mutation to a single call site with a
+/// save / apply / restore pair.
 ///
-/// Surfaces that benefit from this ctx-level application:
-///
-/// - `Response::context_menu` (sidebar workspace right-click, tab bar
-///   right-click, etc.)
-/// - `ui.menu_button` nested popups (even when the top-level menu
-///   is opened from a ui with its own palette, nested popups create
-///   fresh areas that inherit from ctx)
-/// - `egui::containers::popup::popup_below_widget` when the caller
-///   forgot to apply palette to the parent ui first
-/// - Any future egui popup / tooltip / window primitive that reads
-///   from `ctx.style()` internally
-///
-/// This doesn't replace [`apply_menu_palette`] (the ui-scoped
-/// variant); ui-scoped application is still needed for popups whose
-/// Frame is built from parent-ui style specifically (like the egui
-/// `menu_bar` / `popup_below_widget` paths where the parent-ui-
-/// style + ctx-style interplay is subtle). Apply both for
-/// belt-and-suspenders coverage.
-pub(crate) fn apply_menu_palette_to_ctx(ctx: &egui::Context, palette: MenuPalette) {
+/// This function is exposed only for the `with_menu_palette`
+/// implementation and for tests that need to inspect the post-apply
+/// style directly.
+fn apply_menu_palette_to_ctx(ctx: &egui::Context, palette: MenuPalette) {
     ctx.style_mut(|style| {
         apply_menu_palette_to_visuals(&mut style.visuals, palette);
     });
+}
+
+/// Run `f` with amux's menu palette temporarily applied to the
+/// `egui::Context`'s style, then restore the previous style.
+///
+/// This is the correct way to theme `Response::context_menu` and
+/// any other egui primitive that reads from `ctx.style()` to build
+/// its outer `Frame`. `context_menu` constructs its menu Frame
+/// synchronously during the `.context_menu(|ui| ...)` call (inside
+/// egui's `menu_ui`), so by the time `f` returns, the Frame has
+/// already been built, paint commands have been recorded against
+/// the themed style, and it is safe to restore the ctx style for
+/// the rest of the frame.
+///
+/// We save via `ctx.style()` (cheap `Arc<Style>` clone) and restore
+/// via `ctx.set_style(...)`. The inner `apply_menu_palette_to_ctx`
+/// uses `ctx.style_mut`, which will `Arc::make_mut` a fresh style
+/// — the saved `Arc` keeps the original untouched until we restore.
+///
+/// Use this for:
+///
+/// - `Response::context_menu` (sidebar workspace right-click, tab
+///   bar right-click, etc.)
+/// - Any future egui popup / tooltip / window primitive that reads
+///   from `ctx.style()` internally
+///
+/// For `ui.menu_button` and `popup_below_widget`, whose Frame is
+/// built from the parent `Ui`'s style, use [`apply_menu_palette`]
+/// on the parent ui before the call.
+pub(crate) fn with_menu_palette<R>(
+    ctx: &egui::Context,
+    palette: MenuPalette,
+    f: impl FnOnce() -> R,
+) -> R {
+    let saved = ctx.style();
+    apply_menu_palette_to_ctx(ctx, palette);
+    let result = f();
+    ctx.set_style(saved);
+    result
 }
 
 /// Apply a `MenuPalette` to a UI's visuals so that popups built

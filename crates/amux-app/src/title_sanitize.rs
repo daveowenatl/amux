@@ -18,14 +18,15 @@
 //! we've tested.
 //!
 //! [`sanitize_pane_title`] is a best-effort cleanup applied at
-//! every title consumer (in practice, applied once at the bottom of
-//! `managed_pane::surface_title` so every consumer inherits the
-//! cleanup for free). Rules:
+//! every title consumer (in practice, applied once in
+//! `ManagedPane::title()` so every consumer inherits the cleanup
+//! for free). Rules:
 //!
 //! 1. Empty input → `"?"` (matches the raw pane fallback today).
-//! 2. Input that looks like an absolute path to a known shell exe
-//!    (`.exe` / `.cmd` / `.bat` / `.sh` / `.ps1` / `.fish` / `.zsh`
-//!    extension AND a path separator) → basename minus extension.
+//! 2. Input that is an **absolute** path (starts with `/`, `\\`,
+//!    or a drive letter followed by `\`/`/`) AND whose last
+//!    segment is a known shell exe → basename minus extension.
+//!    Relative paths like `tools/pwsh.exe` are left untouched.
 //! 3. Input that looks like a bare shell exe (no path separators
 //!    but has a known shell extension) → basename minus extension.
 //! 4. Otherwise → passthrough (assume the shell or user set it
@@ -82,8 +83,13 @@ pub(crate) fn sanitize_pane_title(raw: &str) -> Cow<'_, str> {
         return Cow::Borrowed("?");
     }
 
-    let looks_like_abs_path =
-        trimmed.contains('\\') || trimmed.contains('/') || has_drive_letter(trimmed);
+    // Only treat the input as a path-to-collapse if it starts with
+    // a real absolute-path prefix. Relative paths like
+    // `tools/pwsh.exe` stay as-is — we can't tell whether the user
+    // typed that deliberately as an OSC title.
+    let looks_like_abs_path = trimmed.starts_with('/')      // Unix absolute
+        || trimmed.starts_with("\\\\")                       // Windows UNC
+        || has_drive_letter_prefix(trimmed); //               Windows C:\ / C:/
 
     // Case 1: absolute-path-to-shell, where the final path segment
     // either has a known shell extension (`pwsh.exe`, `bash.sh`) OR
@@ -113,26 +119,52 @@ pub(crate) fn sanitize_pane_title(raw: &str) -> Cow<'_, str> {
     Cow::Borrowed(trimmed)
 }
 
-/// Lowercase-compare `s` against [`KNOWN_SHELL_BASENAMES`].
+/// Case-insensitive match of `s` against [`KNOWN_SHELL_BASENAMES`].
+/// Uses `eq_ignore_ascii_case` so the common passthrough case stays
+/// allocation-free (important because this runs from per-frame
+/// tab-bar / window-title rendering paths).
 fn is_known_shell_basename(s: &str) -> bool {
-    let lower = s.to_ascii_lowercase();
-    KNOWN_SHELL_BASENAMES.iter().any(|b| *b == lower)
+    KNOWN_SHELL_BASENAMES
+        .iter()
+        .any(|b| b.eq_ignore_ascii_case(s))
 }
 
-/// True if `s` starts with a Windows drive letter (`C:`, `d:`, ...).
-fn has_drive_letter(s: &str) -> bool {
+/// True if `s` starts with a real absolute Windows drive path
+/// (`C:\`, `C:/`, `d:\`, ...). A bare drive-relative prefix like
+/// `C:pwsh.exe` is NOT considered absolute — Windows keeps a
+/// per-drive "current directory", and those inputs are almost
+/// certainly user-typed text rather than raw PTY titles.
+fn has_drive_letter_prefix(s: &str) -> bool {
     let bytes = s.as_bytes();
-    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
 }
 
 /// Returns the shell extension suffix (e.g. `".exe"`) if `s` ends
-/// with one from `SHELL_EXTENSIONS`. Matches case-insensitively.
+/// with one from `SHELL_EXTENSIONS`. Matches case-insensitively
+/// without allocating.
 fn shell_extension(s: &str) -> Option<&'static str> {
-    let lower = s.to_ascii_lowercase();
     SHELL_EXTENSIONS
         .iter()
-        .find(|ext| lower.ends_with(*ext))
+        .find(|ext| ends_with_ignore_ascii_case(s, ext))
         .copied()
+}
+
+/// Allocation-free case-insensitive suffix test. `ext` is assumed
+/// to already be ASCII lowercase (all entries in
+/// `SHELL_EXTENSIONS` are).
+fn ends_with_ignore_ascii_case(s: &str, ext: &str) -> bool {
+    let s = s.as_bytes();
+    let ext = ext.as_bytes();
+    if s.len() < ext.len() {
+        return false;
+    }
+    let tail = &s[s.len() - ext.len()..];
+    tail.iter()
+        .zip(ext)
+        .all(|(a, b)| a.to_ascii_lowercase() == *b)
 }
 
 /// Return the final path segment of `s`, splitting on either
@@ -142,9 +174,9 @@ fn last_path_segment(s: &str) -> Option<&str> {
 }
 
 /// Strip `ext` from the end of `s` if it ends with `ext` (case-
-/// insensitive). Returns `s` unchanged otherwise.
+/// insensitive). Returns `s` unchanged otherwise. Allocation-free.
 fn strip_extension<'a>(s: &'a str, ext: &str) -> &'a str {
-    if s.to_ascii_lowercase().ends_with(ext) {
+    if ends_with_ignore_ascii_case(s, ext) {
         &s[..s.len() - ext.len()]
     } else {
         s
@@ -227,5 +259,33 @@ mod tests {
             sanitize_pane_title(r"C:\Users\dave\notes.md"),
             r"C:\Users\dave\notes.md"
         );
+    }
+
+    #[test]
+    fn relative_paths_with_shell_names_pass_through() {
+        // A relative path that happens to end in a shell exe name
+        // should NOT be collapsed — the user may have typed it as a
+        // deliberate OSC title and "absolute path to shell" is the
+        // only case we want to rewrite.
+        assert_eq!(sanitize_pane_title("tools/pwsh.exe"), "tools/pwsh.exe");
+        assert_eq!(
+            sanitize_pane_title(r"scripts\build\bash.sh"),
+            r"scripts\build\bash.sh"
+        );
+    }
+
+    #[test]
+    fn drive_relative_prefix_is_not_absolute() {
+        // `C:pwsh.exe` is a Windows *drive-relative* path, not an
+        // absolute one. It should pass through unchanged rather
+        // than being collapsed to `C:pwsh`.
+        assert_eq!(sanitize_pane_title("C:pwsh.exe"), "C:pwsh.exe");
+    }
+
+    #[test]
+    fn unc_path_collapses() {
+        // Windows UNC paths (`\\server\share\...`) are absolute and
+        // should collapse like any other absolute shell path.
+        assert_eq!(sanitize_pane_title(r"\\server\share\pwsh.exe"), "pwsh");
     }
 }
