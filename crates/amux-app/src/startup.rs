@@ -833,6 +833,13 @@ pub(crate) fn spawn_surface(
 
     // Write scrollback to temp file for shell-based replay. Only for shells
     // with integration scripts that know to read and delete the file.
+    //
+    // On Windows, scrollback is restored via `feed_bytes` below instead
+    // of the shell integration path. ConPTY and PowerShell's text encoding
+    // layers mangle the ANSI escape sequences (ESC bytes rendered as
+    // visible Cyrillic characters). Feeding directly into libghostty-vt's
+    // VT parser bypasses all of that — see issue #217.
+    #[cfg(not(target_os = "windows"))]
     if shell::has_shell_integration(&shell) {
         if let Some(text) = scrollback {
             if !text.is_empty() {
@@ -869,6 +876,18 @@ pub(crate) fn spawn_surface(
     // Apply amux theme colors to the ghostty backend (which otherwise
     // uses libghostty-vt's built-in defaults).
     ghostty_pane.set_palette(config.color_palette.clone());
+
+    // On Windows, feed saved scrollback directly into the VT parser
+    // instead of going through the shell integration temp-file path.
+    // This bypasses ConPTY + PowerShell encoding layers that mangle
+    // ESC bytes into visible characters (issue #217).
+    #[cfg(target_os = "windows")]
+    if let Some(text) = scrollback {
+        if !text.is_empty() {
+            ghostty_pane.feed_bytes(text.as_bytes());
+        }
+    }
+
     let mut pane: amux_term::AnyBackend = amux_term::AnyBackend::Ghostty(Box::new(ghostty_pane));
 
     let mut reader = pane.take_reader().expect("reader already taken");
