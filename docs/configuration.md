@@ -1,12 +1,18 @@
 # amux Configuration
 
-amux reads its configuration from a single TOML file:
+amux reads its configuration from a TOML file. The preferred location is:
+
+    ~/.amux/config.toml
+
+This path is the same on every platform — no need to remember OS-specific
+directories. On first launch, amux writes a fully-populated default config
+here with every setting and its default value.
+
+**Fallback paths** (checked if `~/.amux/config.toml` doesn't exist):
 
 - **Linux**: `~/.config/amux/config.toml`
 - **macOS**: `~/Library/Application Support/amux/config.toml`
 - **Windows**: `%APPDATA%\amux\config.toml`
-
-These are the paths `dirs::config_dir()` resolves to on each platform.
 
 The config file is optional — amux runs with sensible defaults if no file
 exists. Fields are deserialized via `serde` with `#[serde(default)]` on the
@@ -214,12 +220,11 @@ applying layers in this order, lowest priority first:
 
 1. **Built-in defaults** — hard-coded in `amux-app/src/theme.rs` and
    `amux-core/src/config.rs::KeybindingsConfig::platform_defaults()`.
-2. **Theme source** — if `theme_source = "ghostty"`, Ghostty's config
-   overlays the built-in theme.
-3. **User config file** — `[colors]` + `[keybindings]` sections in
-   `~/.config/amux/config.toml` (or `%APPDATA%\amux\config.toml` on
-   Windows, `~/Library/Application Support/amux/config.toml` on macOS)
-   overlay the previous layer, one field at a time.
+2. **Config file** — `~/.amux/config.toml` (preferred) or the platform-
+   specific fallback. On first launch, amux writes a default config with
+   every field populated, so users always have a starting point.
+3. **Theme source overlay** — if `theme_source = "ghostty"`, Ghostty's
+   config overlays the built-in theme before user color overrides apply.
 
 Later layers only override the specific fields they set. Unset fields
 inherit from below. This means you can start with a Ghostty theme and
@@ -236,13 +241,14 @@ scrollback, and notification history across the restart.
 
 ## File locations (quick reference)
 
-amux resolves the main config via `dirs::config_dir()` and the session
-state via `dirs::data_dir()`, which land in different platform-standard
-directories:
+The main config lives at `~/.amux/config.toml` on all platforms. Other
+files use platform-specific paths via `dirs::config_dir()` /
+`dirs::data_dir()`:
 
 | Purpose                  | Linux                                  | macOS                                                   | Windows                          |
 |--------------------------|----------------------------------------|---------------------------------------------------------|----------------------------------|
-| amux main config         | `~/.config/amux/config.toml`           | `~/Library/Application Support/amux/config.toml`        | `%APPDATA%\amux\config.toml`     |
+| amux config (preferred)  | `~/.amux/config.toml`                  | `~/.amux/config.toml`                                   | `~/.amux/config.toml`            |
+| amux config (fallback)   | `~/.config/amux/config.toml`           | `~/Library/Application Support/amux/config.toml`        | `%APPDATA%\amux\config.toml`     |
 | amux session state       | `~/.local/share/amux/session.json`     | `~/Library/Application Support/amux/session.json`       | `%APPDATA%\amux\session.json`    |
 | Ghostty config (if used) | `~/.config/ghostty/config`             | `~/Library/Application Support/com.mitchellh.ghostty/config` | `%APPDATA%\ghostty\config`  |
 | Shell integration scripts| `~/.config/amux/shell/`                | `~/Library/Application Support/amux/shell/`             | `%APPDATA%\amux\shell\`          |
@@ -253,7 +259,7 @@ directories:
 ## Minimal working example
 
 ```toml
-# ~/.config/amux/config.toml
+# ~/.amux/config.toml
 
 font_family  = "JetBrains Mono"
 font_size    = 14.0
