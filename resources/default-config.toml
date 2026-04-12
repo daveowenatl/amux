@@ -1,0 +1,149 @@
+# amux default configuration
+#
+# This file is the single source of truth for amux's default settings.
+# It is embedded in the binary at compile time and written to
+# ~/.amux/config.toml on first launch (same path on every platform),
+# so users always have a complete reference to edit.
+#
+# Config resolution order (first found wins):
+#   1. ~/.amux/config.toml          (cross-platform, preferred)
+#   2. Platform-specific fallback:
+#      - Linux:   ~/.config/amux/config.toml
+#      - macOS:   ~/Library/Application Support/amux/config.toml
+#      - Windows: %APPDATA%\amux\config.toml
+
+# ── Appearance ────────────────────────────────────────────────────────────────
+
+# Terminal font family. Resolved against system-installed fonts by cosmic-text.
+# Examples: "JetBrains Mono", "Menlo", "Cascadia Code"
+font_family = "IBM Plex Mono"
+
+# Terminal font size in points. Clamped to [4, 96].
+font_size = 14.0
+
+# Color/font theme source.
+#   "default"  — amux's built-in Monokai Classic dark palette (see [colors] below)
+#   "ghostty"  — read colors and font from ~/.config/ghostty/config
+# Individual colors can always be overridden in the [colors] section.
+theme_source = "default"
+
+# In-window menu bar style. Controls how the File/Edit/View menu is presented
+# inside the amux window. On macOS the NSApp native menu bar is always present
+# regardless of this setting; this only affects the in-window chrome.
+#   "menubar"    — dedicated File/Edit/View strip above the icon row (default on Windows/Linux)
+#   "hamburger"  — single ≡ button collapsed into the icon row (most space-efficient)
+#   "none"       — no in-window menu chrome (default on macOS; use keyboard shortcuts)
+# Changing this requires a restart.
+menu_bar_style = "menubar"
+
+# Shell to spawn in new panes. Accepts a plain binary name ("pwsh", "bash") or
+# an absolute path ("/opt/homebrew/bin/fish").
+# When unset, amux uses $SHELL on Unix and prefers pwsh.exe on Windows (then $COMSPEC).
+# shell = "/bin/zsh"
+
+# ── Colors ────────────────────────────────────────────────────────────────────
+# Monokai Classic — the default palette. Change any value to customize.
+
+[colors]
+background   = "#252830"
+foreground   = "#fdfff1"
+cursor_fg    = "#8d8e82"
+cursor_bg    = "#c0c1b5"
+selection_fg = "#fdfff1"
+selection_bg = "#57584f"
+
+# 16-entry ANSI palette (indices 0-15).
+# Index 0-7 = normal colors, 8-15 = bright variants.
+palette = [
+    "#272822",  # 0  black
+    "#f92672",  # 1  red         (Monokai pink)
+    "#a6e22e",  # 2  green
+    "#e6db74",  # 3  yellow
+    "#fd971f",  # 4  blue        (Monokai orange — slot 4 by convention)
+    "#ae81ff",  # 5  magenta     (Monokai purple)
+    "#66d9ef",  # 6  cyan
+    "#fdfff1",  # 7  white
+    "#6e7066",  # 8  bright black
+    "#f92672",  # 9  bright red
+    "#a6e22e",  # 10 bright green
+    "#e6db74",  # 11 bright yellow
+    "#fd971f",  # 12 bright blue
+    "#ae81ff",  # 13 bright magenta
+    "#66d9ef",  # 14 bright cyan
+    "#fdfff1",  # 15 bright white
+]
+
+# ── Notifications ─────────────────────────────────────────────────────────────
+
+[notifications]
+# Deliver OS-native toast notifications when the app is unfocused.
+system_notifications = true
+
+# Automatically move workspaces to the top of the sidebar on notification.
+auto_reorder_workspaces = true
+
+# Show unread count on the macOS Dock icon / Windows taskbar badge.
+dock_badge = true
+
+# Shell command to run on each notification.
+# Receives AMUX_NOTIFICATION_* environment variables.
+# custom_command = "~/.config/amux/on-notify.sh"
+
+[notifications.sound]
+# Notification sound. One of:
+#   "system"  — platform default notification sound
+#   "none"    — silent
+#   <path>    — absolute path to a .wav/.ogg/.mp3 file
+sound = "system"
+
+# Play sound even when amux is the focused window.
+play_when_focused = true
+
+# ── Browser ───────────────────────────────────────────────────────────────────
+
+[browser]
+# Default search engine for the in-app browser.
+# Supported values: "google", "duckduckgo", "bing", "kagi", "startpage"
+search_engine = "google"
+
+# Open terminal hyperlinks in an in-app browser pane instead of the system browser.
+open_terminal_links_in_app = true
+
+# Custom User-Agent string for the in-app webview. Overrides the default when set.
+# user_agent = "Mozilla/5.0 (compatible; amux/1.0)"
+
+# Download directory for the in-app browser. Defaults to the system Downloads folder.
+# download_dir = "~/Downloads"
+
+# ── Keybindings ───────────────────────────────────────────────────────────────
+# Platform defaults are applied automatically at runtime (Cmd on macOS, Ctrl on
+# Windows/Linux). Only set entries here to override a default.
+# Key combo syntax: "cmd+c", "ctrl+shift+t", "cmd+alt+left", "ctrl+tab"
+# Modifier names: cmd (macOS ⌘), ctrl, shift, alt/option
+
+[keybindings]
+# copy              = "cmd+c"
+# paste             = "cmd+v"
+# find              = "cmd+f"
+# select_all        = "cmd+a"
+# copy_mode         = "cmd+shift+x"
+# toggle_sidebar    = "cmd+b"
+# new_browser_tab   = "cmd+shift+l"
+# new_workspace     = "cmd+n"
+# new_tab           = "cmd+t"
+# next_workspace    = "cmd+shift+]"
+# prev_workspace    = "cmd+shift+["
+# next_tab          = "ctrl+tab"
+# prev_tab          = "ctrl+shift+tab"
+# split_right       = "cmd+d"
+# split_down        = "cmd+shift+d"
+# close_pane        = "cmd+w"
+# navigate_left     = "cmd+alt+left"
+# navigate_right    = "cmd+alt+right"
+# navigate_up       = "cmd+alt+up"
+# navigate_down     = "cmd+alt+down"
+# zoom_toggle       = "cmd+shift+enter"
+# devtools          = "cmd+alt+i"
+# notification_panel = "cmd+i"
+# jump_to_unread    = "cmd+shift+u"
+# clear_scrollback  = "cmd+k"
