@@ -54,7 +54,12 @@ use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 // 4-byte integer for the DWM attribute, so declare them locally instead
 // of chasing the re-export. `BOOL` on Win32 is always a signed 32-bit
 // int where 0 = FALSE and any non-zero value = TRUE.
-#[allow(non_camel_case_types)]
+//
+// `BOOL` (all-caps) is the documented Win32 type name — keep it as-is
+// to match the platform conventions the rest of this module uses
+// (HWND, HMODULE, etc.). Suppress the clippy lint that would otherwise
+// rename it to `Bool`.
+#[allow(clippy::upper_case_acronyms)]
 type BOOL = i32;
 const TRUE: BOOL = 1;
 
