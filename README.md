@@ -30,6 +30,7 @@ Grab the archive for your platform from the [Releases page](https://github.com/d
 | macOS (Intel) | `amux-x86_64-apple-darwin.tar.gz` |
 | Linux (x86_64) | `amux-x86_64-unknown-linux-gnu.tar.gz` |
 | Windows (x86_64) | `amux-x86_64-pc-windows-msvc.zip` |
+| Windows MSIX installer | `amux-x86_64-pc-windows-msvc.msix` |
 
 Extract and put the contents on your `PATH`. Each archive contains:
 
@@ -188,40 +189,35 @@ On relaunch amux restores window, workspace, and pane layout; working directorie
 
 ## Configuration
 
-Config lives at `~/.config/amux/config.toml` on Unix and `%APPDATA%\amux\config.toml` on Windows. Every section and key is optional.
+Config lives at `~/.amux/config.toml` (same path on every platform). On first launch, amux writes a fully-populated default config with every setting and its default value — edit in place to customize.
+
+Fallback paths (checked if `~/.amux/config.toml` doesn't exist): `~/.config/amux/config.toml` (Linux), `~/Library/Application Support/amux/config.toml` (macOS), `%APPDATA%\amux\config.toml` (Windows).
+
+**Hot-reload:** amux polls the config file every 2 seconds. Changes to font size, theme/colors, and notification settings take effect without restarting. Keybindings and menu bar style require a restart.
+
+Full reference: [`docs/configuration.md`](docs/configuration.md)
 
 ```toml
-# Shell to spawn in new panes. Bare name ("pwsh", "bash", "fish") is
-# resolved against PATH, or an absolute path. Defaults to $SHELL on Unix
-# and prefers pwsh.exe on Windows, falling back to $COMSPEC (cmd.exe).
-# shell = "pwsh"
-
-[appearance]
-sidebar_width = 220
 font_family = "IBM Plex Mono"
 font_size = 14.0
-theme = "dark"             # dark | light | system
+theme_source = "default"       # "default" (Monokai Classic) or "ghostty"
+# shell = "pwsh"               # auto-detected if unset
+
+[colors]
+background = "#252830"
+foreground = "#fdfff1"
 
 [notifications]
-sound = true
 system_notifications = true
-ring = true
-auto_reorder_workspaces = true
+dock_badge = true
+
+[notifications.sound]
+sound = "system"               # "system", "none", or path to audio file
 
 [keybindings]
-# Override any default. On non-macOS the parser treats `cmd` as `ctrl`,
-# so mac-style combos aren't safe to copy verbatim — a bare `ctrl+n`
-# would collide with the terminal's own Ctrl+N.
-# Full list of actions: see `KeybindingsConfig` in
-# crates/amux-core/src/config.rs.
-#
-# macOS:
-# new_workspace = "cmd+n"
-# toggle_sidebar = "cmd+b"
-#
-# Windows / Linux (these ARE the defaults — shown for reference):
-# new_workspace = "ctrl+shift+n"
-# toggle_sidebar = "ctrl+b"
+# Platform defaults applied automatically (Cmd on macOS, Ctrl on Win/Linux).
+# Override specific bindings here.
+# new_workspace = "Ctrl+Shift+N"
 ```
 
 ## Building from Source

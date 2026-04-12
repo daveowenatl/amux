@@ -9,14 +9,29 @@ install/uninstall, automatic updates, and optional Microsoft Store publishing.
 packaging/msix/
   AppxManifest.xml          # Package manifest (binaries, capabilities, aliases)
   amux.appinstaller         # Auto-update configuration via GitHub Releases
-  generate-icons.rs         # Placeholder icon generator (run from repo root)
-  generate-placeholder-icons.py  # Alternative Python icon generator
-  Assets/                   # MSIX icon assets (placeholder PNGs, replace before release)
+  Assets/                   # MSIX icon assets (orange Menlo "a" on Monokai dark bg)
+    amux.ico                # Multi-size ICO for .exe embedding (256/48/32/16px)
+    icon-1024.png           # 1024px master for other platform uses
+    Square44x44Logo.*       # Taskbar icon (scale-100, scale-200, unplated)
+    Square150x150Logo.*     # Start menu tile (scale-100, scale-200)
+    Wide310x150Logo.*       # Wide tile (scale-100, scale-200)
+    StoreLogo.*             # Store listing icon (scale-100)
 ```
 
-## Prerequisites
+## CI Integration
 
-Before building an MSIX package, you need:
+The release workflow (`.github/workflows/release.yml`) automatically builds
+an unsigned `.msix` package on every Windows release build:
+
+1. Stages binaries + `AppxManifest.xml` + `Assets/` into a staging directory
+2. Updates the manifest version from the git tag (`v1.2.3` → `1.2.3.0`)
+3. Generates `resources.pri` via `MakePri.exe` (Windows SDK)
+4. Builds the `.msix` via `MakeAppx.exe`
+5. Uploads the `.msix` as a release artifact
+
+**The package is currently unsigned.** See "Code Signing" below.
+
+## Prerequisites (Manual Builds)
 
 ### 1. Code Signing Certificate
 
@@ -63,11 +78,6 @@ to build the `.msix` package. Install via:
 
 Typical path: `C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\`
 
-### 3. Real Icon Assets
-
-Replace the placeholder PNGs in `Assets/` with proper amux branding.
-Required sizes are listed in `generate-icons.rs`.
-
 ## Building an MSIX Package (Manual)
 
 ```powershell
@@ -93,7 +103,9 @@ Copy-Item -Recurse packaging/msix/Assets $staging/
 
 # 3. Generate resources.pri (required by MSIX)
 & "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\MakePri.exe" `
-  new /pr $staging /cf packaging/msix/priconfig.xml /of "$staging\resources.pri" /o
+  createconfig /cf "$staging\priconfig.xml" /dq en-US /o
+& "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\MakePri.exe" `
+  new /pr $staging /cf "$staging\priconfig.xml" /of "$staging\resources.pri" /o
 
 # 4. Build the .msix
 & "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\MakeAppx.exe" `
@@ -120,14 +132,9 @@ Add-AppxPackage -AppInstallerFile amux.appinstaller
 Get-AppxPackage *amux* | Remove-AppxPackage
 ```
 
-## CI Integration (TODO)
+## Remaining Work
 
-The release workflow at `.github/workflows/release.yml` should be extended
-to build and sign the MSIX on Windows runners. See issue #141 for the
-remaining tasks:
-
-- [ ] Add signing secrets to GitHub repository settings
-- [ ] Add MSIX build step to release workflow
-- [ ] Upload signed `.msix` and `.appinstaller` to GitHub Release
-- [ ] Test sideloading and auto-update flow
+- [ ] Set up Azure Trusted Signing and wire secrets into CI
+- [ ] Add signing step to the release workflow after MakeAppx
+- [ ] Test sideloading and auto-update flow end-to-end
 - [ ] Optional: submit to Microsoft Store ($19 one-time fee)
