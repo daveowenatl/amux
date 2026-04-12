@@ -239,6 +239,12 @@ struct AmuxApp {
     /// Injected as `egui::Event::Copy` before the render pass so egui's
     /// TextEdit processes it and sets `PlatformOutput::copied_text`.
     pending_text_field_copy: bool,
+    /// Path to the config file that was loaded at startup (for hot-reload polling).
+    config_file_path: Option<std::path::PathBuf>,
+    /// Last known modification time of the config file.
+    config_last_modified: Option<std::time::SystemTime>,
+    /// When we last checked the config file's mtime (throttle to ~2s).
+    config_last_checked: Instant,
 }
 
 /// Editing state for a browser pane's omnibar.

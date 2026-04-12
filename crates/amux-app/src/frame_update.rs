@@ -186,6 +186,12 @@ impl eframe::App for AmuxApp {
         // Drain notification events from all surfaces
         self.drain_notifications();
 
+        // Hot-reload config file if it changed on disk. Runs before
+        // the badge update so toggling dock_badge takes effect on
+        // the same frame (otherwise a true→false flip leaves a stale
+        // badge until the next notification event).
+        self.check_config_reload();
+
         // Update dock/taskbar badge with total unread count (only when changed)
         if self.app_config.notifications.dock_badge {
             let count = self.notifications.total_unread();
