@@ -454,42 +454,106 @@ fn drain_muda_events() {
 // Non-macOS path (egui TopBottomPanel + menu::bar)
 // ---------------------------------------------------------------------
 
+/// Pick a readable foreground color for a given background by checking
+/// its perceived luminance. Matches what amux does elsewhere (sidebar,
+/// tab bar) to keep chrome text legible against any user theme.
+#[cfg(not(target_os = "macos"))]
+fn contrast_text(bg: egui::Color32) -> egui::Color32 {
+    // Rec. 601 luma — the approximation most UI toolkits use.
+    let r = bg.r() as f32;
+    let g = bg.g() as f32;
+    let b = bg.b() as f32;
+    let luma = 0.299 * r + 0.587 * g + 0.114 * b;
+    if luma < 128.0 {
+        egui::Color32::from_rgb(0xE6, 0xE6, 0xE6) // soft white
+    } else {
+        egui::Color32::from_rgb(0x20, 0x20, 0x20) // near black
+    }
+}
+
 /// Draw the menu bar into a [`egui::TopBottomPanel::top`] and push any
 /// clicked actions into the shared [`PENDING_ACTIONS`] queue. Must be
 /// called before any other top-level panels (sidebar, central) claim
 /// vertical space — egui panels nest in call order.
+///
+/// Theming: the panel's background uses `theme.titlebar_bg()` (same
+/// resolution chain as the tab bar) so the menu bar looks like a
+/// natural extension of amux's chrome. Foreground text is overridden
+/// via `style.visuals.override_text_color` with a contrast-aware color
+/// derived from the background, which ensures labels and shortcut
+/// hints are legible regardless of what theme the user configured.
+///
+/// The dropdown popups opened by `ui.menu_button` inherit the same
+/// `override_text_color` and the modified `widgets.*.weak_bg_fill`
+/// hover colors, so opened menus also render in amux's palette.
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn draw_egui_menu_bar(ctx: &egui::Context) {
-    egui::TopBottomPanel::top("amux_menu_bar").show(ctx, |ui| {
-        egui::menu::bar(ui, |ui| {
-            for submenu in MENU_MODEL {
-                ui.menu_button(submenu.label, |ui| {
-                    for item in submenu.items {
-                        match item {
-                            MenuItemDef::Separator => {
-                                ui.separator();
-                            }
-                            MenuItemDef::Action {
-                                label,
-                                shortcut,
-                                action,
-                            } => {
-                                // Build the button: with shortcut text
-                                // on the right when one is configured,
-                                // plain otherwise.
-                                let button = match shortcut {
-                                    Some(sc) => egui::Button::new(*label).shortcut_text(*sc),
-                                    None => egui::Button::new(*label),
-                                };
-                                if ui.add(button).clicked() {
-                                    push_action(*action);
-                                    ui.close_menu();
+pub(crate) fn draw_egui_menu_bar(ctx: &egui::Context, theme: &crate::theme::Theme) {
+    let bg = theme.titlebar_bg();
+    let fg = contrast_text(bg);
+    // Hover background: slightly lighter/darker variant of bg so
+    // hovered items are visually distinct. Use gamma_multiply to
+    // shift luminance without messing with saturation.
+    let hover_bg = if fg == egui::Color32::from_rgb(0xE6, 0xE6, 0xE6) {
+        // Dark theme — brighten the bg for hover.
+        bg.gamma_multiply(1.4)
+    } else {
+        // Light theme — darken the bg for hover.
+        bg.gamma_multiply(0.85)
+    };
+
+    egui::TopBottomPanel::top("amux_menu_bar")
+        .frame(
+            egui::Frame::new()
+                .fill(bg)
+                .inner_margin(egui::Margin::symmetric(6, 2)),
+        )
+        .show(ctx, |ui| {
+            // Override the palette for everything rendered inside this
+            // panel and its popup children. Egui's dropdown popups
+            // inherit style from the UI that opened them, so these
+            // tweaks propagate into the menu dropdowns too.
+            let visuals = &mut ui.style_mut().visuals;
+            visuals.override_text_color = Some(fg);
+            visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+            visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+            visuals.widgets.hovered.weak_bg_fill = hover_bg;
+            visuals.widgets.hovered.bg_fill = hover_bg;
+            visuals.widgets.active.weak_bg_fill = hover_bg;
+            visuals.widgets.active.bg_fill = hover_bg;
+            // Dropdown popup background (the window-like container
+            // that opens below a top-level menu button).
+            visuals.window_fill = bg;
+            visuals.panel_fill = bg;
+
+            egui::menu::bar(ui, |ui| {
+                for submenu in MENU_MODEL {
+                    ui.menu_button(submenu.label, |ui| {
+                        for item in submenu.items {
+                            match item {
+                                MenuItemDef::Separator => {
+                                    ui.separator();
+                                }
+                                MenuItemDef::Action {
+                                    label,
+                                    shortcut,
+                                    action,
+                                } => {
+                                    // Build the button: with shortcut
+                                    // text on the right when one is
+                                    // configured, plain otherwise.
+                                    let button = match shortcut {
+                                        Some(sc) => egui::Button::new(*label).shortcut_text(*sc),
+                                        None => egui::Button::new(*label),
+                                    };
+                                    if ui.add(button).clicked() {
+                                        push_action(*action);
+                                        ui.close_menu();
+                                    }
                                 }
                             }
                         }
-                    }
-                });
-            }
+                    });
+                }
+            });
         });
-    });
 }

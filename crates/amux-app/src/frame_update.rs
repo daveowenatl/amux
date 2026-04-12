@@ -218,7 +218,7 @@ impl eframe::App for AmuxApp {
         // outside the app window entirely, so there's nothing to draw
         // here.
         #[cfg(not(target_os = "macos"))]
-        menu_bar::draw_egui_menu_bar(ctx);
+        menu_bar::draw_egui_menu_bar(ctx, &self.theme);
 
         // Render sidebar
         if self.sidebar.visible {
