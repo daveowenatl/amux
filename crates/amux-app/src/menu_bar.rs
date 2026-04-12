@@ -451,14 +451,31 @@ fn drain_muda_events() {
 }
 
 // ---------------------------------------------------------------------
-// Non-macOS path (egui TopBottomPanel + menu::bar)
+// Non-macOS path (integrated into the existing titlebar strip)
 // ---------------------------------------------------------------------
+//
+// amux already owns the top-of-window chrome on Windows/Linux: a
+// 28px-tall strip (`TERMINAL_TOP_PAD`) whose background is painted in
+// a background layer from `frame_update.rs`, with the sidebar/bell/+
+// icons drawn over it via a fixed-position `egui::Area` from
+// `notifications_ui::render_titlebar_icons`. A first attempt at the
+// menu bar used `egui::TopBottomPanel::top` as a separate panel, but
+// that created two competing top strips and the menu labels ended up
+// invisible — the foreground icon Area painted over them and the
+// layout math got confused.
+//
+// This implementation plugs the menu directly into the same titlebar
+// strip: `draw_menu_buttons` below is called from
+// `render_titlebar_icons_inner` after the icons are laid out, at the
+// same `y` position, drawing File/Edit/View as clickable labels in
+// the remaining horizontal space. One strip, one coordinate system,
+// no layer fights.
 
 /// Pick a readable foreground color for a given background by checking
 /// its perceived luminance. Matches what amux does elsewhere (sidebar,
 /// tab bar) to keep chrome text legible against any user theme.
 #[cfg(not(target_os = "macos"))]
-fn contrast_text(bg: egui::Color32) -> egui::Color32 {
+pub(crate) fn contrast_text(bg: egui::Color32) -> egui::Color32 {
     // Rec. 601 luma — the approximation most UI toolkits use.
     let r = bg.r() as f32;
     let g = bg.g() as f32;
@@ -471,137 +488,107 @@ fn contrast_text(bg: egui::Color32) -> egui::Color32 {
     }
 }
 
-/// Draw the menu bar into a [`egui::TopBottomPanel::top`] and push any
-/// clicked actions into the shared [`PENDING_ACTIONS`] queue. Must be
-/// called before any other top-level panels (sidebar, central) claim
-/// vertical space — egui panels nest in call order.
+/// Draw the File/Edit/View menu labels as clickable text inside the
+/// existing titlebar icon row. `start_x` is the window-x coordinate
+/// where the labels should start (just past the last icon, with a
+/// small gap); `y` is the same y the icons are drawn at.
 ///
-/// Theming: the panel's background uses `theme.titlebar_bg()` (same
-/// resolution chain as the tab bar) so the menu bar looks like a
-/// natural extension of amux's chrome. Foreground text is overridden
-/// via `style.visuals.override_text_color` with a contrast-aware color
-/// derived from the background, which ensures labels and shortcut
-/// hints are legible regardless of what theme the user configured.
-///
-/// The dropdown popups opened by `ui.menu_button` inherit the same
-/// `override_text_color` and the modified `widgets.*.weak_bg_fill`
-/// hover colors, so opened menus also render in amux's palette.
+/// Clicking a label toggles a popup dropdown below that label with
+/// the submenu's items. Item clicks push their `MenuAction` into the
+/// shared `PENDING_ACTIONS` queue, same as the macOS muda path.
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn draw_egui_menu_bar(ctx: &egui::Context, theme: &crate::theme::Theme) {
+pub(crate) fn draw_menu_buttons(
+    ui: &mut egui::Ui,
+    start_x: f32,
+    y: f32,
+    row_height: f32,
+    theme: &crate::theme::Theme,
+) {
     let bg = theme.titlebar_bg();
     let fg = contrast_text(bg);
-    // Hover background: slightly lighter/darker variant of bg so
-    // hovered items are visually distinct. Use gamma_multiply to
-    // shift luminance without messing with saturation.
-    let hover_bg = if fg == egui::Color32::from_rgb(0xE6, 0xE6, 0xE6) {
-        // Dark theme — brighten the bg for hover.
-        bg.gamma_multiply(1.4)
+    let luma_sum: u16 = bg.r() as u16 + bg.g() as u16 + (bg.b() as u16);
+    let hover_bg = if luma_sum < 384 {
+        bg.gamma_multiply(1.5) // dark theme → brighten on hover
     } else {
-        // Light theme — darken the bg for hover.
-        bg.gamma_multiply(0.85)
+        bg.gamma_multiply(0.85) // light theme → darken on hover
     };
 
-    egui::TopBottomPanel::top("amux_menu_bar")
-        .exact_height(28.0)
-        .frame(
-            egui::Frame::new()
-                .fill(bg)
-                .inner_margin(egui::Margin::symmetric(6, 2)),
-        )
-        .show(ctx, |ui| {
-            // First call of the session: log that we got here at all.
-            // Drop the log on subsequent frames to avoid flooding stderr.
-            static LOGGED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                tracing::info!(
-                    "draw_egui_menu_bar: first frame — bg={:?} fg={:?} model_len={}",
-                    bg,
-                    fg,
-                    MENU_MODEL.len()
-                );
-            }
+    // Layout constants for the label row.
+    const LABEL_GAP: f32 = 8.0; // gap between icons and the first label
+    const LABEL_PAD_X: f32 = 8.0; // horizontal padding inside each label rect
+    const LABEL_FONT_SIZE: f32 = 13.5;
 
-            // Inner UI is wrapped below via `egui::menu::bar`.
-            // Override the palette for everything rendered inside this
-            // panel and its popup children. Egui's dropdown popups
-            // inherit style from the UI that opened them, so these
-            // tweaks propagate into the menu dropdowns too.
-            let visuals = &mut ui.style_mut().visuals;
-            visuals.override_text_color = Some(fg);
-            visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
-            visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
-            visuals.widgets.hovered.weak_bg_fill = hover_bg;
-            visuals.widgets.hovered.bg_fill = hover_bg;
-            visuals.widgets.active.weak_bg_fill = hover_bg;
-            visuals.widgets.active.bg_fill = hover_bg;
-            // Dropdown popup background (the window-like container
-            // that opens below a top-level menu button).
-            visuals.window_fill = bg;
-            visuals.panel_fill = bg;
+    let mut x = start_x + LABEL_GAP;
+    for submenu in MENU_MODEL {
+        // Measure the label's text so the hit rect fits it exactly.
+        let galley = ui.painter().layout_no_wrap(
+            submenu.label.to_string(),
+            egui::FontId::proportional(LABEL_FONT_SIZE),
+            fg,
+        );
+        let label_w = galley.size().x + LABEL_PAD_X * 2.0;
+        let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(label_w, row_height));
 
-            // Diagnostic: draw a plain colored label first. If this is
-            // visible but the menu buttons below aren't, we know the
-            // problem is `egui::menu::bar` or `ui.menu_button` eating
-            // the style — not the panel itself being invisible.
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("[DEBUG: menu bar is rendering]")
-                        .color(fg)
-                        .strong(),
-                );
-                ui.separator();
+        let id = ui.id().with(("amux_menu_label", submenu.label));
+        let response = ui.interact(rect, id, egui::Sense::click());
 
-                // Use plain `ui.horizontal` + top-level buttons instead
-                // of `egui::menu::bar` + `ui.menu_button` so we can
-                // isolate whether menu::bar's internal `set_menu_style`
-                // is clobbering the text color override.
-                //
-                // Each top-level entry is a plain button; clicking one
-                // opens an egui popup with its items. This gives us
-                // full control of the button rendering.
-                for submenu in MENU_MODEL {
-                    let label_button = egui::Button::new(
-                        egui::RichText::new(submenu.label).color(fg),
-                    )
-                    .frame(false);
-                    let response = ui.add(label_button);
-                    let popup_id = ui.make_persistent_id(("amux_menu_popup", submenu.label));
-                    if response.clicked() {
-                        ui.memory_mut(|m| m.toggle_popup(popup_id));
-                    }
-                    egui::popup::popup_below_widget(
-                        ui,
-                        popup_id,
-                        &response,
-                        egui::PopupCloseBehavior::CloseOnClickOutside,
-                        |ui| {
-                            ui.set_min_width(180.0);
-                            for item in submenu.items {
-                                match item {
-                                    MenuItemDef::Separator => {
-                                        ui.separator();
-                                    }
-                                    MenuItemDef::Action {
-                                        label,
-                                        shortcut,
-                                        action,
-                                    } => {
-                                        let button = match shortcut {
-                                            Some(sc) => egui::Button::new(*label)
-                                                .shortcut_text(*sc),
-                                            None => egui::Button::new(*label),
-                                        };
-                                        if ui.add(button).clicked() {
-                                            push_action(*action);
-                                            ui.memory_mut(|m| m.close_popup());
-                                        }
-                                    }
-                                }
+        // Background fill on hover.
+        if response.hovered() {
+            ui.painter().rect_filled(rect, 4.0, hover_bg);
+        }
+
+        // Draw the label text centered vertically inside the rect.
+        let text_pos = egui::pos2(
+            rect.min.x + LABEL_PAD_X,
+            rect.center().y - galley.size().y / 2.0,
+        );
+        ui.painter().galley(text_pos, galley, fg);
+
+        // Popup handling.
+        let popup_id = ui.make_persistent_id(("amux_menu_popup", submenu.label));
+        if response.clicked() {
+            ui.memory_mut(|m| m.toggle_popup(popup_id));
+        }
+        egui::popup::popup_below_widget(
+            ui,
+            popup_id,
+            &response,
+            egui::PopupCloseBehavior::CloseOnClickOutside,
+            |ui| {
+                // Theme the popup to match amux's chrome.
+                let visuals = &mut ui.style_mut().visuals;
+                visuals.override_text_color = Some(fg);
+                visuals.window_fill = bg;
+                visuals.panel_fill = bg;
+                visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+                visuals.widgets.hovered.weak_bg_fill = hover_bg;
+                visuals.widgets.active.weak_bg_fill = hover_bg;
+
+                ui.set_min_width(200.0);
+                for item in submenu.items {
+                    match item {
+                        MenuItemDef::Separator => {
+                            ui.separator();
+                        }
+                        MenuItemDef::Action {
+                            label,
+                            shortcut,
+                            action,
+                        } => {
+                            let button = match shortcut {
+                                Some(sc) => egui::Button::new(*label).shortcut_text(*sc),
+                                None => egui::Button::new(*label),
+                            };
+                            if ui.add(button).clicked() {
+                                push_action(*action);
+                                ui.memory_mut(|m| m.close_popup());
                             }
-                        },
-                    );
+                        }
+                    }
                 }
-            });
-        });
+            },
+        );
+
+        x += label_w;
+    }
 }

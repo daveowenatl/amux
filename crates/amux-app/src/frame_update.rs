@@ -208,17 +208,15 @@ impl eframe::App for AmuxApp {
             }
         }
 
-        // Non-macOS: draw the menu bar via egui into a TopBottomPanel.
-        // Must happen before the sidebar panel so the menu bar sits
-        // above the sidebar rather than under it — egui layout is
-        // pull-based and panels claim space in call order.
+        // The non-macOS menu bar (File / Edit / View) is rendered as
+        // clickable labels inside the existing titlebar icon row —
+        // see `menu_bar::draw_menu_buttons`, called from
+        // `notifications_ui::render_titlebar_icons_inner`. One top
+        // strip, one coordinate system, no competing panels.
         //
         // macOS uses the native NSApp menu bar installed via muda in
         // `menu_bar::build`, which lives at the top of the screen
-        // outside the app window entirely, so there's nothing to draw
-        // here.
-        #[cfg(not(target_os = "macos"))]
-        menu_bar::draw_egui_menu_bar(ctx, &self.theme);
+        // outside the app window entirely.
 
         // Render sidebar
         if self.sidebar.visible {

@@ -368,6 +368,20 @@ impl AmuxApp {
         if resp_new.clicked() {
             self.create_workspace(None);
         }
+
+        // --- File / Edit / View menu labels (Windows/Linux only) ---
+        // On macOS these live in the native NSApp menu bar at the top
+        // of the screen; here we draw them as clickable text inside
+        // the same titlebar strip as the icons, right after the last
+        // icon. Each label opens a popup with its submenu items.
+        //
+        // The `+ icon_size.x` advances past the last icon's right edge
+        // (the `x` variable above points at the icon's LEFT edge).
+        #[cfg(not(target_os = "macos"))]
+        {
+            let menu_start_x = x + icon_size.x;
+            crate::menu_bar::draw_menu_buttons(ui, menu_start_x, top_y, icon_size.y, &self.theme);
+        }
     }
 
     pub(crate) fn render_notification_panel(&mut self, ctx: &egui::Context) {
