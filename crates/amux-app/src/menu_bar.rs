@@ -686,6 +686,15 @@ pub(crate) fn draw_menu_buttons(
         if response.clicked() {
             ui.memory_mut(|m| m.toggle_popup(popup_id));
         }
+        // Apply our palette to the PARENT UI (this one) before
+        // calling popup_below_widget. Egui's popup implementation
+        // reads `parent_ui.style()` to build its Frame
+        // (`Frame::popup(parent_ui.style())` in egui 0.31 —
+        // `containers/popup.rs:415`), so we have to set the style
+        // on this UI, not on the popup's child UI inside the
+        // closure. The child UI inherits from the parent so our
+        // widget text/bg overrides still apply.
+        apply_menu_palette(ui, palette);
         egui::popup::popup_below_widget(
             ui,
             popup_id,
@@ -744,6 +753,11 @@ pub(crate) fn draw_hamburger_button(
     if response.clicked() {
         ui.memory_mut(|m| m.toggle_popup(popup_id));
     }
+    // Apply palette to the PARENT UI before calling
+    // popup_below_widget — egui reads `parent_ui.style()` to
+    // construct its popup Frame. See the same comment in
+    // draw_menu_buttons above.
+    apply_menu_palette(ui, palette);
     egui::popup::popup_below_widget(
         ui,
         popup_id,
