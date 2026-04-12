@@ -641,19 +641,24 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
         let start = total.saturating_sub(max_lines);
         let mut selected: Vec<&str> = lines[start..].iter().map(|s| s.as_str()).collect();
 
-        // Drop trailing blank lines AND trailing prompt rows.
-        // Prompt rows are identified via libghostty-vt's per-row semantic_prompt
-        // metadata, populated by OSC 133 marks that our shell integration emits.
-        // This prevents prompt lines from accumulating across save/restore cycles.
+        // Drop trailing blank rows. Then drop at most one trailing prompt
+        // row (the unused prompt that's visible when save fires). We can't
+        // aggressively drop all trailing prompt rows because on Windows the
+        // pwsh integration can't emit OSC 133;B/C (no preexec hook), so
+        // ghostty tags command output rows as Prompt/Continuation too —
+        // an unconditional drop would eat the content we're trying to save.
         let prompt_row_indices = self.prompt_row_indices();
         while let Some(last_idx) = selected.len().checked_sub(1) {
-            let row_idx = start + last_idx;
-            let is_blank = selected[last_idx].trim().is_empty();
-            let is_prompt = prompt_row_indices.contains(&row_idx);
-            if is_blank || is_prompt {
+            if selected[last_idx].trim().is_empty() {
                 selected.pop();
             } else {
                 break;
+            }
+        }
+        if let Some(last_idx) = selected.len().checked_sub(1) {
+            let row_idx = start + last_idx;
+            if prompt_row_indices.contains(&row_idx) {
+                selected.pop();
             }
         }
 
