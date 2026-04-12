@@ -30,11 +30,11 @@ theme_source = "default"
 # In-window menu bar style. Controls how the File/Edit/View menu is presented
 # inside the amux window. On macOS the NSApp native menu bar is always present
 # regardless of this setting; this only affects the in-window chrome.
-#   "menubar"    — dedicated File/Edit/View strip above the icon row (default on Windows/Linux)
-#   "hamburger"  — single ≡ button collapsed into the icon row (most space-efficient)
+#   "menubar"    — dedicated File/Edit/View strip above the icon row (default on Linux)
+#   "hamburger"  — single ≡ button collapsed into the icon row (default on Windows)
 #   "none"       — no in-window menu chrome (default on macOS; use keyboard shortcuts)
-# Changing this requires a restart.
-menu_bar_style = "menubar"
+# Platform default is applied automatically when unset. Changing requires a restart.
+# menu_bar_style = "menubar"
 
 # Shell to spawn in new panes. Accepts a plain binary name ("pwsh", "bash") or
 # an absolute path ("/opt/homebrew/bin/fish").

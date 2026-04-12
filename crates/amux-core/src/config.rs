@@ -409,7 +409,11 @@ impl Default for MenuBarStyle {
         {
             Self::None
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        {
+            Self::Hamburger
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
             Self::Menubar
         }
