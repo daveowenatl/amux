@@ -240,10 +240,12 @@ impl Default for Theme {
     /// `[colors]` section of `amux/config.toml`.
     /// See `docs/configuration.md` for the full layering.
     ///
-    /// Colors mirror the Ghostty config cmux ships as its default:
-    /// dark gray background (`#252830`), warm off-white foreground
-    /// (`#fdfff1`), Monokai ANSI palette (pink/green/yellow/
-    /// orange/purple/cyan), orange accent.
+    /// Terminal colors mirror the Ghostty config cmux ships as its
+    /// default: dark gray background (`#252830`), warm off-white
+    /// foreground (`#fdfff1`), Monokai ANSI palette (pink/green/
+    /// yellow/orange/purple/cyan). The chrome accent stays amux
+    /// blue (`#3d7dff`) so the active workspace/tab highlight is
+    /// visually distinct from the Monokai orange.
     fn default() -> Self {
         Self {
             terminal: TerminalColors {
@@ -279,15 +281,17 @@ impl Default for Theme {
                 // the sidebar reads as a distinct panel rather than
                 // blending into the terminal.
                 sidebar_bg: Color32::from_rgb(0x1d, 0x1f, 0x25),
-                // Accent: Monokai orange, matches the palette.
-                sidebar_active_bg: Color32::from_rgb(0xfd, 0x97, 0x1f),
+                // Accent: amux blue — kept distinct from the Monokai
+                // terminal palette so the active workspace/tab
+                // highlight doesn't blend into the orange ANSI cells.
+                sidebar_active_bg: Color32::from_rgb(0x3d, 0x7d, 0xff),
                 tab_bar_bg: None,  // falls back to terminal background
                 titlebar_bg: None, // falls back to tab bar background
                 tab_active_bg: Color32::from_rgb(0x25, 0x28, 0x30), // match terminal bg
                 tab_bar_border: Color32::from_rgb(0x3a, 0x3c, 0x43),
                 tab_border: Color32::from_rgb(0x3a, 0x3c, 0x43),
                 divider: Color32::from_rgb(0x3a, 0x3c, 0x43),
-                accent: Color32::from_rgb(0xfd, 0x97, 0x1f),
+                accent: Color32::from_rgb(0x3d, 0x7d, 0xff),
             },
         }
     }
