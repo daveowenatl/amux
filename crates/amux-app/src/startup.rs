@@ -272,6 +272,15 @@ fn cleanup_legacy_claude_hooks_in_settings() {
 
 pub(crate) fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+
+    // Windows: opt the process into dark-mode themed controls before any
+    // windows are created. Must happen before `eframe::run_native` so the
+    // main window is born with dark chrome — the per-window follow-up
+    // call (in menu_bar::attach_to_window) handles controls whose state
+    // is HWND-scoped. See `windows_chrome.rs` for the full rationale.
+    #[cfg(target_os = "windows")]
+    crate::windows_chrome::enable_process_dark_mode();
+
     cleanup_stale_scrollback_files();
     cleanup_stale_gemini_settings_files();
     cleanup_stale_codex_home_dirs();
@@ -377,7 +386,10 @@ pub(crate) fn run() -> anyhow::Result<()> {
         }
     }
 
-    // Build the native menu bar (cross-platform via muda).
+    // Build the native menu bar. macOS only — Windows/Linux draw
+    // their menu bar via egui in `menu_bar::draw_egui_menu_bar` from
+    // the main update loop, so there's no muda::Menu to build.
+    #[cfg(target_os = "macos")]
     let menu = menu_bar::build();
 
     let viewport = egui::ViewportBuilder::default()
@@ -450,9 +462,10 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 last_badge_count: 0,
                 cursor_blink_since: Instant::now(),
                 sound_player,
+                #[cfg(target_os = "macos")]
                 menu,
                 #[cfg(target_os = "windows")]
-                menu_attached: false,
+                window_chrome_applied: false,
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
                 pending_browser_panes: Vec::new(),

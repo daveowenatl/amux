@@ -33,7 +33,6 @@ open = { workspace = true }
 toml = { workspace = true }
 notify-rust = { workspace = true }
 rodio = { workspace = true }
-muda = { workspace = true }
 winit = { workspace = true }
 uuid = { workspace = true }
 amux-browser = { workspace = true }
@@ -43,5 +42,17 @@ image = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation = { workspace = true }
 objc2-app-kit = { workspace = true }
+# muda builds the macOS app-global menu bar installed into NSApp.
+# Windows/Linux draw their menu bar via egui (see `menu_bar::draw_egui_menu_bar`)
+# and don't need muda at all.
+muda = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# Used by `windows_chrome` to enable dark-mode themed controls + dark
+# title bar (see amux #190). Kept on 0.60 to align with versions
+# already in Cargo.lock via transitive deps.
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_System_LibraryLoader",
+] }

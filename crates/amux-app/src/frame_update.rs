@@ -15,11 +15,20 @@ impl eframe::App for AmuxApp {
             return;
         }
 
-        // Attach native menu bar to the window (Windows: per-HWND).
-        // Retries each frame until the HWND is available.
+        // Apply dark-mode window chrome to the Win32 HWND. Retries each
+        // frame until the HWND is available via `eframe::Frame::window_handle`,
+        // then flips `window_chrome_applied` so we don't keep re-poking
+        // Windows on every frame. The call is cheap and idempotent but
+        // there's no reason to run it more than once.
         #[cfg(target_os = "windows")]
-        if !self.menu_attached {
-            self.menu_attached = menu_bar::attach_to_window(&self.menu, _frame);
+        if !self.window_chrome_applied {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(handle) = _frame.window_handle() {
+                if let RawWindowHandle::Win32(win32) = handle.as_raw() {
+                    crate::windows_chrome::apply_dark_mode_to_window(win32.hwnd.get());
+                    self.window_chrome_applied = true;
+                }
+            }
         }
 
         // Create any pending browser panes (needs window handle from frame)
@@ -198,6 +207,16 @@ impl eframe::App for AmuxApp {
                 self.cursor_blink_since = Instant::now();
             }
         }
+
+        // The non-macOS menu bar (File / Edit / View) is rendered as
+        // clickable labels inside the existing titlebar icon row —
+        // see `menu_bar::draw_menu_buttons`, called from
+        // `notifications_ui::render_titlebar_icons_inner`. One top
+        // strip, one coordinate system, no competing panels.
+        //
+        // macOS uses the native NSApp menu bar installed via muda in
+        // `menu_bar::build`, which lives at the top of the screen
+        // outside the app window entirely.
 
         // Render sidebar
         if self.sidebar.visible {
