@@ -30,6 +30,17 @@ macro_rules! delegate {
     };
 }
 
+impl AnyBackend {
+    /// Update the color palette on the underlying terminal backend.
+    /// Used by config hot-reload to propagate theme changes to
+    /// already-running panes.
+    pub fn set_palette(&mut self, palette: Palette) {
+        match self {
+            AnyBackend::Ghostty(inner) => inner.set_palette(palette),
+        }
+    }
+}
+
 impl TerminalBackend for AnyBackend {
     fn advance(&mut self) -> AdvanceResult {
         delegate!(self, advance)

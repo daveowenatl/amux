@@ -539,6 +539,10 @@ impl AmuxApp {
 
         // File changed — reload
         tracing::info!("Config file changed, reloading: {}", path.display());
+        // Update mtime FIRST — even if read/parse fails, we don't
+        // want to retry the same broken file every 2 seconds.
+        self.config_last_modified = Some(current_mtime);
+
         let contents = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
@@ -560,8 +564,6 @@ impl AmuxApp {
                 return;
             }
         };
-
-        self.config_last_modified = Some(current_mtime);
 
         // Apply hot-reloadable fields:
 
@@ -590,18 +592,33 @@ impl AmuxApp {
         // Update the terminal palette so new/existing panes pick up colors
         let mut term_config = (*self.config).clone();
         new_theme.apply_to_palette(&mut term_config.color_palette);
+        let new_palette = term_config.color_palette.clone();
         self.config = Arc::new(term_config);
         self.theme = new_theme;
+
+        // Propagate the new palette to every existing terminal pane.
+        // Without this, already-running panes keep their old palette
+        // (set_palette is only called at spawn time in startup.rs).
+        for entry in self.panes.values_mut() {
+            if let PaneEntry::Terminal(managed) = entry {
+                for surface in managed.surfaces_mut() {
+                    surface.pane.set_palette(new_palette.clone());
+                }
+            }
+        }
         tracing::info!("Hot-reloaded theme/colors");
 
         // Store the full new config but preserve non-hot-reloadable fields
-        // (keybindings, shell, menu_bar_style require a restart).
+        // (keybindings, shell, menu_bar_style, font_family require a restart
+        // or a FontSystem rebuild — see issue #216).
         let keybindings_saved = self.app_config.keybindings.clone();
         let shell_saved = self.app_config.shell.clone();
         let menu_bar_style_saved = self.app_config.menu_bar_style;
+        let font_family_saved = self.app_config.font_family.clone();
         self.app_config = new_config;
         self.app_config.keybindings = keybindings_saved;
         self.app_config.shell = shell_saved;
         self.app_config.menu_bar_style = menu_bar_style_saved;
+        self.app_config.font_family = font_family_saved;
     }
 }

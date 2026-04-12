@@ -723,7 +723,9 @@ mod tests {
         let default = MenuBarStyle::default();
         #[cfg(target_os = "macos")]
         assert_eq!(default, MenuBarStyle::None);
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        assert_eq!(default, MenuBarStyle::Hamburger);
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         assert_eq!(default, MenuBarStyle::Menubar);
     }
 
