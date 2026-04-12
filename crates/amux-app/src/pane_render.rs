@@ -132,10 +132,18 @@ impl AmuxApp {
                 .iter()
                 .map(|tab| match tab {
                     managed_pane::TabEntry::Terminal(surface) => {
-                        let raw_title = surface
+                        // Run the pane's own title (the OSC-set /
+                        // ConPTY-inherited value) through
+                        // `sanitize_pane_title` to collapse ugly
+                        // shell exe paths. `user_title` is
+                        // passed through unchanged because that's
+                        // explicitly user-set.
+                        let sanitized_pane_title =
+                            crate::title_sanitize::sanitize_pane_title(surface.pane.title());
+                        let raw_title: &str = surface
                             .user_title
                             .as_deref()
-                            .unwrap_or_else(|| surface.pane.title());
+                            .unwrap_or(sanitized_pane_title.as_ref());
                         let raw = if raw_title.is_empty() || raw_title == "?" {
                             surface
                                 .metadata
@@ -641,14 +649,16 @@ impl AmuxApp {
                 }
             }
 
-            // Open rename modal for tab (terminal tabs only)
+            // Open rename modal for tab (terminal tabs only).
+            // Sanitize the pane title here too so the rename modal
+            // pre-fills with `pwsh` instead of the ugly exe path.
             if let Some(idx) = start_rename_tab {
                 if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&pane_id) {
                     if let Some(surface) = managed.tabs[idx].as_surface() {
-                        let current_title = surface
-                            .user_title
-                            .clone()
-                            .unwrap_or_else(|| surface.pane.title().to_string());
+                        let current_title = surface.user_title.clone().unwrap_or_else(|| {
+                            crate::title_sanitize::sanitize_pane_title(surface.pane.title())
+                                .into_owned()
+                        });
                         self.rename_modal = Some(RenameModal {
                             target: RenameTarget::Tab {
                                 pane_id,

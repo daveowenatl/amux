@@ -471,117 +471,12 @@ fn drain_muda_events() {
 // the remaining horizontal space. One strip, one coordinate system,
 // no layer fights.
 
-/// Pick a readable foreground color for a given background by checking
-/// its perceived luminance. Matches what amux does elsewhere (sidebar,
-/// tab bar) to keep chrome text legible against any user theme.
+// `MenuPalette`, `apply_menu_palette`, and `contrast_text` now live
+// in `crate::popup_theme` so they can be shared with the sidebar's
+// context menu and any other popup surface that needs amux-themed
+// chrome. See that module for the full rationale.
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn contrast_text(bg: egui::Color32) -> egui::Color32 {
-    // Rec. 601 luma — the approximation most UI toolkits use.
-    let r = bg.r() as f32;
-    let g = bg.g() as f32;
-    let b = bg.b() as f32;
-    let luma = 0.299 * r + 0.587 * g + 0.114 * b;
-    if luma < 128.0 {
-        egui::Color32::from_rgb(0xE6, 0xE6, 0xE6) // soft white
-    } else {
-        egui::Color32::from_rgb(0x20, 0x20, 0x20) // near black
-    }
-}
-
-/// Bundle of theme-derived colors used by every menu-related
-/// rendering path below. Computed once per top-level call so the
-/// per-item loop doesn't redo the luma math.
-#[cfg(not(target_os = "macos"))]
-#[derive(Clone, Copy)]
-struct MenuPalette {
-    bg: egui::Color32,
-    fg: egui::Color32,
-    hover_bg: egui::Color32,
-    divider: egui::Color32,
-}
-
-#[cfg(not(target_os = "macos"))]
-impl MenuPalette {
-    fn from_theme(theme: &crate::theme::Theme) -> Self {
-        let bg = theme.titlebar_bg();
-        let fg = contrast_text(bg);
-        let luma_sum: u16 = bg.r() as u16 + bg.g() as u16 + (bg.b() as u16);
-        let hover_bg = if luma_sum < 384 {
-            bg.gamma_multiply(1.5) // dark theme → brighten on hover
-        } else {
-            bg.gamma_multiply(0.85) // light theme → darken on hover
-        };
-        // Divider: a faint version of fg for popup borders and
-        // separator lines. Low alpha so it doesn't overpower — this
-        // color is used for a 1px stroke on popup frames, so even
-        // a small alpha bump looks loud. Tune down if future
-        // complaints surface.
-        let divider = egui::Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 24);
-        Self {
-            bg,
-            fg,
-            hover_bg,
-            divider,
-        }
-    }
-}
-
-/// Apply a `MenuPalette` to a UI's visuals so that every widget
-/// drawn inside is rendered in amux's chrome colors. Call this at
-/// the top of any popup closure.
-///
-/// This also styles the popup's OUTER Frame (which egui's
-/// `popup_below_widget` / `menu_button` builds automatically from
-/// `visuals.window_fill` + `visuals.window_stroke`). We don't wrap
-/// our content in an additional inner Frame — doing that stacks
-/// two frames + their inner_margin gap and produces what looks
-/// like an absurdly thick border.
-#[cfg(not(target_os = "macos"))]
-fn apply_menu_palette(ui: &mut egui::Ui, palette: MenuPalette) {
-    let visuals = &mut ui.style_mut().visuals;
-
-    // --- Popup container styling (used by egui's popup Frame) ---
-    visuals.window_fill = palette.bg;
-    visuals.panel_fill = palette.bg;
-    // Thin 1px stroke at the divider color — deliberately subtle
-    // so the popup doesn't look like it's wearing a picture frame.
-    visuals.window_stroke = egui::Stroke::new(1.0, palette.divider);
-
-    // --- Text color ---
-    // egui `Button` uses `widgets.{state}.fg_stroke.color` for label
-    // rendering, NOT `override_text_color` in every code path. Set
-    // both so every widget picks it up.
-    visuals.override_text_color = Some(palette.fg);
-    visuals.widgets.inactive.fg_stroke.color = palette.fg;
-    visuals.widgets.hovered.fg_stroke.color = palette.fg;
-    visuals.widgets.active.fg_stroke.color = palette.fg;
-    visuals.widgets.open.fg_stroke.color = palette.fg;
-
-    // --- Widget backgrounds ---
-    // Inactive state: transparent (button looks like plain text
-    // until the user hovers it).
-    visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
-    visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
-    // Hover / active / open: subtle highlight.
-    visuals.widgets.hovered.weak_bg_fill = palette.hover_bg;
-    visuals.widgets.hovered.bg_fill = palette.hover_bg;
-    visuals.widgets.active.weak_bg_fill = palette.hover_bg;
-    visuals.widgets.active.bg_fill = palette.hover_bg;
-    visuals.widgets.open.weak_bg_fill = palette.hover_bg;
-    visuals.widgets.open.bg_fill = palette.hover_bg;
-
-    // --- Widget border strokes ---
-    // No borders on buttons — they should look like plain text
-    // links, not boxed controls.
-    visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
-    visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
-    visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
-    visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
-
-    // --- Separator color ---
-    // `ui.separator()` draws using `noninteractive.bg_stroke`.
-    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, palette.divider);
-}
+use crate::popup_theme::{apply_menu_palette, MenuPalette};
 
 /// Render the items of a single submenu (labels + shortcuts +
 /// separators) into the current UI. Shared between the Menubar

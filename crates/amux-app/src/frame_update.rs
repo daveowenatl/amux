@@ -459,14 +459,16 @@ impl eframe::App for AmuxApp {
         // Hyperlink hover detection + Cmd+click handling
         self.handle_hyperlinks(ctx);
 
-        // Update window title from focused pane's active tab
+        // Update window title from focused pane's active tab.
+        // Uses `managed.title()` for the terminal path so the
+        // raw pane title gets run through `title_sanitize::sanitize_pane_title`
+        // first — collapses ugly absolute shell exe paths (e.g.
+        // Windows' `C:\Program Files\WindowsApps\…\pwsh.exe`) to
+        // a clean basename like `pwsh`.
         let focused_id = self.focused_pane_id();
         if let Some(PaneEntry::Terminal(managed)) = self.panes.get(&focused_id) {
             let title = match managed.active_tab() {
-                managed_pane::ActiveTab::Terminal(_) => managed
-                    .active_surface()
-                    .map(|sf| sf.pane.title().to_string())
-                    .unwrap_or_default(),
+                managed_pane::ActiveTab::Terminal(_) => managed.title(),
                 managed_pane::ActiveTab::Browser(bid) => {
                     self.panes.get(&bid).map(|e| e.title()).unwrap_or_default()
                 }

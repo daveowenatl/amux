@@ -396,6 +396,19 @@ fn render_workspace_row(
     }
 
     // --- Context menu ---
+    // Apply amux's popup palette to the parent `ui` BEFORE calling
+    // `response.context_menu`. Egui's context menu builds its Frame
+    // from the parent's style at construction time, so any palette
+    // applied inside the closure would be too late to affect the
+    // popup's background / border. Applying to the parent also
+    // propagates into the popup's child UI via inheritance so
+    // buttons and separators inside the menu are themed too.
+    //
+    // We also re-apply inside the nested `Set Color` submenu
+    // (which builds its own fresh Area + Frame from its local ui
+    // style) so that nested popup is themed as well.
+    let palette = crate::popup_theme::MenuPalette::from_theme(theme);
+    crate::popup_theme::apply_menu_palette(ui, palette);
     response.context_menu(|ui| {
         if ui.button("Rename Workspace").clicked() {
             actions.push(SidebarAction::StartRenameWorkspace(idx));
@@ -411,7 +424,12 @@ fn render_workspace_row(
             ui.close_menu();
         }
         ui.separator();
+        // Apply palette on the context-menu ui before opening the
+        // nested submenu so the nested menu's Frame also inherits
+        // amux colors.
+        crate::popup_theme::apply_menu_palette(ui, palette);
         ui.menu_button("Set Color", |ui| {
+            crate::popup_theme::apply_menu_palette(ui, palette);
             for &(color, name) in PRESET_COLORS {
                 let c = Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
                 ui.horizontal(|ui| {

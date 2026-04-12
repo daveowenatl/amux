@@ -101,8 +101,9 @@ impl Theme {
 impl Theme {
     /// Create a theme from a loaded Ghostty config.
     ///
-    /// Colors present in the Ghostty config override the defaults; missing
-    /// colors fall back to the built-in Tokyo Night theme.
+    /// Colors present in the Ghostty config override the defaults;
+    /// missing colors fall back to the amux built-in default
+    /// palette (see `Theme::default`).
     pub(crate) fn from_ghostty(cfg: &amux_ghostty_config::GhosttyConfig) -> Self {
         let default = Self::default();
         let mut terminal = default.terminal.clone();
@@ -229,46 +230,63 @@ fn lighten_rgb(r: u8, g: u8, b: u8, amount: f32) -> Color32 {
 }
 
 impl Default for Theme {
+    /// amux's built-in default theme: a neutral dark palette with a
+    /// blue-gray background (`#14161E`), soft off-white foreground
+    /// (`#D0D4E0`), and a blue accent for active/selected chrome.
+    ///
+    /// This replaces a previous "Tokyo Night" default. The amux
+    /// default is intentionally not derived from any third-party
+    /// theme so there's no branding confusion — users who want
+    /// Tokyo Night, Nord, Solarized, etc. should set
+    /// `theme_source = "ghostty"` in their `amux/config.toml` and
+    /// configure the theme in Ghostty, OR override individual
+    /// colors in the `[colors]` section of `amux/config.toml`.
+    /// See `docs/configuration.md` for the full layering.
+    ///
+    /// ANSI palette leans toward balanced saturation so both the
+    /// dim and bright variants of each color are readable against
+    /// the dark background. Selection background is a muted blue
+    /// (`#2A3550`) so selected terminal text stays legible.
     fn default() -> Self {
         Self {
             terminal: TerminalColors {
-                // Tokyo Night
-                background: [0x1a, 0x1b, 0x26],
-                foreground: [0xc0, 0xca, 0xf5],
+                // amux default
+                background: [0x14, 0x16, 0x1e],
+                foreground: [0xd0, 0xd4, 0xe0],
                 ansi: [
-                    [0x15, 0x16, 0x1e], // 0  black
-                    [0xf7, 0x76, 0x8e], // 1  red
-                    [0x9e, 0xce, 0x6a], // 2  green
-                    [0xe0, 0xaf, 0x68], // 3  yellow
-                    [0x7a, 0xa2, 0xf7], // 4  blue
-                    [0xbb, 0x9a, 0xf7], // 5  magenta
-                    [0x7d, 0xcf, 0xff], // 6  cyan
-                    [0xa9, 0xb1, 0xd6], // 7  white
-                    [0x41, 0x48, 0x68], // 8  bright black
-                    [0xf7, 0x76, 0x8e], // 9  bright red
-                    [0x9e, 0xce, 0x6a], // 10 bright green
-                    [0xe0, 0xaf, 0x68], // 11 bright yellow
-                    [0x7a, 0xa2, 0xf7], // 12 bright blue
-                    [0xbb, 0x9a, 0xf7], // 13 bright magenta
-                    [0x7d, 0xcf, 0xff], // 14 bright cyan
-                    [0xc0, 0xca, 0xf5], // 15 bright white
+                    [0x0f, 0x11, 0x17], // 0  black
+                    [0xe0, 0x6c, 0x75], // 1  red
+                    [0x98, 0xc3, 0x79], // 2  green
+                    [0xe5, 0xc0, 0x7b], // 3  yellow
+                    [0x61, 0xaf, 0xef], // 4  blue
+                    [0xc6, 0x78, 0xdd], // 5  magenta
+                    [0x56, 0xb6, 0xc2], // 6  cyan
+                    [0xab, 0xb2, 0xbf], // 7  white
+                    [0x3a, 0x40, 0x4e], // 8  bright black
+                    [0xe8, 0x80, 0x88], // 9  bright red
+                    [0xa8, 0xd1, 0x8e], // 10 bright green
+                    [0xed, 0xcd, 0x8f], // 11 bright yellow
+                    [0x77, 0xbd, 0xf2], // 12 bright blue
+                    [0xd0, 0x8a, 0xe6], // 13 bright magenta
+                    [0x74, 0xc6, 0xd1], // 14 bright cyan
+                    [0xd0, 0xd4, 0xe0], // 15 bright white
                 ],
                 palette_overrides: HashMap::new(),
-                cursor_fg: [0x15, 0x16, 0x1e],
-                cursor_bg: [0xc0, 0xca, 0xf5],
-                selection_fg: [0xc0, 0xca, 0xf5],
-                selection_bg: [0x33, 0x46, 0x7c],
+                cursor_fg: [0x14, 0x16, 0x1e],
+                cursor_bg: [0xd0, 0xd4, 0xe0],
+                selection_fg: [0xd0, 0xd4, 0xe0],
+                selection_bg: [0x2a, 0x35, 0x50],
             },
             chrome: ChromeColors {
-                sidebar_bg: Color32::from_gray(35),
-                sidebar_active_bg: Color32::from_rgb(0, 145, 255), // same as accent
+                sidebar_bg: Color32::from_gray(30),
+                sidebar_active_bg: Color32::from_rgb(0x3d, 0x7d, 0xff),
                 tab_bar_bg: None,  // falls back to terminal background
                 titlebar_bg: None, // falls back to tab bar background
-                tab_active_bg: Color32::from_rgb(0x1a, 0x1b, 0x26), // match terminal bg
-                tab_bar_border: Color32::from_gray(55),
-                tab_border: Color32::from_gray(55),
-                divider: Color32::from_gray(60),
-                accent: Color32::from_rgb(0, 145, 255),
+                tab_active_bg: Color32::from_rgb(0x14, 0x16, 0x1e), // match terminal bg
+                tab_bar_border: Color32::from_gray(50),
+                tab_border: Color32::from_gray(50),
+                divider: Color32::from_gray(55),
+                accent: Color32::from_rgb(0x3d, 0x7d, 0xff),
             },
         }
     }
