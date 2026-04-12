@@ -373,6 +373,49 @@ impl KeybindingsConfig {
     }
 }
 
+/// Style of the in-window menu bar on Windows/Linux, and of the
+/// (optional) in-window menu chrome on macOS when overriding defaults.
+///
+/// macOS always retains the NSApp native menu bar at the top of the
+/// screen regardless of this setting — it's the idiomatic macOS
+/// pattern and removing it would be actively hostile to Mac users.
+/// This setting only controls the *in-window* menu presentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MenuBarStyle {
+    /// Traditional two-strip layout: a dedicated `File Edit View`
+    /// strip above the icon/tab row. Costs ~24px of vertical chrome.
+    /// Default on Windows and Linux.
+    Menubar,
+    /// Single `≡` button collapsed into the existing icon row.
+    /// Clicking it opens a nested popup with every submenu. Zero
+    /// extra vertical chrome — the most space-efficient option.
+    Hamburger,
+    /// No in-window menu chrome at all. Users reach menu actions via
+    /// keyboard shortcuts only (and the native NSApp menu bar on
+    /// macOS). Default on macOS because the NSApp menu bar already
+    /// provides full menu access.
+    None,
+}
+
+// Clippy can't see past the `cfg` — it thinks this impl is just
+// "default to None" and suggests `#[derive(Default)]` on the enum.
+// Keep the manual impl because the default is genuinely platform-
+// specific.
+#[allow(clippy::derivable_impls)]
+impl Default for MenuBarStyle {
+    fn default() -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            Self::None
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Self::Menubar
+        }
+    }
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -389,6 +432,11 @@ pub struct AppConfig {
     /// When unset (the default), amux uses `$SHELL` on Unix and prefers
     /// `pwsh.exe` on Windows if it's on `PATH`, otherwise `$COMSPEC`.
     pub shell: Option<String>,
+    /// In-window menu bar style. See [`MenuBarStyle`] for the full
+    /// list of values and per-platform behavior. Changing this
+    /// requires a restart to take effect.
+    #[serde(default)]
+    pub menu_bar_style: MenuBarStyle,
     pub notifications: NotificationConfig,
     pub browser: BrowserConfig,
     #[serde(default)]
@@ -404,6 +452,7 @@ impl Default for AppConfig {
             font_family: DEFAULT_FONT_FAMILY.to_owned(),
             theme_source: "default".to_owned(),
             shell: None,
+            menu_bar_style: MenuBarStyle::default(),
             notifications: NotificationConfig::default(),
             browser: BrowserConfig::default(),
             colors: ColorsConfig::default(),
@@ -570,6 +619,41 @@ pub fn validate_font_size(size: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_bar_style_deserializes_all_variants() {
+        // Round-trip each snake_case variant name through TOML so
+        // a future rename of one of the enum variants doesn't
+        // silently break config files in the wild.
+        for (snake, expected) in [
+            ("menubar", MenuBarStyle::Menubar),
+            ("hamburger", MenuBarStyle::Hamburger),
+            ("none", MenuBarStyle::None),
+        ] {
+            let toml_src = format!("menu_bar_style = \"{snake}\"");
+            let parsed: AppConfig =
+                toml::from_str(&toml_src).unwrap_or_else(|e| panic!("{snake}: {e}"));
+            assert_eq!(parsed.menu_bar_style, expected, "variant {snake}");
+        }
+    }
+
+    #[test]
+    fn menu_bar_style_default_is_platform_appropriate() {
+        let default = MenuBarStyle::default();
+        #[cfg(target_os = "macos")]
+        assert_eq!(default, MenuBarStyle::None);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(default, MenuBarStyle::Menubar);
+    }
+
+    #[test]
+    fn menu_bar_style_absent_uses_default() {
+        // `#[serde(default)]` on the field means an AppConfig
+        // parsed from an empty TOML document still round-trips to
+        // the platform default.
+        let parsed: AppConfig = toml::from_str("").unwrap();
+        assert_eq!(parsed.menu_bar_style, MenuBarStyle::default());
+    }
 
     #[test]
     fn is_url_like_schemes() {

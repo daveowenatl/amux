@@ -488,14 +488,159 @@ pub(crate) fn contrast_text(bg: egui::Color32) -> egui::Color32 {
     }
 }
 
-/// Draw the File/Edit/View menu labels as clickable text inside the
-/// existing titlebar icon row. `start_x` is the window-x coordinate
-/// where the labels should start (just past the last icon, with a
-/// small gap); `y` is the same y the icons are drawn at.
+/// Bundle of theme-derived colors used by every menu-related
+/// rendering path below. Computed once per top-level call so the
+/// per-item loop doesn't redo the luma math.
+#[cfg(not(target_os = "macos"))]
+#[derive(Clone, Copy)]
+struct MenuPalette {
+    bg: egui::Color32,
+    fg: egui::Color32,
+    hover_bg: egui::Color32,
+    divider: egui::Color32,
+}
+
+#[cfg(not(target_os = "macos"))]
+impl MenuPalette {
+    fn from_theme(theme: &crate::theme::Theme) -> Self {
+        let bg = theme.titlebar_bg();
+        let fg = contrast_text(bg);
+        let luma_sum: u16 = bg.r() as u16 + bg.g() as u16 + (bg.b() as u16);
+        let hover_bg = if luma_sum < 384 {
+            bg.gamma_multiply(1.5) // dark theme → brighten on hover
+        } else {
+            bg.gamma_multiply(0.85) // light theme → darken on hover
+        };
+        // Divider: a faint version of fg for popup borders and
+        // separator lines. Low alpha so it doesn't overpower — this
+        // color is used for a 1px stroke on popup frames, so even
+        // a small alpha bump looks loud. Tune down if future
+        // complaints surface.
+        let divider = egui::Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 24);
+        Self {
+            bg,
+            fg,
+            hover_bg,
+            divider,
+        }
+    }
+}
+
+/// Apply a `MenuPalette` to a UI's visuals so that every widget
+/// drawn inside is rendered in amux's chrome colors. Call this at
+/// the top of any popup closure.
 ///
-/// Clicking a label toggles a popup dropdown below that label with
-/// the submenu's items. Item clicks push their `MenuAction` into the
-/// shared `PENDING_ACTIONS` queue, same as the macOS muda path.
+/// This also styles the popup's OUTER Frame (which egui's
+/// `popup_below_widget` / `menu_button` builds automatically from
+/// `visuals.window_fill` + `visuals.window_stroke`). We don't wrap
+/// our content in an additional inner Frame — doing that stacks
+/// two frames + their inner_margin gap and produces what looks
+/// like an absurdly thick border.
+#[cfg(not(target_os = "macos"))]
+fn apply_menu_palette(ui: &mut egui::Ui, palette: MenuPalette) {
+    let visuals = &mut ui.style_mut().visuals;
+
+    // --- Popup container styling (used by egui's popup Frame) ---
+    visuals.window_fill = palette.bg;
+    visuals.panel_fill = palette.bg;
+    // Thin 1px stroke at the divider color — deliberately subtle
+    // so the popup doesn't look like it's wearing a picture frame.
+    visuals.window_stroke = egui::Stroke::new(1.0, palette.divider);
+
+    // --- Text color ---
+    // egui `Button` uses `widgets.{state}.fg_stroke.color` for label
+    // rendering, NOT `override_text_color` in every code path. Set
+    // both so every widget picks it up.
+    visuals.override_text_color = Some(palette.fg);
+    visuals.widgets.inactive.fg_stroke.color = palette.fg;
+    visuals.widgets.hovered.fg_stroke.color = palette.fg;
+    visuals.widgets.active.fg_stroke.color = palette.fg;
+    visuals.widgets.open.fg_stroke.color = palette.fg;
+
+    // --- Widget backgrounds ---
+    // Inactive state: transparent (button looks like plain text
+    // until the user hovers it).
+    visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+    visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+    // Hover / active / open: subtle highlight.
+    visuals.widgets.hovered.weak_bg_fill = palette.hover_bg;
+    visuals.widgets.hovered.bg_fill = palette.hover_bg;
+    visuals.widgets.active.weak_bg_fill = palette.hover_bg;
+    visuals.widgets.active.bg_fill = palette.hover_bg;
+    visuals.widgets.open.weak_bg_fill = palette.hover_bg;
+    visuals.widgets.open.bg_fill = palette.hover_bg;
+
+    // --- Widget border strokes ---
+    // No borders on buttons — they should look like plain text
+    // links, not boxed controls.
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+    visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
+    visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
+
+    // --- Separator color ---
+    // `ui.separator()` draws using `noninteractive.bg_stroke`.
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, palette.divider);
+}
+
+/// Render the items of a single submenu (labels + shortcuts +
+/// separators) into the current UI. Shared between the Menubar
+/// path and the Hamburger path (where it's called once per
+/// nested submenu).
+#[cfg(not(target_os = "macos"))]
+fn render_submenu_items(ui: &mut egui::Ui, items: &[MenuItemDef], close_popup_on_click: bool) {
+    for item in items {
+        match item {
+            MenuItemDef::Separator => {
+                ui.separator();
+            }
+            MenuItemDef::Action {
+                label,
+                shortcut,
+                action,
+            } => {
+                let button = match shortcut {
+                    Some(sc) => egui::Button::new(*label).shortcut_text(*sc),
+                    None => egui::Button::new(*label),
+                };
+                if ui.add(button).clicked() {
+                    push_action(*action);
+                    if close_popup_on_click {
+                        ui.memory_mut(|m| m.close_popup());
+                    } else {
+                        // For nested menus (Hamburger mode), closing
+                        // the top-level popup also closes the nested
+                        // one in egui's popup model. Fall through to
+                        // the default click → collapse the parent
+                        // menu_button behavior.
+                        ui.close_menu();
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Draw the popup body for a single submenu. The outer framed
+/// container is egui's default popup Frame (built from
+/// `visuals.window_fill` / `visuals.window_stroke` that we set in
+/// `apply_menu_palette`), so we don't stack an additional inner
+/// Frame here — doing that produces a visibly thick border made of
+/// two stacked strokes plus the inner Frame's margin.
+#[cfg(not(target_os = "macos"))]
+fn draw_submenu_popup(ui: &mut egui::Ui, items: &[MenuItemDef], palette: MenuPalette) {
+    apply_menu_palette(ui, palette);
+    ui.set_min_width(200.0);
+    render_submenu_items(ui, items, /* close_popup_on_click */ true);
+}
+
+/// Draw the `File Edit View` labels as clickable text. Used by the
+/// `Menubar` mode — called once per frame from
+/// `notifications_ui::render_titlebar_icons` into the dedicated
+/// menu strip above the icon row.
+///
+/// `start_x` / `y` / `row_height` describe the strip geometry. Each
+/// label is sized to fit its text and draws its own hover rect.
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn draw_menu_buttons(
     ui: &mut egui::Ui,
@@ -504,27 +649,19 @@ pub(crate) fn draw_menu_buttons(
     row_height: f32,
     theme: &crate::theme::Theme,
 ) {
-    let bg = theme.titlebar_bg();
-    let fg = contrast_text(bg);
-    let luma_sum: u16 = bg.r() as u16 + bg.g() as u16 + (bg.b() as u16);
-    let hover_bg = if luma_sum < 384 {
-        bg.gamma_multiply(1.5) // dark theme → brighten on hover
-    } else {
-        bg.gamma_multiply(0.85) // light theme → darken on hover
-    };
+    let palette = MenuPalette::from_theme(theme);
 
     // Layout constants for the label row.
-    const LABEL_GAP: f32 = 8.0; // gap between icons and the first label
-    const LABEL_PAD_X: f32 = 8.0; // horizontal padding inside each label rect
+    const LABEL_GAP: f32 = 8.0;
+    const LABEL_PAD_X: f32 = 10.0;
     const LABEL_FONT_SIZE: f32 = 13.5;
 
     let mut x = start_x + LABEL_GAP;
     for submenu in MENU_MODEL {
-        // Measure the label's text so the hit rect fits it exactly.
         let galley = ui.painter().layout_no_wrap(
             submenu.label.to_string(),
             egui::FontId::proportional(LABEL_FONT_SIZE),
-            fg,
+            palette.fg,
         );
         let label_w = galley.size().x + LABEL_PAD_X * 2.0;
         let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(label_w, row_height));
@@ -532,63 +669,140 @@ pub(crate) fn draw_menu_buttons(
         let id = ui.id().with(("amux_menu_label", submenu.label));
         let response = ui.interact(rect, id, egui::Sense::click());
 
-        // Background fill on hover.
+        // Hover background — draws inside the strip itself.
         if response.hovered() {
-            ui.painter().rect_filled(rect, 4.0, hover_bg);
+            ui.painter().rect_filled(rect, 4.0, palette.hover_bg);
         }
 
-        // Draw the label text centered vertically inside the rect.
+        // Label text, centered vertically inside the hit rect.
         let text_pos = egui::pos2(
             rect.min.x + LABEL_PAD_X,
             rect.center().y - galley.size().y / 2.0,
         );
-        ui.painter().galley(text_pos, galley, fg);
+        ui.painter().galley(text_pos, galley, palette.fg);
 
-        // Popup handling.
+        // Click → toggle this label's popup.
         let popup_id = ui.make_persistent_id(("amux_menu_popup", submenu.label));
         if response.clicked() {
             ui.memory_mut(|m| m.toggle_popup(popup_id));
         }
+        // Apply our palette to the PARENT UI (this one) before
+        // calling popup_below_widget. Egui's popup implementation
+        // reads `parent_ui.style()` to build its Frame
+        // (`Frame::popup(parent_ui.style())` in egui 0.31 —
+        // `containers/popup.rs:415`), so we have to set the style
+        // on this UI, not on the popup's child UI inside the
+        // closure. The child UI inherits from the parent so our
+        // widget text/bg overrides still apply.
+        apply_menu_palette(ui, palette);
         egui::popup::popup_below_widget(
             ui,
             popup_id,
             &response,
             egui::PopupCloseBehavior::CloseOnClickOutside,
-            |ui| {
-                // Theme the popup to match amux's chrome.
-                let visuals = &mut ui.style_mut().visuals;
-                visuals.override_text_color = Some(fg);
-                visuals.window_fill = bg;
-                visuals.panel_fill = bg;
-                visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
-                visuals.widgets.hovered.weak_bg_fill = hover_bg;
-                visuals.widgets.active.weak_bg_fill = hover_bg;
-
-                ui.set_min_width(200.0);
-                for item in submenu.items {
-                    match item {
-                        MenuItemDef::Separator => {
-                            ui.separator();
-                        }
-                        MenuItemDef::Action {
-                            label,
-                            shortcut,
-                            action,
-                        } => {
-                            let button = match shortcut {
-                                Some(sc) => egui::Button::new(*label).shortcut_text(*sc),
-                                None => egui::Button::new(*label),
-                            };
-                            if ui.add(button).clicked() {
-                                push_action(*action);
-                                ui.memory_mut(|m| m.close_popup());
-                            }
-                        }
-                    }
-                }
-            },
+            |ui| draw_submenu_popup(ui, submenu.items, palette),
         );
 
         x += label_w;
     }
+}
+
+/// Draw the hamburger (`≡`) button used in `Hamburger` mode. Sized
+/// to match the titlebar icon row's icon size so it nests cleanly
+/// at the leftmost position of the row.
+///
+/// Clicking the button toggles a single large popup that contains
+/// all submenus as nested `ui.menu_button` blocks — one click opens
+/// the hamburger, hovering a submenu expands it. Full menu access
+/// with zero extra vertical chrome.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn draw_hamburger_button(
+    ui: &mut egui::Ui,
+    icon_size: egui::Vec2,
+    theme: &crate::theme::Theme,
+) {
+    let palette = MenuPalette::from_theme(theme);
+    let origin = ui.min_rect().min;
+    let rect = egui::Rect::from_min_size(origin, icon_size);
+    let id = ui.id().with("amux_hamburger_btn");
+    let response = ui.interact(rect, id, egui::Sense::click());
+
+    // Hover background.
+    if response.hovered() {
+        ui.painter().rect_filled(rect, 4.0, palette.hover_bg);
+    }
+
+    // Draw three horizontal lines for the hamburger glyph.
+    let center = rect.center();
+    let line_w = icon_size.x * 0.5;
+    let line_stroke = egui::Stroke::new(1.5, palette.fg);
+    let spacing = 4.0;
+    for dy in [-spacing, 0.0, spacing] {
+        let y = center.y + dy;
+        ui.painter().line_segment(
+            [
+                egui::pos2(center.x - line_w / 2.0, y),
+                egui::pos2(center.x + line_w / 2.0, y),
+            ],
+            line_stroke,
+        );
+    }
+
+    // Popup handling.
+    let popup_id = ui.make_persistent_id("amux_hamburger_popup");
+    if response.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
+    }
+    // Apply palette to the PARENT UI before calling
+    // popup_below_widget — egui reads `parent_ui.style()` to
+    // construct its popup Frame. See the same comment in
+    // draw_menu_buttons above.
+    apply_menu_palette(ui, palette);
+    egui::popup::popup_below_widget(
+        ui,
+        popup_id,
+        &response,
+        egui::PopupCloseBehavior::CloseOnClickOutside,
+        |ui| {
+            apply_menu_palette(ui, palette);
+            ui.set_min_width(240.0);
+
+            // Flat list with section headers. We deliberately DO
+            // NOT use nested `ui.menu_button` calls here because
+            // each nested menu builds its own Area + Frame via
+            // `Frame::menu(ui.style())` where `ui` is a fresh
+            // area ui created by egui before our code runs — so
+            // any palette we apply inside the closure is too late
+            // to affect the Frame's bg/stroke, and the nested
+            // submenus end up rendering with egui's default light
+            // theme while the parent popup renders with our
+            // palette (ugly inconsistency, see screenshot #15).
+            //
+            // The flat-with-headers layout is also more
+            // discoverable for a hamburger menu: users see every
+            // command at once rather than having to drill into
+            // each submenu.
+            for (i, submenu) in MENU_MODEL.iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(2.0);
+                    ui.separator();
+                    ui.add_space(2.0);
+                }
+                // Section header: the submenu's label drawn as a
+                // smaller, dimmer text above its items.
+                let header_color = egui::Color32::from_rgba_unmultiplied(
+                    palette.fg.r(),
+                    palette.fg.g(),
+                    palette.fg.b(),
+                    180,
+                );
+                ui.label(
+                    egui::RichText::new(submenu.label)
+                        .size(11.0)
+                        .color(header_color),
+                );
+                render_submenu_items(ui, submenu.items, /* close_popup_on_click */ true);
+            }
+        },
+    );
 }

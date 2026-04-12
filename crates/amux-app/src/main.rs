@@ -95,9 +95,26 @@ const TAB_MIN_WIDTH: f32 = 100.0;
 const TAB_MAX_WIDTH: f32 = 240.0;
 /// Content top inset: tab bar height + 1px border between tab bar and content.
 const TAB_CONTENT_TOP_INSET: f32 = TAB_BAR_HEIGHT + 1.0;
-/// Visual padding above the tab bar. On macOS with fullSizeContentView,
-/// this covers the native title bar area where traffic light buttons sit.
-const TERMINAL_TOP_PAD: f32 = 28.0;
+/// Height of the titlebar icon strip (sidebar toggle / bell / + icons
+/// and, on Windows/Linux in `Hamburger` mode, the `≡` menu button).
+/// On macOS with fullSizeContentView, this strip also covers the
+/// native title bar area where traffic light buttons sit.
+const ICON_STRIP_HEIGHT: f32 = 28.0;
+
+/// Height of the dedicated File/Edit/View menu strip that sits
+/// ABOVE the icon strip when `menu_bar_style = Menubar`. Zero in
+/// `Hamburger` / `None` modes (no extra strip is drawn). macOS
+/// never draws an in-window menu strip (the NSApp native menu bar
+/// lives at the top of the screen outside the app window entirely)
+/// so the constant is gated out there.
+#[cfg(not(target_os = "macos"))]
+const MENU_STRIP_HEIGHT: f32 = 24.0;
+
+/// Legacy alias retained for the few call sites that want "the icon
+/// strip's own height" regardless of the surrounding layout. New
+/// code should use `AmuxApp::top_pad()` to get the total top chrome
+/// height including any menu strip above the icon strip.
+const TERMINAL_TOP_PAD: f32 = ICON_STRIP_HEIGHT;
 /// Visual padding below the terminal grid (does not reduce PTY rows).
 /// Painted with terminal background color so it blends with the terminal.
 const TERMINAL_BOTTOM_PAD: f32 = 4.0;
@@ -209,6 +226,35 @@ struct TabDragState {
 }
 
 impl AmuxApp {
+    /// Height of the File/Edit/View menu strip above the icon strip,
+    /// in logical pixels. Only non-zero in `Menubar` mode, and only
+    /// on non-macOS (macOS always uses the NSApp native menu bar and
+    /// never draws an in-window menu strip, regardless of the user's
+    /// `menu_bar_style` setting).
+    pub(crate) fn menu_strip_height(&self) -> f32 {
+        #[cfg(target_os = "macos")]
+        {
+            0.0
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            match self.app_config.menu_bar_style {
+                amux_core::config::MenuBarStyle::Menubar => MENU_STRIP_HEIGHT,
+                amux_core::config::MenuBarStyle::Hamburger
+                | amux_core::config::MenuBarStyle::None => 0.0,
+            }
+        }
+    }
+
+    /// Total top chrome height, covering both the menu strip (if any)
+    /// and the icon strip below it. All code that needs to know where
+    /// the main content area starts should use this instead of the
+    /// `TERMINAL_TOP_PAD` const, because the const is static and
+    /// doesn't know about the menu strip above it.
+    pub(crate) fn top_pad(&self) -> f32 {
+        self.menu_strip_height() + TERMINAL_TOP_PAD
+    }
+
     /// Get cell dimensions in logical points, using GPU renderer measurements
     /// when available, falling back to egui font measurements.
     fn cell_dimensions(&self, ui: &egui::Ui) -> (f32, f32) {
