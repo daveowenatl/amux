@@ -20,7 +20,7 @@
     Version="0.1.0.0"
     Publisher="CN=PLACEHOLDER, O=PLACEHOLDER, L=PLACEHOLDER, S=PLACEHOLDER, C=US"
     ProcessorArchitecture="x64"
-    Uri="https://github.com/daveowenatl/amux/releases/latest/download/amux-x86_64-pc-windows-msvc.msix" />
+    Uri="https://github.com/daveowenatl/amux/releases/latest/download/amux.msix" />
 
   <UpdateSettings>
     <OnLaunch HoursBetweenUpdateChecks="24" ShowPrompt="false" />

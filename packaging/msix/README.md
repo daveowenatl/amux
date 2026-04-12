@@ -5,7 +5,7 @@ install/uninstall, automatic updates, and optional Microsoft Store publishing.
 
 ## Directory Layout
 
-```
+```text
 packaging/msix/
   AppxManifest.xml          # Package manifest (binaries, capabilities, aliases)
   amux.appinstaller         # Auto-update configuration via GitHub Releases
@@ -84,6 +84,7 @@ Copy-Item target/x86_64-pc-windows-msvc/release/amux-agent-wrapper.exe $staging/
 # Stage ghostty-vt.dll (required runtime dependency)
 $dll = Get-ChildItem -Recurse target/x86_64-pc-windows-msvc/release/build `
   -Filter "ghostty-vt.dll" | Where-Object { $_.FullName -match "ghostty-install" } | Select-Object -First 1
+if (-not $dll) { throw "ghostty-vt.dll not found — build may be incomplete" }
 Copy-Item $dll.FullName $staging/
 
 # Copy manifest and assets
