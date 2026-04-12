@@ -17,6 +17,10 @@ fn scrollback_temp_dir() -> std::path::PathBuf {
 
 /// Write scrollback text to a temp file for shell-based replay.
 /// Returns the file path, or `None` on failure.
+///
+/// Not used on Windows — scrollback is fed directly into the VT
+/// parser via `feed_bytes` instead (see issue #217).
+#[cfg(not(target_os = "windows"))]
 fn write_scrollback_temp_file(text: &str) -> Option<std::path::PathBuf> {
     let dir = scrollback_temp_dir();
     #[cfg(unix)]
@@ -891,7 +895,12 @@ pub(crate) fn spawn_surface(
             // setting translates \n → \r\n, but since we bypass the PTY
             // here, we do the translation ourselves so each line starts
             // at column 0.
-            let crlf = text.replace('\n', "\r\n");
+            let mut crlf = text.replace('\n', "\r\n");
+            // Ensure trailing newline so the shell prompt starts on
+            // a fresh line (matches the temp-file path on Unix).
+            if !crlf.ends_with('\n') {
+                crlf.push_str("\r\n");
+            }
             ghostty_pane.feed_bytes(crlf.as_bytes());
         }
     }
