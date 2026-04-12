@@ -80,6 +80,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
 open = "5"
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 
 # Error handling
 anyhow = "1"

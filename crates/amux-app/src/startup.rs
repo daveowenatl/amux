@@ -466,6 +466,8 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 menu,
                 #[cfg(target_os = "windows")]
                 window_chrome_applied: false,
+                #[cfg(target_os = "windows")]
+                cached_hwnd: None,
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
                 pending_browser_panes: Vec::new(),

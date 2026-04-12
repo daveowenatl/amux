@@ -314,14 +314,37 @@ pub fn set_badge_count(count: usize) {
 
     #[cfg(target_os = "windows")]
     {
-        // Windows taskbar badge is not yet supported — requires HWND access
-        // which eframe doesn't expose directly. FlashWindowEx or
-        // ITaskbarList3::SetOverlayIcon can be added once we have a handle.
+        // Windows uses FlashWindowEx for taskbar attention (called separately
+        // from frame_update.rs when count increases). Nothing to do here for
+        // the count itself — Windows has no dock-badge equivalent without
+        // ITaskbarList3::SetOverlayIcon (deferred).
         let _ = count;
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = count;
+    }
+}
+
+/// Flash the Windows taskbar button to signal new unread notifications.
+/// Uses `FLASHW_TRAY | FLASHW_TIMERNOFG` so the button flashes briefly
+/// then stays highlighted until the user brings amux to the foreground.
+#[cfg(target_os = "windows")]
+pub fn flash_taskbar_window(hwnd_raw: isize) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FlashWindowEx, FLASHWINFO, FLASHW_TIMERNOFG, FLASHW_TRAY,
+    };
+
+    let info = FLASHWINFO {
+        cbSize: std::mem::size_of::<FLASHWINFO>() as u32,
+        hwnd: hwnd_raw as HWND,
+        dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG,
+        uCount: 3,
+        dwTimeout: 0, // default cursor blink rate
+    };
+    unsafe {
+        FlashWindowEx(&info);
     }
 }
