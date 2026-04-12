@@ -91,41 +91,11 @@ impl MenuPalette {
     }
 }
 
-/// Apply a `MenuPalette` to a UI's visuals so that popups built
-/// from this UI's style (and widgets rendered inside them) pick up
-/// amux's chrome colors instead of egui's light-theme defaults.
-///
-/// # When to call
-///
-/// Call on the **parent** UI BEFORE opening a popup / menu_button /
-/// context_menu. Egui reads `parent_ui.style()` at the moment the
-/// outer Frame is constructed, which happens BEFORE the popup's
-/// closure runs — so applying the palette inside the closure is
-/// too late to affect the Frame's background or stroke.
-///
-/// Also call a second time INSIDE the popup closure if the popup
-/// opens nested popups (nested `ui.menu_button`), so children
-/// inherit the palette too. Applying multiple times is idempotent
-/// and safe.
-///
-/// # What it sets
-///
-/// - `visuals.window_fill` — popup background
-/// - `visuals.window_stroke` — popup border (thin, divider color)
-/// - `visuals.panel_fill` — panels inside the popup
-/// - `visuals.override_text_color` — default text color for all widgets
-/// - `visuals.widgets.{state}.fg_stroke.color` — button label text
-///   (NOT the same as `override_text_color`; egui Button reads both)
-/// - `visuals.widgets.{state}.weak_bg_fill` / `bg_fill` — button
-///   hover / active / open backgrounds
-/// - `visuals.widgets.{state}.bg_stroke` — button borders set to
-///   NONE so buttons look like plain text links rather than boxed
-///   controls
-/// - `visuals.widgets.noninteractive.bg_stroke` — `ui.separator()`
-///   line color
-pub(crate) fn apply_menu_palette(ui: &mut Ui, palette: MenuPalette) {
-    let visuals = &mut ui.style_mut().visuals;
-
+/// Apply a `MenuPalette` to an `egui::Visuals` struct. Used by
+/// [`apply_menu_palette`] (ui-scoped) and [`apply_menu_palette_to_ctx`]
+/// (ctx-scoped) so both paths share the exact same set of visual
+/// overrides and stay in sync.
+pub(crate) fn apply_menu_palette_to_visuals(visuals: &mut egui::Visuals, palette: MenuPalette) {
     // Popup container styling (used by egui's popup Frame).
     visuals.window_fill = palette.bg;
     visuals.panel_fill = palette.bg;
@@ -160,4 +130,81 @@ pub(crate) fn apply_menu_palette(ui: &mut Ui, palette: MenuPalette) {
     // Separator line color — `ui.separator()` draws using
     // `noninteractive.bg_stroke`.
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, palette.divider);
+}
+
+/// Apply a `MenuPalette` globally to an `egui::Context`'s style.
+/// This is the ONLY way to theme `Response::context_menu` popups,
+/// because egui's `context_menu` implementation reads
+/// `button.ctx.style()` directly (see `egui/src/menu.rs:392`), not
+/// the parent ui's style — so per-call-site `apply_menu_palette`
+/// has no effect on right-click menus.
+///
+/// Call once per frame from the top of `AmuxApp::update` so the
+/// ctx-level visuals reflect the latest user theme. The operation
+/// is cheap (a handful of `Arc::make_mut` field writes) and idempotent.
+///
+/// Surfaces that benefit from this ctx-level application:
+///
+/// - `Response::context_menu` (sidebar workspace right-click, tab bar
+///   right-click, etc.)
+/// - `ui.menu_button` nested popups (even when the top-level menu
+///   is opened from a ui with its own palette, nested popups create
+///   fresh areas that inherit from ctx)
+/// - `egui::containers::popup::popup_below_widget` when the caller
+///   forgot to apply palette to the parent ui first
+/// - Any future egui popup / tooltip / window primitive that reads
+///   from `ctx.style()` internally
+///
+/// This doesn't replace [`apply_menu_palette`] (the ui-scoped
+/// variant); ui-scoped application is still needed for popups whose
+/// Frame is built from parent-ui style specifically (like the egui
+/// `menu_bar` / `popup_below_widget` paths where the parent-ui-
+/// style + ctx-style interplay is subtle). Apply both for
+/// belt-and-suspenders coverage.
+pub(crate) fn apply_menu_palette_to_ctx(ctx: &egui::Context, palette: MenuPalette) {
+    ctx.style_mut(|style| {
+        apply_menu_palette_to_visuals(&mut style.visuals, palette);
+    });
+}
+
+/// Apply a `MenuPalette` to a UI's visuals so that popups built
+/// from this UI's style (and widgets rendered inside them) pick up
+/// amux's chrome colors instead of egui's light-theme defaults.
+///
+/// # When to call
+///
+/// Call on the **parent** UI BEFORE opening a popup / menu_button /
+/// `egui::popup::popup_below_widget`. Egui reads `parent_ui.style()`
+/// at the moment the outer Frame is constructed, which happens
+/// BEFORE the popup's closure runs — so applying the palette inside
+/// the closure is too late to affect the Frame's background or
+/// stroke.
+///
+/// **This does NOT theme `Response::context_menu`** — egui's context
+/// menu builds its Frame from `ctx.style()`, not parent-ui style.
+/// Use [`apply_menu_palette_to_ctx`] for context menus (typically
+/// called once per frame from `AmuxApp::update`).
+///
+/// Also call a second time INSIDE the popup closure if the popup
+/// opens nested popups (nested `ui.menu_button`), so children
+/// inherit the palette too. Applying multiple times is idempotent
+/// and safe.
+///
+/// # What it sets
+///
+/// - `visuals.window_fill` — popup background
+/// - `visuals.window_stroke` — popup border (thin, divider color)
+/// - `visuals.panel_fill` — panels inside the popup
+/// - `visuals.override_text_color` — default text color for all widgets
+/// - `visuals.widgets.{state}.fg_stroke.color` — button label text
+///   (NOT the same as `override_text_color`; egui Button reads both)
+/// - `visuals.widgets.{state}.weak_bg_fill` / `bg_fill` — button
+///   hover / active / open backgrounds
+/// - `visuals.widgets.{state}.bg_stroke` — button borders set to
+///   NONE so buttons look like plain text links rather than boxed
+///   controls
+/// - `visuals.widgets.noninteractive.bg_stroke` — `ui.separator()`
+///   line color
+pub(crate) fn apply_menu_palette(ui: &mut Ui, palette: MenuPalette) {
+    apply_menu_palette_to_visuals(&mut ui.style_mut().visuals, palette);
 }

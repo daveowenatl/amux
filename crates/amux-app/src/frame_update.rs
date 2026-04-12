@@ -15,6 +15,29 @@ impl eframe::App for AmuxApp {
             return;
         }
 
+        // Apply amux's popup palette to the ctx's style so that
+        // every egui popup / context menu / menu_button in the app
+        // renders in amux's chrome colors instead of egui's
+        // default light theme.
+        //
+        // This is the ONLY place `Response::context_menu` popups
+        // pick up their theme from — egui's context_menu reads
+        // `button.ctx.style()` directly when constructing its Frame
+        // (see `egui/src/menu.rs:392` / `Frame::menu(&button.ctx.style())`),
+        // not the parent ui's style. Per-call-site
+        // `apply_menu_palette(ui, palette)` has no effect on
+        // context menus.
+        //
+        // Done once per frame so theme changes (e.g. the user
+        // editing `theme_source` in the config) propagate on the
+        // next frame without a restart. The operation is cheap:
+        // one `Arc::make_mut` on the ctx style + a handful of
+        // field writes.
+        {
+            let palette = crate::popup_theme::MenuPalette::from_theme(&self.theme);
+            crate::popup_theme::apply_menu_palette_to_ctx(ctx, palette);
+        }
+
         // Apply dark-mode window chrome to the Win32 HWND. Retries each
         // frame until the HWND is available via `eframe::Frame::window_handle`,
         // then flips `window_chrome_applied` so we don't keep re-poking
