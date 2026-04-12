@@ -884,7 +884,15 @@ pub(crate) fn spawn_surface(
     #[cfg(target_os = "windows")]
     if let Some(text) = scrollback {
         if !text.is_empty() {
-            ghostty_pane.feed_bytes(text.as_bytes());
+            // Replace \n with \r\n before feeding to the VT parser.
+            // The saved scrollback uses bare \n (Unix line endings) but
+            // the VT parser treats \n as "line feed" (cursor down) WITHOUT
+            // an implicit carriage return. On Unix the PTY driver's `onlcr`
+            // setting translates \n → \r\n, but since we bypass the PTY
+            // here, we do the translation ourselves so each line starts
+            // at column 0.
+            let crlf = text.replace('\n', "\r\n");
+            ghostty_pane.feed_bytes(crlf.as_bytes());
         }
     }
 
