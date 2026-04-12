@@ -222,7 +222,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $msixDir | Out-Null
           Copy-Item "$staging/amux-app.exe" "$msixDir/"
           Copy-Item "$staging/amux.exe" "$msixDir/"
-          # ghostty-vt.dll is required at runtime (import library)
+          # ghostty-vt.dll is the runtime shared library dependency
           if (Test-Path "$staging/ghostty-vt.dll") {
               Copy-Item "$staging/ghostty-vt.dll" "$msixDir/"
           }
@@ -235,19 +235,33 @@ jobs:
 
           # 2. Update the version in AppxManifest.xml from the git tag.
           #    MSIX requires a four-part version (Major.Minor.Patch.Revision).
-          $tag = "${{ github.ref_name }}" -replace '^v', ''
+          #    On workflow_dispatch (manual runs without a tag), use 0.0.0.0
+          #    so the build still succeeds for testing.
+          $refName = "${{ github.ref_name }}"
+          if ($refName -match '^\d+\.' -or $refName -match '^v\d+\.') {
+              $tag = $refName -replace '^v', ''
+          } else {
+              $tag = '0.0.0'
+              Write-Host "Not a version tag ($refName), using fallback version"
+          }
           $parts = $tag -split '\.'
           while ($parts.Count -lt 4) { $parts += '0' }
           $msixVersion = ($parts[0..3]) -join '.'
+          # Target only the <Identity Version="..."> attribute — the
+          # manifest also contains MinVersion and MaxVersionTested
+          # attributes that must NOT be rewritten.
           $manifest = Get-Content "$msixDir/AppxManifest.xml" -Raw
-          $manifest = $manifest -replace 'Version="[^"]*"', "Version=`"$msixVersion`""
+          $manifest = $manifest -replace '(<Identity[^>]*)\bVersion="[^"]*"', "`$1Version=`"$msixVersion`""
           Set-Content "$msixDir/AppxManifest.xml" $manifest
           Write-Host "MSIX version: $msixVersion"
 
           # 3. Generate resources.pri (required by MakeAppx for icon assets).
           #    Find MakePri.exe from Windows SDK.
+          # Find the newest Windows SDK version by sorting on the parent
+          # version directory name (e.g. "10.0.22621.0"), not the "x64"
+          # leaf which is the same for every SDK installation.
           $sdkBin = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\10.*\x64" -Directory |
-                    Sort-Object Name -Descending | Select-Object -First 1
+                    Sort-Object { [version]$_.Parent.Name } -Descending | Select-Object -First 1
           if (-not $sdkBin) {
               Write-Error "Windows SDK not found"
               exit 1
