@@ -88,6 +88,19 @@ impl AmuxApp {
             self.theme.terminal_bg(),
         );
 
+        // Apply amux's popup palette to the tab bar's `ui` once,
+        // BEFORE we take an immutable `painter` borrow below, so
+        // the tab-right-click context menu opened inside this ui
+        // renders in amux's chrome colors instead of egui's
+        // default light theme. The tab-row painting that follows
+        // uses `painter` + explicit colors and ignores the style
+        // overrides this sets (buttons aren't used on the tab row
+        // itself, only inside the context menu popup).
+        {
+            let palette = crate::popup_theme::MenuPalette::from_theme(&self.theme);
+            crate::popup_theme::apply_menu_palette(ui, palette);
+        }
+
         {
             let painter = ui.painter();
             painter.rect_filled(tab_rect, 0.0, self.theme.tab_bar_bg());
@@ -329,7 +342,13 @@ impl AmuxApp {
                     sidebar::paint_close_x(painter, close_center, 3.5, close_color);
                 }
 
-                // Right-click context menu
+                // Right-click context menu. The palette was
+                // already applied to this `ui` at the top of the
+                // tab-bar scope (before the painter borrow), so
+                // the context menu popup inherits amux's chrome
+                // colors via the parent-ui style egui reads at
+                // Frame construction time. Same pattern as the
+                // sidebar workspace context menu.
                 let tab_id = ui.id().with("tab_ctx").with(pane_id).with(idx);
                 let tab_response = ui.interact(this_tab, tab_id, egui::Sense::click());
                 tab_response.context_menu(|ui| {
