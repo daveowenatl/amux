@@ -511,9 +511,12 @@ impl MenuPalette {
         } else {
             bg.gamma_multiply(0.85) // light theme → darken on hover
         };
-        // Divider: a faint-ish version of fg for popup borders and
-        // separator lines. Alpha-blended so it doesn't overpower.
-        let divider = egui::Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 48);
+        // Divider: a faint version of fg for popup borders and
+        // separator lines. Low alpha so it doesn't overpower — this
+        // color is used for a 1px stroke on popup frames, so even
+        // a small alpha bump looks loud. Tune down if future
+        // complaints surface.
+        let divider = egui::Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 24);
         Self {
             bg,
             fg,
@@ -525,33 +528,41 @@ impl MenuPalette {
 
 /// Apply a `MenuPalette` to a UI's visuals so that every widget
 /// drawn inside is rendered in amux's chrome colors. Call this at
-/// the top of any popup closure so:
+/// the top of any popup closure.
 ///
-/// - Button labels use `fg` (via `override_text_color` AND explicit
-///   widget fg_stroke settings — override_text_color alone isn't
-///   picked up by every egui widget path)
-/// - Button hover/active bgs use `hover_bg` instead of egui's
-///   default grey
-/// - Popup container bg uses `bg`
-/// - Separator lines use `divider`
+/// This also styles the popup's OUTER Frame (which egui's
+/// `popup_below_widget` / `menu_button` builds automatically from
+/// `visuals.window_fill` + `visuals.window_stroke`). We don't wrap
+/// our content in an additional inner Frame — doing that stacks
+/// two frames + their inner_margin gap and produces what looks
+/// like an absurdly thick border.
 #[cfg(not(target_os = "macos"))]
 fn apply_menu_palette(ui: &mut egui::Ui, palette: MenuPalette) {
     let visuals = &mut ui.style_mut().visuals;
-    visuals.override_text_color = Some(palette.fg);
+
+    // --- Popup container styling (used by egui's popup Frame) ---
     visuals.window_fill = palette.bg;
     visuals.panel_fill = palette.bg;
+    // Thin 1px stroke at the divider color — deliberately subtle
+    // so the popup doesn't look like it's wearing a picture frame.
+    visuals.window_stroke = egui::Stroke::new(1.0, palette.divider);
 
-    // Button text color — egui Button uses widgets.{state}.fg_stroke.color
-    // for its label rendering, NOT override_text_color in every code
-    // path. Set all three states to `fg` explicitly.
+    // --- Text color ---
+    // egui `Button` uses `widgets.{state}.fg_stroke.color` for label
+    // rendering, NOT `override_text_color` in every code path. Set
+    // both so every widget picks it up.
+    visuals.override_text_color = Some(palette.fg);
     visuals.widgets.inactive.fg_stroke.color = palette.fg;
     visuals.widgets.hovered.fg_stroke.color = palette.fg;
     visuals.widgets.active.fg_stroke.color = palette.fg;
     visuals.widgets.open.fg_stroke.color = palette.fg;
 
-    // Hover / active / open backgrounds.
+    // --- Widget backgrounds ---
+    // Inactive state: transparent (button looks like plain text
+    // until the user hovers it).
     visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
     visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+    // Hover / active / open: subtle highlight.
     visuals.widgets.hovered.weak_bg_fill = palette.hover_bg;
     visuals.widgets.hovered.bg_fill = palette.hover_bg;
     visuals.widgets.active.weak_bg_fill = palette.hover_bg;
@@ -559,15 +570,16 @@ fn apply_menu_palette(ui: &mut egui::Ui, palette: MenuPalette) {
     visuals.widgets.open.weak_bg_fill = palette.hover_bg;
     visuals.widgets.open.bg_fill = palette.hover_bg;
 
-    // Button border strokes: transparent so buttons look like plain
-    // text links, not boxed controls.
+    // --- Widget border strokes ---
+    // No borders on buttons — they should look like plain text
+    // links, not boxed controls.
     visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
     visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
     visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
     visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
 
-    // Separator line color. `noninteractive.bg_stroke` is what
-    // `ui.separator()` draws.
+    // --- Separator color ---
+    // `ui.separator()` draws using `noninteractive.bg_stroke`.
     visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, palette.divider);
 }
 
@@ -609,22 +621,17 @@ fn render_submenu_items(ui: &mut egui::Ui, items: &[MenuItemDef], close_popup_on
     }
 }
 
-/// Draw the popup body for a single submenu, wrapped in a framed
-/// container so the popup is visually distinct from whatever sits
-/// behind it.
+/// Draw the popup body for a single submenu. The outer framed
+/// container is egui's default popup Frame (built from
+/// `visuals.window_fill` / `visuals.window_stroke` that we set in
+/// `apply_menu_palette`), so we don't stack an additional inner
+/// Frame here — doing that produces a visibly thick border made of
+/// two stacked strokes plus the inner Frame's margin.
 #[cfg(not(target_os = "macos"))]
 fn draw_submenu_popup(ui: &mut egui::Ui, items: &[MenuItemDef], palette: MenuPalette) {
     apply_menu_palette(ui, palette);
-
-    egui::Frame::new()
-        .fill(palette.bg)
-        .stroke(egui::Stroke::new(1.0, palette.divider))
-        .inner_margin(egui::Margin::symmetric(4, 4))
-        .corner_radius(6)
-        .show(ui, |ui| {
-            ui.set_min_width(200.0);
-            render_submenu_items(ui, items, /* close_popup_on_click */ true);
-        });
+    ui.set_min_width(200.0);
+    render_submenu_items(ui, items, /* close_popup_on_click */ true);
 }
 
 /// Draw the `File Edit View` labels as clickable text. Used by the
@@ -744,30 +751,24 @@ pub(crate) fn draw_hamburger_button(
         egui::PopupCloseBehavior::CloseOnClickOutside,
         |ui| {
             apply_menu_palette(ui, palette);
-            egui::Frame::new()
-                .fill(palette.bg)
-                .stroke(egui::Stroke::new(1.0, palette.divider))
-                .inner_margin(egui::Margin::symmetric(4, 4))
-                .corner_radius(6)
-                .show(ui, |ui| {
-                    ui.set_min_width(220.0);
-                    // Each top-level submenu is a nested
-                    // `ui.menu_button` so the user can hover/click
-                    // to expand inline. This keeps the vertical
-                    // footprint minimal — only the three top-level
-                    // labels are visible until the user actively
-                    // drills in.
-                    for submenu in MENU_MODEL {
-                        ui.menu_button(submenu.label, |ui| {
-                            apply_menu_palette(ui, palette);
-                            render_submenu_items(
-                                ui,
-                                submenu.items,
-                                /* close_popup_on_click */ false,
-                            );
-                        });
-                    }
+            ui.set_min_width(220.0);
+            // Each top-level submenu is a nested `ui.menu_button`
+            // so the user can hover/click to expand inline. This
+            // keeps the vertical footprint minimal — only the three
+            // top-level labels are visible until the user actively
+            // drills in.
+            //
+            // No wrapping `egui::Frame` here — egui's popup already
+            // paints a Frame using `visuals.window_fill` /
+            // `visuals.window_stroke`, which `apply_menu_palette`
+            // sets. Stacking another Frame on top produces a
+            // visible double border.
+            for submenu in MENU_MODEL {
+                ui.menu_button(submenu.label, |ui| {
+                    apply_menu_palette(ui, palette);
+                    render_submenu_items(ui, submenu.items, /* close_popup_on_click */ false);
                 });
+            }
         },
     );
 }
