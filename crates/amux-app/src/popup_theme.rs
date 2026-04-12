@@ -207,34 +207,38 @@ pub(crate) fn with_menu_palette<R>(
     result
 }
 
-/// Apply only the modal-relevant subset of a `MenuPalette` to
-/// `visuals`. Used by [`with_modal_palette`] so every `egui::Window`
-/// call site shares the same set of overrides.
+/// Build a dark-mode `Visuals` for modals: start from egui's
+/// built-in dark theme (so title bar, text-field background
+/// [`extreme_bg_color`], button fills, and widget strokes are all
+/// sensible dark-mode values) then overlay amux's theme-derived
+/// window background, border, and foreground text color.
 ///
-/// Unlike [`apply_menu_palette_to_visuals`], this does NOT touch
-/// widget `bg_fill` / `bg_stroke`. A modal needs visible button
-/// backgrounds and text-field outlines — the menu-style "transparent
-/// button that becomes a hover highlight" look is wrong for a
-/// modal's OK / Cancel controls.
-fn apply_modal_palette_to_visuals(visuals: &mut egui::Visuals, palette: MenuPalette) {
-    // Outer Window Frame.
+/// We can't just tweak a few fields on top of the current style —
+/// egui defaults to `Visuals::light()`, so any field we don't
+/// explicitly set would stay light-theme, giving us the
+/// half-dark-half-light modal we had after the first attempt
+/// (dark body, white text field, light-gray buttons and title bar).
+fn build_modal_visuals(palette: MenuPalette) -> egui::Visuals {
+    let mut visuals = egui::Visuals::dark();
+
+    // Outer Window Frame background + border.
     visuals.window_fill = palette.bg;
     visuals.panel_fill = palette.bg;
     visuals.window_stroke = Stroke::new(1.0, palette.divider);
 
-    // Text color — labels, RichText, and the button-label path.
-    // We set `override_text_color` (used by `ui.label`) AND the
-    // per-widget `fg_stroke.color` (used by egui Button's label
-    // paint path) so both code paths render readable text. Widget
-    // `bg_fill` / `bg_stroke` are intentionally left untouched so
-    // egui's default chrome for buttons and text fields still
-    // renders normally.
+    // Default text color for labels / RichText.
     visuals.override_text_color = Some(palette.fg);
+
+    // Button label color across all widget states — egui Button's
+    // label paint path reads `widgets.{state}.fg_stroke.color`,
+    // not `override_text_color`.
     visuals.widgets.noninteractive.fg_stroke.color = palette.fg;
     visuals.widgets.inactive.fg_stroke.color = palette.fg;
     visuals.widgets.hovered.fg_stroke.color = palette.fg;
     visuals.widgets.active.fg_stroke.color = palette.fg;
     visuals.widgets.open.fg_stroke.color = palette.fg;
+
+    visuals
 }
 
 /// Run `f` with amux's modal palette temporarily applied to the
@@ -257,7 +261,7 @@ pub(crate) fn with_modal_palette<R>(
 ) -> R {
     let saved = ctx.style();
     ctx.style_mut(|style| {
-        apply_modal_palette_to_visuals(&mut style.visuals, palette);
+        style.visuals = build_modal_visuals(palette);
     });
     let result = f();
     ctx.set_style(saved);
