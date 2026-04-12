@@ -502,12 +502,27 @@ pub(crate) fn draw_egui_menu_bar(ctx: &egui::Context, theme: &crate::theme::Them
     };
 
     egui::TopBottomPanel::top("amux_menu_bar")
+        .exact_height(28.0)
         .frame(
             egui::Frame::new()
                 .fill(bg)
                 .inner_margin(egui::Margin::symmetric(6, 2)),
         )
         .show(ctx, |ui| {
+            // First call of the session: log that we got here at all.
+            // Drop the log on subsequent frames to avoid flooding stderr.
+            static LOGGED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::info!(
+                    "draw_egui_menu_bar: first frame — bg={:?} fg={:?} model_len={}",
+                    bg,
+                    fg,
+                    MENU_MODEL.len()
+                );
+            }
+
+            // Inner UI is wrapped below via `egui::menu::bar`.
             // Override the palette for everything rendered inside this
             // panel and its popup children. Egui's dropdown popups
             // inherit style from the UI that opened them, so these
