@@ -201,6 +201,9 @@ impl eframe::App for AmuxApp {
             }
         }
 
+        // Hot-reload config file if it changed on disk.
+        self.check_config_reload();
+
         // Process IPC commands
         self.process_ipc_commands();
 

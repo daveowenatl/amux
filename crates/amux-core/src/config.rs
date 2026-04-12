@@ -9,7 +9,7 @@ pub const DEFAULT_FONT_SIZE: f32 = 14.0;
 
 /// Custom color palette configuration.
 /// Colors are specified as hex strings: "#rrggbb" or "rrggbb".
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct ColorsConfig {
     pub foreground: Option<String>,
@@ -142,7 +142,7 @@ impl<'de> serde::Deserialize<'de> for KeyCombo {
 
 /// User-customizable keybindings. Each field is an optional override;
 /// if None, the platform default is used.
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct KeybindingsConfig {
     pub copy: Option<KeyCombo>,
@@ -420,7 +420,7 @@ impl Default for MenuBarStyle {
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
     pub font_size: f32,
@@ -471,7 +471,7 @@ impl Default for AppConfig {
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct BrowserConfig {
     /// Search engine: "google", "duckduckgo", "bing", "kagi", "startpage"
@@ -535,7 +535,7 @@ pub fn is_url_like(input: &str) -> bool {
     trimmed.contains('.')
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct NotificationConfig {
     /// Deliver OS-native toast notifications when the app is unfocused.
@@ -562,7 +562,7 @@ impl Default for NotificationConfig {
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct NotificationSoundConfig {
     /// "system", "none", or path to a .wav/.ogg/.mp3 file.
@@ -630,7 +630,7 @@ fn write_default_config() -> Option<std::path::PathBuf> {
     }
 }
 
-pub fn load_app_config() -> AppConfig {
+pub fn load_app_config() -> (AppConfig, Option<std::path::PathBuf>) {
     // 1. ~/.amux/config.toml (cross-platform, preferred)
     let amux_home_path = amux_home_dir().map(|d| d.join("config.toml"));
 
@@ -654,7 +654,7 @@ pub fn load_app_config() -> AppConfig {
                     if config.font_family.is_empty() {
                         config.font_family = DEFAULT_FONT_FAMILY.to_owned();
                     }
-                    return config;
+                    return (config, Some(path.clone()));
                 }
                 Err(e) => {
                     tracing::warn!("Failed to parse {}: {}", path.display(), e);
@@ -676,7 +676,7 @@ pub fn load_app_config() -> AppConfig {
             Ok(mut config) => {
                 tracing::info!("Using newly written default config at {}", path.display());
                 config.font_size = validate_font_size(config.font_size);
-                return config;
+                return (config, Some(path));
             }
             Err(e) => {
                 tracing::warn!("Default config failed to parse (bug): {e}");
@@ -684,7 +684,7 @@ pub fn load_app_config() -> AppConfig {
         }
     }
 
-    AppConfig::default()
+    (AppConfig::default(), None)
 }
 
 pub fn validate_font_size(size: f32) -> f32 {

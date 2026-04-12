@@ -513,4 +513,95 @@ impl AmuxApp {
             }
         }
     }
+
+    /// Poll the config file for changes and apply hot-reloadable fields.
+    /// Called every frame but only actually checks the file every ~2 seconds.
+    pub(crate) fn check_config_reload(&mut self) {
+        const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+        let Some(ref path) = self.config_file_path else {
+            return;
+        };
+
+        if self.config_last_checked.elapsed() < POLL_INTERVAL {
+            return;
+        }
+        self.config_last_checked = Instant::now();
+
+        let current_mtime = match std::fs::metadata(path).and_then(|m| m.modified()) {
+            Ok(t) => t,
+            Err(_) => return, // File deleted or unreadable — skip
+        };
+
+        if self.config_last_modified == Some(current_mtime) {
+            return; // No change
+        }
+
+        // File changed — reload
+        tracing::info!("Config file changed, reloading: {}", path.display());
+        let contents = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Failed to read config on reload: {e}");
+                return;
+            }
+        };
+        let new_config = match toml::from_str::<config::AppConfig>(&contents) {
+            Ok(mut c) => {
+                c.font_size = config::validate_font_size(c.font_size);
+                c.font_family = c.font_family.trim().to_owned();
+                if c.font_family.is_empty() {
+                    c.font_family = config::DEFAULT_FONT_FAMILY.to_owned();
+                }
+                c
+            }
+            Err(e) => {
+                tracing::warn!("Failed to parse config on reload: {e}");
+                return;
+            }
+        };
+
+        self.config_last_modified = Some(current_mtime);
+
+        // Apply hot-reloadable fields:
+
+        // Font size
+        if (new_config.font_size - self.app_config.font_size).abs() > f32::EPSILON {
+            self.font_size = new_config.font_size;
+            #[cfg(feature = "gpu-renderer")]
+            if let Some(gpu) = &mut self.gpu_renderer {
+                gpu.set_font_size(self.font_size);
+            }
+            tracing::info!("Hot-reloaded font_size: {}", self.font_size);
+        }
+
+        // Theme / colors — rebuild from scratch
+        let mut new_theme = match new_config.theme_source.as_str() {
+            "ghostty" => {
+                if let Some(ghostty_cfg) = amux_ghostty_config::GhosttyConfig::load() {
+                    crate::theme::Theme::from_ghostty(&ghostty_cfg)
+                } else {
+                    crate::theme::Theme::default()
+                }
+            }
+            _ => crate::theme::Theme::default(),
+        };
+        new_theme.apply_color_config(&new_config.colors);
+        // Update the terminal palette so new/existing panes pick up colors
+        let mut term_config = (*self.config).clone();
+        new_theme.apply_to_palette(&mut term_config.color_palette);
+        self.config = Arc::new(term_config);
+        self.theme = new_theme;
+        tracing::info!("Hot-reloaded theme/colors");
+
+        // Store the full new config but preserve non-hot-reloadable fields
+        // (keybindings, shell, menu_bar_style require a restart).
+        let keybindings_saved = self.app_config.keybindings.clone();
+        let shell_saved = self.app_config.shell.clone();
+        let menu_bar_style_saved = self.app_config.menu_bar_style;
+        self.app_config = new_config;
+        self.app_config.keybindings = keybindings_saved;
+        self.app_config.shell = shell_saved;
+        self.app_config.menu_bar_style = menu_bar_style_saved;
+    }
 }

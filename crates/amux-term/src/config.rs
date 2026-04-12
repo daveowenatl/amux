@@ -1,7 +1,7 @@
 use crate::backend::{Color, Palette};
 
 /// Terminal configuration for amux panes.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct AmuxTermConfig {
     pub scrollback_lines: usize,
     pub color_palette: Palette,

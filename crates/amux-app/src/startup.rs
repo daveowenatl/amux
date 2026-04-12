@@ -286,7 +286,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
     cleanup_stale_codex_home_dirs();
     cleanup_legacy_claude_hooks_in_settings();
 
-    let mut app_config = config::load_app_config();
+    let (mut app_config, config_file_path) = config::load_app_config();
     let mut font_size = app_config.font_size;
 
     // Initialize sound player with configured sound setting
@@ -478,6 +478,11 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 favicon_pending: std::collections::HashSet::new(),
                 pending_text_field_paste: None,
                 pending_text_field_select_all: false,
+                config_last_modified: config_file_path
+                    .as_ref()
+                    .and_then(|p| std::fs::metadata(p).ok()?.modified().ok()),
+                config_file_path,
+                config_last_checked: Instant::now(),
             }))
         }),
     )

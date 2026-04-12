@@ -235,6 +235,12 @@ struct AmuxApp {
     /// field. Applied during the omnibar render pass so that egui can update
     /// the TextEdit cursor selection state.
     pending_text_field_select_all: bool,
+    /// Path to the config file that was loaded at startup (for hot-reload polling).
+    config_file_path: Option<std::path::PathBuf>,
+    /// Last known modification time of the config file.
+    config_last_modified: Option<std::time::SystemTime>,
+    /// When we last checked the config file's mtime (throttle to ~2s).
+    config_last_checked: Instant,
 }
 
 /// Editing state for a browser pane's omnibar.
