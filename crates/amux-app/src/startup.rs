@@ -17,6 +17,10 @@ fn scrollback_temp_dir() -> std::path::PathBuf {
 
 /// Write scrollback text to a temp file for shell-based replay.
 /// Returns the file path, or `None` on failure.
+///
+/// Not used on Windows — scrollback is fed directly into the VT
+/// parser via `feed_bytes` instead (see issue #217).
+#[cfg(not(target_os = "windows"))]
 fn write_scrollback_temp_file(text: &str) -> Option<std::path::PathBuf> {
     let dir = scrollback_temp_dir();
     #[cfg(unix)]
@@ -833,6 +837,13 @@ pub(crate) fn spawn_surface(
 
     // Write scrollback to temp file for shell-based replay. Only for shells
     // with integration scripts that know to read and delete the file.
+    //
+    // On Windows, scrollback is restored via `feed_bytes` below instead
+    // of the shell integration path. ConPTY and PowerShell's text encoding
+    // layers mangle the ANSI escape sequences (ESC bytes rendered as
+    // visible Cyrillic characters). Feeding directly into libghostty-vt's
+    // VT parser bypasses all of that — see issue #217.
+    #[cfg(not(target_os = "windows"))]
     if shell::has_shell_integration(&shell) {
         if let Some(text) = scrollback {
             if !text.is_empty() {
@@ -869,6 +880,31 @@ pub(crate) fn spawn_surface(
     // Apply amux theme colors to the ghostty backend (which otherwise
     // uses libghostty-vt's built-in defaults).
     ghostty_pane.set_palette(config.color_palette.clone());
+
+    // On Windows, feed saved scrollback directly into the VT parser
+    // instead of going through the shell integration temp-file path.
+    // This bypasses ConPTY + PowerShell encoding layers that mangle
+    // ESC bytes into visible characters (issue #217).
+    #[cfg(target_os = "windows")]
+    if let Some(text) = scrollback {
+        if !text.is_empty() {
+            // Replace \n with \r\n before feeding to the VT parser.
+            // The saved scrollback uses bare \n (Unix line endings) but
+            // the VT parser treats \n as "line feed" (cursor down) WITHOUT
+            // an implicit carriage return. On Unix the PTY driver's `onlcr`
+            // setting translates \n → \r\n, but since we bypass the PTY
+            // here, we do the translation ourselves so each line starts
+            // at column 0.
+            let mut crlf = text.replace('\n', "\r\n");
+            // Ensure trailing newline so the shell prompt starts on
+            // a fresh line (matches the temp-file path on Unix).
+            if !crlf.ends_with('\n') {
+                crlf.push_str("\r\n");
+            }
+            ghostty_pane.feed_bytes(crlf.as_bytes());
+        }
+    }
+
     let mut pane: amux_term::AnyBackend = amux_term::AnyBackend::Ghostty(Box::new(ghostty_pane));
 
     let mut reader = pane.take_reader().expect("reader already taken");
