@@ -328,23 +328,40 @@ pub fn set_badge_count(count: usize) {
 }
 
 /// Flash the Windows taskbar button to signal new unread notifications.
-/// Uses `FLASHW_TRAY | FLASHW_TIMERNOFG` so the button flashes briefly
-/// then stays highlighted until the user brings amux to the foreground.
+/// Stops any in-progress flash first so repeated calls always produce a
+/// visible flash, then starts a new `FLASHW_TRAY | FLASHW_TIMERNOFG`
+/// cycle that flashes briefly and stays highlighted until the user
+/// brings amux to the foreground.
 #[cfg(target_os = "windows")]
 pub fn flash_taskbar_window(hwnd_raw: isize) {
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        FlashWindowEx, FLASHWINFO, FLASHW_TIMERNOFG, FLASHW_TRAY,
+        FlashWindowEx, FLASHWINFO, FLASHW_STOP, FLASHW_TIMERNOFG, FLASHW_TRAY,
     };
 
-    let info = FLASHWINFO {
-        cbSize: std::mem::size_of::<FLASHWINFO>() as u32,
-        hwnd: hwnd_raw as HWND,
-        dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG,
-        uCount: 3,
-        dwTimeout: 0, // default cursor blink rate
+    let hwnd = hwnd_raw as HWND;
+    let size = std::mem::size_of::<FLASHWINFO>() as u32;
+
+    // Stop any previous flash so the new one is always visible.
+    let stop = FLASHWINFO {
+        cbSize: size,
+        hwnd,
+        dwFlags: FLASHW_STOP,
+        uCount: 0,
+        dwTimeout: 0,
     };
     unsafe {
-        FlashWindowEx(&info);
+        FlashWindowEx(&stop);
+    }
+
+    let flash = FLASHWINFO {
+        cbSize: size,
+        hwnd,
+        dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG,
+        uCount: 3,
+        dwTimeout: 0,
+    };
+    unsafe {
+        FlashWindowEx(&flash);
     }
 }
