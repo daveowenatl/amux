@@ -58,7 +58,7 @@ pub fn resolve_shell(config_override: Option<&str>) -> String {
 /// PATH-hijacking risk (e.g. a `.` entry pointing the shell resolver at
 /// whatever binary happens to be in the current working directory).
 /// Returns the first match as an absolute path string, or `None`.
-fn find_on_path(name: &str) -> Option<String> {
+pub fn find_on_path(name: &str) -> Option<String> {
     let path_var = std::env::var_os("PATH")?;
     #[cfg(windows)]
     let extensions: Vec<String> = {
