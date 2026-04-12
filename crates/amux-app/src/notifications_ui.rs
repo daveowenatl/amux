@@ -276,12 +276,79 @@ impl AmuxApp {
         let icon_size = egui::vec2(TITLEBAR_ICON_W, TITLEBAR_ICON_H);
         let gap = TITLEBAR_ICON_GAP;
         let screen = ctx.screen_rect();
-        let top_y = screen.min.y + 3.0;
+
+        // When a dedicated File/Edit/View strip is drawn above the
+        // icon row (Menubar mode on non-macOS), offset the icon row
+        // down by the menu strip's height so the icons land inside
+        // the icon strip, not the menu strip.
+        let menu_strip_h = self.menu_strip_height();
+        let icons_top_y = screen.min.y + menu_strip_h + 3.0;
         let origin_x = screen.min.x + titlebar_left_inset();
+
+        // In `Menubar` mode (non-macOS only), draw the dedicated
+        // File/Edit/View strip ABOVE the icon row. macOS already has
+        // the NSApp native menu bar at the top of the screen, so the
+        // in-window Menubar path is only wired up on non-macOS.
+        // `menu_strip_h` is always 0 on macOS by construction
+        // (`AmuxApp::menu_strip_height` returns 0 there).
+        #[cfg(not(target_os = "macos"))]
+        if menu_strip_h > 0.0 {
+            let theme = &self.theme;
+            egui::Area::new(egui::Id::new("amux_menu_strip"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(egui::pos2(origin_x, screen.min.y))
+                .show(ctx, |ui| {
+                    crate::menu_bar::draw_menu_buttons(
+                        ui,
+                        origin_x,
+                        screen.min.y,
+                        menu_strip_h,
+                        theme,
+                    );
+                });
+        }
+        // Suppress unused-var warnings on macOS.
+        #[cfg(target_os = "macos")]
+        let _ = menu_strip_h;
+
+        // On non-macOS in Hamburger mode, draw the `≡` button at
+        // the leftmost position of the icon row (before the sidebar
+        // toggle). The icon row origin_x shifts right to make room.
+        #[cfg(not(target_os = "macos"))]
+        let (row_origin_x, hamburger_offset) = {
+            if matches!(
+                self.app_config.menu_bar_style,
+                amux_core::config::MenuBarStyle::Hamburger
+            ) {
+                // Reserve space for the hamburger button + gap.
+                let shift = icon_size.x + gap;
+                (origin_x + shift, Some(origin_x))
+            } else {
+                (origin_x, None)
+            }
+        };
+        #[cfg(target_os = "macos")]
+        let (row_origin_x, hamburger_offset): (f32, Option<f32>) = (origin_x, None);
+
+        // Draw the hamburger button first (if this mode uses one)
+        // so it gets its own persistent-id scope separate from the
+        // icon row's Area.
+        #[cfg(not(target_os = "macos"))]
+        if let Some(ham_x) = hamburger_offset {
+            egui::Area::new(egui::Id::new("amux_hamburger_button"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(egui::pos2(ham_x, icons_top_y))
+                .show(ctx, |ui| {
+                    crate::menu_bar::draw_hamburger_button(ui, icon_size, &self.theme);
+                });
+        }
+        // Suppress the "unused" warning on macOS.
+        #[cfg(target_os = "macos")]
+        let _ = hamburger_offset;
 
         egui::Area::new(egui::Id::new("amux_titlebar_icons"))
             .order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(origin_x, top_y))
+            .fixed_pos(egui::pos2(row_origin_x, icons_top_y))
             .show(ctx, |ui| {
                 self.render_titlebar_icons_inner(ui, icon_size, gap);
             });
@@ -369,19 +436,19 @@ impl AmuxApp {
             self.create_workspace(None);
         }
 
-        // --- File / Edit / View menu labels (Windows/Linux only) ---
-        // On macOS these live in the native NSApp menu bar at the top
-        // of the screen; here we draw them as clickable text inside
-        // the same titlebar strip as the icons, right after the last
-        // icon. Each label opens a popup with its submenu items.
+        // The menu bar (File/Edit/View labels or the hamburger
+        // button) is rendered by the outer `render_titlebar_icons`
+        // function per `menu_bar_style`:
         //
-        // The `+ icon_size.x` advances past the last icon's right edge
-        // (the `x` variable above points at the icon's LEFT edge).
-        #[cfg(not(target_os = "macos"))]
-        {
-            let menu_start_x = x + icon_size.x;
-            crate::menu_bar::draw_menu_buttons(ui, menu_start_x, top_y, icon_size.y, &self.theme);
-        }
+        // - Menubar mode: a dedicated strip above this icon row
+        //   drawn via `menu_bar::draw_menu_buttons` in its own Area
+        // - Hamburger mode: a `≡` button placed to the left of this
+        //   icon row via `menu_bar::draw_hamburger_button` in its
+        //   own Area
+        // - None mode: nothing extra drawn
+        //
+        // This keeps the icon row's layout independent of whichever
+        // menu presentation the user chose.
     }
 
     pub(crate) fn render_notification_panel(&mut self, ctx: &egui::Context) {

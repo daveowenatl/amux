@@ -312,23 +312,31 @@ impl eframe::App for AmuxApp {
                 // screen rect keeps the strip coherent regardless of sidebar
                 // state and decouples it from sidebar_bg's color.
                 let screen = ui.ctx().screen_rect();
+                let top_pad = self.top_pad();
                 let strip_painter = ui.ctx().layer_painter(egui::LayerId::new(
                     egui::Order::Background,
                     egui::Id::new("amux_titlebar_strip"),
                 ));
+                // Paint the full top chrome region (menu strip +
+                // icon strip) in a single fill so the seam between
+                // the two strips is invisible and they look like one
+                // coherent top bar.
                 strip_painter.rect_filled(
                     egui::Rect::from_min_max(
                         screen.min,
-                        egui::pos2(screen.max.x, screen.min.y + TERMINAL_TOP_PAD),
+                        egui::pos2(screen.max.x, screen.min.y + top_pad),
                     ),
                     0.0,
                     self.theme.titlebar_bg(),
                 );
                 // Top-left titlebar icons: sidebar toggle, notifications, new workspace.
+                // On non-macOS in Menubar mode, also draw the File/Edit/View strip
+                // above the icon row.
                 self.render_titlebar_icons(ui.ctx());
-                // Shift content area down by the top padding.
+                // Shift content area down past the full top chrome
+                // (menu strip + icon strip).
                 let panel_rect = egui::Rect::from_min_max(
-                    egui::pos2(full_rect.min.x, full_rect.min.y + TERMINAL_TOP_PAD),
+                    egui::pos2(full_rect.min.x, full_rect.min.y + top_pad),
                     full_rect.max,
                 );
                 self.last_panel_rect = Some(panel_rect);

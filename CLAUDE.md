@@ -66,7 +66,13 @@ Three first-class agent integrations, each using the agent's native event system
 - **tmux compat shim**: `amux install-tmux-shim` routes `tmux` calls to amux for agent scripts written for tmux
 
 ### Configuration
-Config file: `~/.config/amux/config.toml` (or `%APPDATA%\amux\config.toml` on Windows). Covers appearance, notifications, keybindings, and agent overrides.
+Config file: `~/.config/amux/config.toml` (or `%APPDATA%\amux\config.toml` on Windows). Covers appearance, notifications, keybindings, and agent overrides. Notable fields:
+
+- `theme_source` — `"default"` (built-in) or `"ghostty"` (reads `~/.config/ghostty/config`)
+- `font_family` / `font_size` — cosmic-text resolved against system fonts
+- `menu_bar_style` — in-window menu presentation on Windows/Linux: `"menubar"` (File/Edit/View strip above the icon row, default on Win/Linux), `"hamburger"` (single `≡` button in the icon row, space-efficient), or `"none"` (no in-window menu, default on macOS where the NSApp native menu bar provides menu access). Requires restart to take effect. macOS always uses the NSApp native menu bar regardless of this setting — the in-window paths are non-macOS only.
+- `colors` — per-element overrides on top of the resolved theme
+- `keybindings` — user-customized action bindings merged with platform defaults
 
 ### Session Restore
 Restores layout, working directories, scrollback (up to 4k lines/surface), status pills, and notification history. Does **not** restore live agent process state.
