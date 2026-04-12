@@ -386,7 +386,10 @@ pub(crate) fn run() -> anyhow::Result<()> {
         }
     }
 
-    // Build the native menu bar (cross-platform via muda).
+    // Build the native menu bar. macOS only — Windows/Linux draw
+    // their menu bar via egui in `menu_bar::draw_egui_menu_bar` from
+    // the main update loop, so there's no muda::Menu to build.
+    #[cfg(target_os = "macos")]
     let menu = menu_bar::build();
 
     let viewport = egui::ViewportBuilder::default()
@@ -459,9 +462,10 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 last_badge_count: 0,
                 cursor_blink_since: Instant::now(),
                 sound_player,
+                #[cfg(target_os = "macos")]
                 menu,
                 #[cfg(target_os = "windows")]
-                menu_attached: false,
+                window_chrome_applied: false,
                 #[cfg(feature = "gpu-renderer")]
                 gpu_renderer,
                 pending_browser_panes: Vec::new(),

@@ -1,22 +1,54 @@
-/// Cross-platform native menu bar using `muda`.
-///
-/// macOS: top-of-screen system menu bar.
-/// Windows: per-window native Win32 menu bar.
-/// Linux: GTK menu bar (requires GTK window access — not yet wired up).
-///
-/// Menu item clicks are delivered via `muda::MenuEvent::receiver()`, drained
-/// each frame in the egui update loop.
-///
-/// Accelerators match the keybindings in `handle_shortcuts()`: Cmd on macOS,
-/// Ctrl+Shift on Windows/Linux for workspace/tab ops, Ctrl for view ops.
-/// On both platforms the system menu bar consumes the key event before it
-/// reaches the egui event loop, so the shortcut handlers will not double-fire.
-use muda::accelerator::{Accelerator, Code, Modifiers};
-#[cfg(target_os = "macos")]
-use muda::AboutMetadata;
-use muda::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+//! Cross-platform menu bar.
+//!
+//! # Two rendering paths
+//!
+//! - **macOS**: native app-global menu bar via [`muda`], installed into
+//!   NSApp's top-of-screen strip. That's the idiomatic macOS pattern —
+//!   Mac apps don't draw menus inside their own windows.
+//! - **Windows / Linux**: egui-drawn [`egui::TopBottomPanel::top`] +
+//!   [`egui::menu::bar`], rendered from [`AmuxApp::update`] every frame.
+//!   Native menu chrome is off the table on Windows 11 because the
+//!   native menu rendering path ignores the undocumented dark-mode
+//!   ordinals VS Code / Windows Terminal used to use — the egui-drawn
+//!   approach gives us full theme control and cross-platform visual
+//!   parity. On Linux it means amux has a working menu bar at all:
+//!   `muda`'s GTK path isn't wired through `eframe`, so the native
+//!   approach produces nothing.
+//!
+//! # Shared action model
+//!
+//! Both paths emit [`MenuAction`] values into the process-wide
+//! [`PENDING_ACTIONS`] queue, which is drained per frame by
+//! [`AmuxApp::handle_menu_actions`]. The dispatcher code in
+//! `workspace_ops.rs` doesn't know or care which path produced the
+//! action.
+//!
+//! # Keyboard shortcuts
+//!
+//! Menu items display shortcut text (e.g. `Ctrl+Shift+N`) for
+//! discoverability, but the menu bar does **not** dispatch keyboard
+//! events. All shortcuts go through [`AmuxApp::handle_shortcuts`] in
+//! `input.rs`, which reads the configured keybindings and matches
+//! against `egui::Event::Key` directly. The shortcut strings here are
+//! purely cosmetic — changing them does not affect what keys fire what
+//! action.
 
-/// Actions that can be triggered from the native menu bar.
+use std::collections::VecDeque;
+use std::sync::Mutex;
+
+#[cfg(target_os = "macos")]
+use muda::{
+    accelerator::{Accelerator, Code, Modifiers},
+    AboutMetadata, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
+};
+
+// ---------------------------------------------------------------------
+// Action vocabulary
+// ---------------------------------------------------------------------
+
+/// Actions that can be triggered from the menu bar. Stable across both
+/// rendering paths so `workspace_ops::handle_menu_actions` can treat
+/// them uniformly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MenuAction {
     NewWorkspace,
@@ -34,8 +66,194 @@ pub(crate) enum MenuAction {
     SelectAll,
 }
 
-/// Stored menu item IDs, used to match incoming `MenuEvent`s to actions.
-struct MenuItems {
+// ---------------------------------------------------------------------
+// Platform-agnostic menu model (non-macOS only)
+// ---------------------------------------------------------------------
+//
+// macOS builds its native menu via the inlined code in `build()`
+// below using muda's typed accelerators directly, so these data
+// types would be dead code on that platform. Gated to non-macOS so
+// the compiler doesn't flag them.
+
+/// A single item inside a submenu — either a clickable action or a
+/// visual separator.
+#[cfg(not(target_os = "macos"))]
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum MenuItemDef {
+    Separator,
+    Action {
+        label: &'static str,
+        /// Display-only shortcut hint (e.g. `"Ctrl+Shift+N"`). Purely
+        /// cosmetic — actual dispatch is in `input::handle_shortcuts`.
+        shortcut: Option<&'static str>,
+        action: MenuAction,
+    },
+}
+
+/// A top-level submenu (`File`, `Edit`, `View`, `Window`).
+#[cfg(not(target_os = "macos"))]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SubmenuDef {
+    pub label: &'static str,
+    pub items: &'static [MenuItemDef],
+}
+
+// Platform-specific shortcut display strings. macOS uses the Cmd glyph
+// (⌘) + letter; Windows/Linux use Ctrl+Shift+letter for workspace/tab
+// ops to avoid stealing terminal control keys (Ctrl+N = new line,
+// Ctrl+W = word erase, Ctrl+S = XOFF), and Ctrl+letter for view ops
+// that don't conflict. These strings must match what
+// `input::handle_shortcuts` actually listens for.
+
+// Shortcut display strings — only used by the non-macOS egui menu
+// renderer. macOS uses muda's typed `Accelerator` directly in
+// `build()` below and doesn't need these string forms.
+#[cfg(not(target_os = "macos"))]
+mod shortcuts {
+    pub const NEW_WORKSPACE: &str = "Ctrl+Shift+N";
+    pub const NEW_TAB: &str = "Ctrl+Shift+T";
+    pub const NEW_BROWSER_TAB: &str = "Ctrl+Shift+L";
+    pub const CLOSE_TAB: &str = "Ctrl+Shift+W";
+    pub const SAVE_SESSION: &str = "Ctrl+Shift+S";
+    pub const TOGGLE_SIDEBAR: &str = "Ctrl+B";
+    pub const TOGGLE_NOTIFICATIONS: &str = "Ctrl+Shift+I";
+    pub const ZOOM_IN: &str = "Ctrl+=";
+    pub const ZOOM_OUT: &str = "Ctrl+-";
+    pub const ZOOM_RESET: &str = "Ctrl+0";
+    pub const COPY: &str = "Ctrl+Shift+C";
+    pub const PASTE: &str = "Ctrl+Shift+V";
+    pub const SELECT_ALL: &str = "Ctrl+Shift+A";
+}
+
+/// The non-macOS menu structure consumed by [`draw_egui_menu_bar`].
+/// macOS builds its native menu separately in [`build`] using muda's
+/// typed accelerators, so this const isn't referenced there.
+///
+/// Window > Minimize / Maximize is not in this list — on Windows the
+/// title bar already provides those controls, and on Linux there's no
+/// portable winit API to wire from an egui click. If we need them on
+/// non-macOS later, route through `eframe::Frame::set_minimized` or
+/// similar in the dispatcher.
+#[cfg(not(target_os = "macos"))]
+pub(crate) const MENU_MODEL: &[SubmenuDef] = &[
+    SubmenuDef {
+        label: "File",
+        items: &[
+            MenuItemDef::Action {
+                label: "New Workspace",
+                shortcut: Some(shortcuts::NEW_WORKSPACE),
+                action: MenuAction::NewWorkspace,
+            },
+            MenuItemDef::Action {
+                label: "New Tab",
+                shortcut: Some(shortcuts::NEW_TAB),
+                action: MenuAction::NewTab,
+            },
+            MenuItemDef::Action {
+                label: "New Browser Tab",
+                shortcut: Some(shortcuts::NEW_BROWSER_TAB),
+                action: MenuAction::NewBrowserTab,
+            },
+            MenuItemDef::Separator,
+            MenuItemDef::Action {
+                label: "Close Tab",
+                shortcut: Some(shortcuts::CLOSE_TAB),
+                action: MenuAction::CloseTab,
+            },
+            MenuItemDef::Separator,
+            MenuItemDef::Action {
+                label: "Save Session",
+                shortcut: Some(shortcuts::SAVE_SESSION),
+                action: MenuAction::SaveSession,
+            },
+        ],
+    },
+    SubmenuDef {
+        label: "Edit",
+        items: &[
+            MenuItemDef::Action {
+                label: "Copy",
+                shortcut: Some(shortcuts::COPY),
+                action: MenuAction::Copy,
+            },
+            MenuItemDef::Action {
+                label: "Paste",
+                shortcut: Some(shortcuts::PASTE),
+                action: MenuAction::Paste,
+            },
+            MenuItemDef::Separator,
+            MenuItemDef::Action {
+                label: "Select All",
+                shortcut: Some(shortcuts::SELECT_ALL),
+                action: MenuAction::SelectAll,
+            },
+        ],
+    },
+    SubmenuDef {
+        label: "View",
+        items: &[
+            MenuItemDef::Action {
+                label: "Toggle Sidebar",
+                shortcut: Some(shortcuts::TOGGLE_SIDEBAR),
+                action: MenuAction::ToggleSidebar,
+            },
+            MenuItemDef::Action {
+                label: "Toggle Notifications",
+                shortcut: Some(shortcuts::TOGGLE_NOTIFICATIONS),
+                action: MenuAction::ToggleNotificationPanel,
+            },
+            MenuItemDef::Separator,
+            MenuItemDef::Action {
+                label: "Zoom In",
+                shortcut: Some(shortcuts::ZOOM_IN),
+                action: MenuAction::ZoomIn,
+            },
+            MenuItemDef::Action {
+                label: "Zoom Out",
+                shortcut: Some(shortcuts::ZOOM_OUT),
+                action: MenuAction::ZoomOut,
+            },
+            MenuItemDef::Action {
+                label: "Actual Size",
+                shortcut: Some(shortcuts::ZOOM_RESET),
+                action: MenuAction::ZoomReset,
+            },
+        ],
+    },
+];
+
+// ---------------------------------------------------------------------
+// Shared action queue
+// ---------------------------------------------------------------------
+
+/// Process-wide queue of menu-driven actions. Both the macOS muda path
+/// (via `drain_muda_events`) and the non-macOS egui path (via direct
+/// `push_action` calls from click handlers) push here. The queue is
+/// drained once per frame by `AmuxApp::handle_menu_actions`.
+static PENDING_ACTIONS: Mutex<VecDeque<MenuAction>> = Mutex::new(VecDeque::new());
+
+/// Enqueue a menu action. Called by both render paths.
+pub(crate) fn push_action(action: MenuAction) {
+    if let Ok(mut queue) = PENDING_ACTIONS.lock() {
+        queue.push_back(action);
+    }
+}
+
+/// Pop the next queued menu action, if any. On macOS, also drains
+/// `muda::MenuEvent`s from muda's channel into the queue first.
+pub(crate) fn take_pending_action() -> Option<MenuAction> {
+    #[cfg(target_os = "macos")]
+    drain_muda_events();
+
+    PENDING_ACTIONS.lock().ok()?.pop_front()
+}
+
+// ---------------------------------------------------------------------
+// macOS path (muda native menu bar)
+// ---------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+struct MacMenuItems {
     new_workspace: muda::MenuId,
     new_tab: muda::MenuId,
     new_browser_tab: muda::MenuId,
@@ -51,93 +269,50 @@ struct MenuItems {
     select_all: muda::MenuId,
 }
 
-static MENU_ITEMS: std::sync::OnceLock<MenuItems> = std::sync::OnceLock::new();
+#[cfg(target_os = "macos")]
+static MAC_MENU_ITEMS: std::sync::OnceLock<MacMenuItems> = std::sync::OnceLock::new();
 
-/// Platform modifier: Cmd on macOS, Ctrl on Windows/Linux.
 #[cfg(target_os = "macos")]
 const CMD: Modifiers = Modifiers::SUPER;
-#[cfg(not(target_os = "macos"))]
-const CMD: Modifiers = Modifiers::CONTROL;
 
-/// Ctrl+Shift on non-macOS — matches `handle_shortcuts()` which uses
-/// Ctrl+Shift for workspace/tab operations to avoid stealing terminal
-/// control keys (Ctrl+N/T/W/S).
-#[cfg(not(target_os = "macos"))]
-const CMD_SHIFT: Modifiers = Modifiers::CONTROL.union(Modifiers::SHIFT);
-
+#[cfg(target_os = "macos")]
 fn accel(mods: Modifiers, code: Code) -> Option<Accelerator> {
     Some(Accelerator::new(Some(mods), code))
 }
 
-/// Build and install the native menu bar. Call once at startup.
+/// Build and install the macOS native menu bar. Call once at startup.
+/// Returns the [`muda::Menu`] — the caller must keep it alive for the
+/// process lifetime (muda drops its event wiring when the Menu is
+/// dropped).
 ///
-/// On macOS this sets the app-global menu bar via `init_for_nsapp()`.
-/// On Windows, call `init_for_hwnd()` once the window handle is available
-/// (see `attach_to_window()`).
-///
-/// Accelerators match the existing keybindings in `handle_shortcuts()`:
-/// - macOS: Cmd+key
-/// - Windows/Linux: Ctrl+Shift+key for workspace/tab ops; Ctrl+key for
-///   view ops (sidebar, zoom) that don't conflict with terminal control chars.
+/// `init_for_nsapp` is called internally, so the menu bar is visible
+/// immediately when this returns.
+#[cfg(target_os = "macos")]
 pub(crate) fn build() -> Menu {
-    // --- Custom action items ---
-    // On non-macOS, workspace/tab operations use Ctrl+Shift to avoid
-    // stealing terminal control keys (Ctrl+N = new line, Ctrl+W = word
-    // erase, Ctrl+S = XOFF).
-    #[cfg(target_os = "macos")]
+    // Build menu items with accelerators.
     let new_workspace = MenuItem::new("New Workspace", true, accel(CMD, Code::KeyN));
-    #[cfg(not(target_os = "macos"))]
-    let new_workspace = MenuItem::new("New Workspace", true, accel(CMD_SHIFT, Code::KeyN));
-
-    #[cfg(target_os = "macos")]
     let new_tab = MenuItem::new("New Tab", true, accel(CMD, Code::KeyT));
-    #[cfg(not(target_os = "macos"))]
-    let new_tab = MenuItem::new("New Tab", true, accel(CMD_SHIFT, Code::KeyT));
-
     let new_browser_tab = MenuItem::new(
         "New Browser Tab",
         true,
         accel(CMD.union(Modifiers::SHIFT), Code::KeyL),
     );
-
-    #[cfg(target_os = "macos")]
     let close_tab = MenuItem::new("Close Tab", true, accel(CMD, Code::KeyW));
-    #[cfg(not(target_os = "macos"))]
-    let close_tab = MenuItem::new("Close Tab", true, accel(CMD_SHIFT, Code::KeyW));
-
-    #[cfg(target_os = "macos")]
     let save_session = MenuItem::new("Save Session", true, accel(CMD, Code::KeyS));
-    #[cfg(not(target_os = "macos"))]
-    let save_session = MenuItem::new("Save Session", true, accel(CMD_SHIFT, Code::KeyS));
-
     let toggle_sidebar = MenuItem::new("Toggle Sidebar", true, accel(CMD, Code::KeyB));
-    #[cfg(target_os = "macos")]
     let toggle_notifications = MenuItem::new("Toggle Notifications", true, accel(CMD, Code::KeyI));
-    #[cfg(not(target_os = "macos"))]
-    let toggle_notifications =
-        MenuItem::new("Toggle Notifications", true, accel(CMD_SHIFT, Code::KeyI));
     let zoom_in = MenuItem::new("Zoom In", true, accel(CMD, Code::Equal));
     let zoom_out = MenuItem::new("Zoom Out", true, accel(CMD, Code::Minus));
     let zoom_reset = MenuItem::new("Actual Size", true, accel(CMD, Code::Digit0));
-
-    // Edit menu items — use custom MenuItems (not PredefinedMenuItem) so we
-    // receive the event in our handler instead of it being consumed by the OS.
-    #[cfg(target_os = "macos")]
     let copy = MenuItem::new("Copy", true, accel(CMD, Code::KeyC));
-    #[cfg(not(target_os = "macos"))]
-    let copy = MenuItem::new("Copy", true, accel(CMD_SHIFT, Code::KeyC));
-    #[cfg(target_os = "macos")]
     let paste = MenuItem::new("Paste", true, accel(CMD, Code::KeyV));
-    #[cfg(not(target_os = "macos"))]
-    let paste = MenuItem::new("Paste", true, accel(CMD_SHIFT, Code::KeyV));
-    #[cfg(target_os = "macos")]
     let select_all = MenuItem::new("Select All", true, accel(CMD, Code::KeyA));
-    #[cfg(not(target_os = "macos"))]
-    let select_all = MenuItem::new("Select All", true, accel(CMD_SHIFT, Code::KeyA));
 
-    // Store IDs for event matching
-    if MENU_ITEMS
-        .set(MenuItems {
+    // Stash IDs for event matching before the items get moved into
+    // their submenus — muda's MenuId is cheap to clone but we need to
+    // capture it before handing ownership off.
+    if MAC_MENU_ITEMS
+        .set(MacMenuItems {
             new_workspace: new_workspace.id().clone(),
             new_tab: new_tab.id().clone(),
             new_browser_tab: new_browser_tab.id().clone(),
@@ -159,170 +334,162 @@ pub(crate) fn build() -> Menu {
 
     let menu = Menu::new();
 
-    // --- App menu (macOS only, ignored on other platforms) ---
-    #[cfg(target_os = "macos")]
-    {
-        let app_menu = Submenu::new("amux", true);
-        let _ = app_menu.append_items(&[
-            &PredefinedMenuItem::about(
-                None,
-                Some(AboutMetadata {
-                    name: Some("amux".to_string()),
-                    ..Default::default()
-                }),
-            ),
-            &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::services(None),
-            &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::hide(None),
-            &PredefinedMenuItem::hide_others(None),
-            &PredefinedMenuItem::show_all(None),
-            &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::quit(None),
-        ]);
-        let _ = menu.append(&app_menu);
-    }
+    // App menu (macOS standard: About / Services / Hide / Quit).
+    let app_menu = Submenu::new("amux", true);
+    let _ = app_menu.append_items(&[
+        &PredefinedMenuItem::about(
+            None,
+            Some(AboutMetadata {
+                name: Some("amux".to_string()),
+                ..Default::default()
+            }),
+        ),
+        &PredefinedMenuItem::separator(),
+        &PredefinedMenuItem::services(None),
+        &PredefinedMenuItem::separator(),
+        &PredefinedMenuItem::hide(None),
+        &PredefinedMenuItem::hide_others(None),
+        &PredefinedMenuItem::show_all(None),
+        &PredefinedMenuItem::separator(),
+        &PredefinedMenuItem::quit(None),
+    ]);
+    let _ = menu.append(&app_menu);
 
-    // --- File menu ---
-    {
-        let file_menu = Submenu::new("File", true);
-        let _ = file_menu.append_items(&[
-            &new_workspace,
-            &new_tab,
-            &new_browser_tab,
-            &PredefinedMenuItem::separator(),
-            &close_tab,
-            &PredefinedMenuItem::separator(),
-            &save_session,
-        ]);
-        let _ = menu.append(&file_menu);
-    }
+    // File menu.
+    let file_menu = Submenu::new("File", true);
+    let _ = file_menu.append_items(&[
+        &new_workspace,
+        &new_tab,
+        &new_browser_tab,
+        &PredefinedMenuItem::separator(),
+        &close_tab,
+        &PredefinedMenuItem::separator(),
+        &save_session,
+    ]);
+    let _ = menu.append(&file_menu);
 
-    // --- Edit menu ---
-    {
-        let edit_menu = Submenu::new("Edit", true);
-        let _ =
-            edit_menu.append_items(&[&copy, &paste, &PredefinedMenuItem::separator(), &select_all]);
-        let _ = menu.append(&edit_menu);
-    }
+    // Edit menu.
+    let edit_menu = Submenu::new("Edit", true);
+    let _ = edit_menu.append_items(&[&copy, &paste, &PredefinedMenuItem::separator(), &select_all]);
+    let _ = menu.append(&edit_menu);
 
-    // --- View menu ---
-    {
-        let view_menu = Submenu::new("View", true);
-        let _ = view_menu.append_items(&[
-            &toggle_sidebar,
-            &toggle_notifications,
-            &PredefinedMenuItem::separator(),
-            &zoom_in,
-            &zoom_out,
-            &zoom_reset,
-        ]);
-        let _ = menu.append(&view_menu);
-    }
+    // View menu.
+    let view_menu = Submenu::new("View", true);
+    let _ = view_menu.append_items(&[
+        &toggle_sidebar,
+        &toggle_notifications,
+        &PredefinedMenuItem::separator(),
+        &zoom_in,
+        &zoom_out,
+        &zoom_reset,
+    ]);
+    let _ = menu.append(&view_menu);
 
-    // --- Window menu ---
-    {
-        let window_menu = Submenu::new("Window", true);
-        let _ = window_menu.append_items(&[
-            &PredefinedMenuItem::minimize(None),
-            &PredefinedMenuItem::maximize(None),
-        ]);
-        let _ = menu.append(&window_menu);
+    // Window menu — minimize/maximize/window list. macOS has native
+    // predefined items for these that hook into NSWindow.
+    let window_menu = Submenu::new("Window", true);
+    let _ = window_menu.append_items(&[
+        &PredefinedMenuItem::minimize(None),
+        &PredefinedMenuItem::maximize(None),
+    ]);
+    let _ = menu.append(&window_menu);
+    window_menu.set_as_windows_menu_for_nsapp();
 
-        #[cfg(target_os = "macos")]
-        window_menu.set_as_windows_menu_for_nsapp();
-    }
+    // Help menu — empty container, but set_as_help_menu_for_nsapp
+    // wires the system-provided search field into it.
+    let help_menu = Submenu::new("Help", true);
+    let _ = menu.append(&help_menu);
+    help_menu.set_as_help_menu_for_nsapp();
 
-    // --- Help menu (macOS only — includes system search field; empty on other platforms) ---
-    #[cfg(target_os = "macos")]
-    {
-        let help_menu = Submenu::new("Help", true);
-        let _ = menu.append(&help_menu);
-        help_menu.set_as_help_menu_for_nsapp();
-    }
-
-    // Install for macOS immediately (app-global menu bar).
-    #[cfg(target_os = "macos")]
     menu.init_for_nsapp();
-
-    // Linux: muda supports GTK menus via `init_for_gtk_window()`, but eframe
-    // does not expose the underlying GtkWindow. When Linux support is needed,
-    // the GTK window can be obtained from the raw Xlib/Wayland handle or by
-    // patching eframe to surface it.
-
     menu
 }
 
-/// On Windows, attach the menu bar to the window once the HWND is available.
-/// Call from the first `App::update()` frame. Returns `true` if the menu was
-/// successfully attached; `false` if the window handle wasn't ready yet.
-///
-/// Before attaching the menu, this function also applies the per-window
-/// dark-mode chrome (title bar + themed controls) via `windows_chrome`.
-/// The per-window call needs to happen before `menu.init_for_hwnd` so the
-/// menu bar paints in dark mode from its first draw — `init_for_hwnd`
-/// triggers an immediate `DrawMenuBar`, and if dark mode isn't enabled
-/// on the HWND yet the menu bar caches light-mode chrome and doesn't
-/// re-theme until the next WM_THEMECHANGED.
-#[cfg(target_os = "windows")]
-pub(crate) fn attach_to_window(menu: &Menu, frame: &eframe::Frame) -> bool {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    if let Ok(handle) = frame.window_handle() {
-        if let RawWindowHandle::Win32(win32) = handle.as_raw() {
-            // `raw_window_handle::Win32WindowHandle::hwnd` is an
-            // `NonZeroIsize`. Both `muda::Menu::init_for_hwnd` and
-            // our `windows_chrome::apply_dark_mode_to_window` take
-            // the handle as a plain `isize`, so we extract it once
-            // and share.
-            let hwnd: isize = win32.hwnd.get();
-            crate::windows_chrome::apply_dark_mode_to_window(hwnd);
-            match unsafe { menu.init_for_hwnd(hwnd) } {
-                Ok(()) => return true,
-                Err(e) => {
-                    tracing::error!("Failed to attach menu bar to HWND: {e}");
-                    return false;
-                }
-            }
+/// Drain any pending muda events into the shared action queue. No-op
+/// if the menu hasn't been built yet (early in startup).
+#[cfg(target_os = "macos")]
+fn drain_muda_events() {
+    let Some(items) = MAC_MENU_ITEMS.get() else {
+        return;
+    };
+    while let Ok(event) = MenuEvent::receiver().try_recv() {
+        let id = &event.id;
+        let action = if *id == items.new_workspace {
+            Some(MenuAction::NewWorkspace)
+        } else if *id == items.new_tab {
+            Some(MenuAction::NewTab)
+        } else if *id == items.new_browser_tab {
+            Some(MenuAction::NewBrowserTab)
+        } else if *id == items.close_tab {
+            Some(MenuAction::CloseTab)
+        } else if *id == items.save_session {
+            Some(MenuAction::SaveSession)
+        } else if *id == items.toggle_sidebar {
+            Some(MenuAction::ToggleSidebar)
+        } else if *id == items.toggle_notifications {
+            Some(MenuAction::ToggleNotificationPanel)
+        } else if *id == items.zoom_in {
+            Some(MenuAction::ZoomIn)
+        } else if *id == items.zoom_out {
+            Some(MenuAction::ZoomOut)
+        } else if *id == items.zoom_reset {
+            Some(MenuAction::ZoomReset)
+        } else if *id == items.copy {
+            Some(MenuAction::Copy)
+        } else if *id == items.paste {
+            Some(MenuAction::Paste)
+        } else if *id == items.select_all {
+            Some(MenuAction::SelectAll)
+        } else {
+            // Predefined OS item or unknown — no local handler.
+            None
+        };
+        if let Some(action) = action {
+            push_action(action);
         }
     }
-    false
 }
 
-/// Drain pending menu events and return the next recognized action, if any.
-/// Skips unrecognized event IDs (e.g. from predefined items handled by the OS)
-/// so they don't block processing of subsequent events in the queue.
-pub(crate) fn take_pending_action() -> Option<MenuAction> {
-    let items = MENU_ITEMS.get()?;
-    loop {
-        let event = MenuEvent::receiver().try_recv().ok()?;
-        let id = &event.id;
-        if *id == items.new_workspace {
-            return Some(MenuAction::NewWorkspace);
-        } else if *id == items.new_tab {
-            return Some(MenuAction::NewTab);
-        } else if *id == items.new_browser_tab {
-            return Some(MenuAction::NewBrowserTab);
-        } else if *id == items.close_tab {
-            return Some(MenuAction::CloseTab);
-        } else if *id == items.save_session {
-            return Some(MenuAction::SaveSession);
-        } else if *id == items.toggle_sidebar {
-            return Some(MenuAction::ToggleSidebar);
-        } else if *id == items.toggle_notifications {
-            return Some(MenuAction::ToggleNotificationPanel);
-        } else if *id == items.zoom_in {
-            return Some(MenuAction::ZoomIn);
-        } else if *id == items.zoom_out {
-            return Some(MenuAction::ZoomOut);
-        } else if *id == items.zoom_reset {
-            return Some(MenuAction::ZoomReset);
-        } else if *id == items.copy {
-            return Some(MenuAction::Copy);
-        } else if *id == items.paste {
-            return Some(MenuAction::Paste);
-        } else if *id == items.select_all {
-            return Some(MenuAction::SelectAll);
-        }
-        // Unknown ID (predefined OS item, etc.) — skip and keep draining.
-    }
+// ---------------------------------------------------------------------
+// Non-macOS path (egui TopBottomPanel + menu::bar)
+// ---------------------------------------------------------------------
+
+/// Draw the menu bar into a [`egui::TopBottomPanel::top`] and push any
+/// clicked actions into the shared [`PENDING_ACTIONS`] queue. Must be
+/// called before any other top-level panels (sidebar, central) claim
+/// vertical space — egui panels nest in call order.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn draw_egui_menu_bar(ctx: &egui::Context) {
+    egui::TopBottomPanel::top("amux_menu_bar").show(ctx, |ui| {
+        egui::menu::bar(ui, |ui| {
+            for submenu in MENU_MODEL {
+                ui.menu_button(submenu.label, |ui| {
+                    for item in submenu.items {
+                        match item {
+                            MenuItemDef::Separator => {
+                                ui.separator();
+                            }
+                            MenuItemDef::Action {
+                                label,
+                                shortcut,
+                                action,
+                            } => {
+                                // Build the button: with shortcut text
+                                // on the right when one is configured,
+                                // plain otherwise.
+                                let button = match shortcut {
+                                    Some(sc) => egui::Button::new(*label).shortcut_text(*sc),
+                                    None => egui::Button::new(*label),
+                                };
+                                if ui.add(button).clicked() {
+                                    push_action(*action);
+                                    ui.close_menu();
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+    });
 }

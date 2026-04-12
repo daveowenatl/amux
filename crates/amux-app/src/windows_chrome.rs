@@ -1,37 +1,47 @@
 //! Windows-only dark-mode chrome helpers.
 //!
-//! Enables dark-mode themed controls (title bar + common controls, best-
-//! effort for the native menu bar) on Windows 10/11. Called once at
-//! startup from `menu_bar::attach_to_window` right before the menu bar
-//! is initialized on the window's HWND, so the menu paints in dark mode
-//! from its first frame.
+//! Two entry points:
+//!
+//! - [`enable_process_dark_mode`]: called once from `startup::run`
+//!   before any windows are created. Opts the whole process into
+//!   dark-mode themed Win32 common controls (scrollbars, edit
+//!   controls, etc.) via undocumented `uxtheme.dll` ordinals.
+//!   Harmless on builds that don't have the ordinals — silently
+//!   no-ops and the process stays in light mode for any Win32
+//!   chrome we happen to host.
+//!
+//! - [`apply_dark_mode_to_window`]: called from `frame_update.rs` on
+//!   the first frame where the HWND is available. Sets the dark
+//!   title bar via `DwmSetWindowAttribute` (documented, stable since
+//!   Windows 10 2004) and opts the per-HWND dark mode in via
+//!   undocumented `AllowDarkModeForWindow`.
 //!
 //! Approach:
 //!
-//! 1. **Title bar**: documented `DwmSetWindowAttribute` with
+//! 1. **Title bar** (documented): `DwmSetWindowAttribute` with
 //!    `DWMWA_USE_IMMERSIVE_DARK_MODE` (attribute 20). Stable since
 //!    Windows 10 2004.
-//! 2. **Process-wide dark mode**: undocumented `SetPreferredAppMode` at
-//!    uxtheme.dll ordinal 135 (Windows 10 1903+), called with
-//!    `AllowDark`. This opts the process into dark-themed common
-//!    controls and is what VS Code, Windows Terminal, and File Explorer
-//!    all use internally.
-//! 3. **Per-window dark mode**: undocumented `AllowDarkModeForWindow`
-//!    at uxtheme.dll ordinal 133, called on the HWND. Required in
-//!    addition to the process-wide call for some themed controls.
-//! 4. **Policy refresh**: undocumented `RefreshImmersiveColorPolicyState`
-//!    at uxtheme.dll ordinal 104, to force Windows to reapply dark mode
-//!    to already-created windows.
+//! 2. **Process-wide dark mode** (undocumented): `SetPreferredAppMode`
+//!    at `uxtheme.dll` ordinal 135 (Windows 10 1903+), called with
+//!    `AllowDark`. Same approach VS Code, Windows Terminal, and File
+//!    Explorer use internally.
+//! 3. **Per-window dark mode** (undocumented): `AllowDarkModeForWindow`
+//!    at `uxtheme.dll` ordinal 133, called on the HWND.
+//! 4. **Policy refresh** (undocumented): `RefreshImmersiveColorPolicyState`
+//!    at `uxtheme.dll` ordinal 104, to force Windows to reapply the
+//!    dark-mode policy to already-created windows.
 //!
-//! The undocumented ordinals may break or be renumbered on future
-//! Windows builds. Every call site is defensive: if the function
-//! can't be loaded, we silently no-op and the user sees whatever
-//! chrome they would have seen without amux trying. No crashes.
+//! **Menu bar is NOT rendered via native Win32** — amux draws its own
+//! menu bar with egui on Windows/Linux (see `menu_bar::draw_egui_menu_bar`),
+//! so the undocumented ordinals don't need to theme a Win32 `HMENU`.
+//! They're kept here as defense in depth for any stray Win32 controls
+//! that might appear inside the window (e.g. file dialogs hosted via
+//! system shell APIs).
 //!
-//! If this still doesn't make the native menu bar follow dark mode
-//! (Windows 11 has made the Win32 menu rendering path more stubborn
-//! than it used to be), the follow-up fix is to replace muda's native
-//! menu with an egui-drawn top bar. Tracked in amux #190.
+//! Every undocumented ordinal is resolved via `LoadLibraryW` +
+//! `GetProcAddress`. If an ordinal can't be found (future Windows
+//! removed or renumbered it), the specific call silently skips — no
+//! crash, no tracing noise, just degrades to the pre-amux baseline.
 
 #![cfg(target_os = "windows")]
 
@@ -130,15 +140,20 @@ pub fn enable_process_dark_mode() {
 
 /// Enable dark mode for a specific window. Applies both the documented
 /// DWM title-bar flag AND the undocumented uxtheme per-window
-/// `AllowDarkModeForWindow` ordinal, which is required in addition to
-/// the process-wide `SetPreferredAppMode` for themed Win32 controls
-/// hosted inside the window.
+/// `AllowDarkModeForWindow` ordinal.
 ///
-/// Takes the HWND as a raw `isize` to match the shape that
-/// `raw_window_handle::Win32WindowHandle::hwnd` and `muda::Menu::init_for_hwnd`
-/// both use — this lets the caller pass the same handle to both APIs
-/// without fighting two different pointer types. We convert internally
-/// to `windows-sys`'s `HWND` (which is `*mut c_void`).
+/// The DWM call is what actually darkens the title bar (including the
+/// title text, the window icon, and the min/max/close buttons on
+/// Windows 10 2004+). The per-window uxtheme call opts themed Win32
+/// controls hosted inside the HWND into dark mode — we don't rely on
+/// it for the menu bar (amux draws that with egui on Windows), but
+/// it's retained as defense in depth for any Win32 controls that
+/// might surface later (shell file dialogs, etc.).
+///
+/// Takes the HWND as a raw `isize` to match
+/// `raw_window_handle::Win32WindowHandle::hwnd.get()`, which returns
+/// `NonZeroIsize`. We convert internally to `windows-sys`'s `HWND`
+/// (which is `*mut c_void`).
 ///
 /// Call after `enable_process_dark_mode()`, once the window's HWND is
 /// available (first `App::update()` frame).

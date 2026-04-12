@@ -154,12 +154,19 @@ struct AmuxApp {
     cursor_blink_since: Instant,
     /// Notification sound player (None if no audio device).
     sound_player: Option<system_notify::SoundPlayer>,
-    /// Native menu bar (kept alive for the process lifetime).
+    /// macOS native menu bar (kept alive for the process lifetime).
+    /// Windows/Linux render their menu bar via egui in `menu_bar::draw_egui_menu_bar`
+    /// and don't need a `muda::Menu` instance at all.
+    #[cfg(target_os = "macos")]
     #[allow(dead_code)]
     menu: muda::Menu,
-    /// Whether the menu has been attached to the window (Windows only).
+    /// On Windows, whether the DWM dark title bar chrome has been applied
+    /// to the main window yet. The call needs to happen from the first
+    /// `App::update()` frame because that's the earliest the HWND is
+    /// available via `eframe::Frame::window_handle`. Flipped to `true`
+    /// once successful so we only do it once.
     #[cfg(target_os = "windows")]
-    menu_attached: bool,
+    window_chrome_applied: bool,
     #[cfg(feature = "gpu-renderer")]
     gpu_renderer: Option<GpuRenderer>,
     /// Pending browser pane creation requests (originating_pane_id, URL).
