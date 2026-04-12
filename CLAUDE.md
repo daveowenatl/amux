@@ -66,9 +66,9 @@ Three first-class agent integrations, each using the agent's native event system
 - **tmux compat shim**: `amux install-tmux-shim` routes `tmux` calls to amux for agent scripts written for tmux
 
 ### Configuration
-Config file: `~/.config/amux/config.toml` (or `%APPDATA%\amux\config.toml` on Windows). Covers appearance, notifications, keybindings, and agent overrides. **Full reference in [`docs/configuration.md`](docs/configuration.md)** — it documents every field, the three-layer theme resolution (built-in defaults → `theme_source` → `[colors]` overrides), keybinding syntax, and per-platform defaults. Quick summary of the notable fields:
+Config file: `~/.amux/config.toml` (cross-platform, preferred). On first launch amux writes a fully-populated default config here with every setting and its default value. Falls back to `~/.config/amux/config.toml` on Linux, `~/Library/Application Support/amux/config.toml` on macOS, `%APPDATA%\amux\config.toml` on Windows. Covers appearance, notifications, keybindings, and agent overrides. **Full reference in [`docs/configuration.md`](docs/configuration.md)** — it documents every field, the theme resolution layers, keybinding syntax, and per-platform defaults. Quick summary of the notable fields:
 
-- `theme_source` — `"default"` (amux built-in neutral dark palette) or `"ghostty"` (reads `~/.config/ghostty/config`)
+- `theme_source` — `"default"` (Monokai Classic palette) or `"ghostty"` (reads Ghostty's config)
 - `font_family` / `font_size` — cosmic-text resolved against system fonts
 - `menu_bar_style` — in-window menu presentation on Windows/Linux: `"menubar"` (File/Edit/View strip above the icon row, default on Win/Linux), `"hamburger"` (single `≡` button, space-efficient), or `"none"` (no in-window menu, default on macOS). macOS always uses the NSApp native menu bar regardless of this setting
 - `colors` — per-element overrides on top of the resolved theme
