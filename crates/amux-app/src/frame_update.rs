@@ -191,7 +191,7 @@ impl eframe::App for AmuxApp {
             let count = self.notifications.total_unread();
             if count != self.last_badge_count {
                 #[cfg(target_os = "windows")]
-                if count > self.last_badge_count {
+                if !self.app_focused && count > self.last_badge_count {
                     if let Some(hwnd) = self.cached_hwnd {
                         system_notify::flash_taskbar_window(hwnd);
                     }

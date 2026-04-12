@@ -358,7 +358,7 @@ pub fn flash_taskbar_window(hwnd_raw: isize) {
         cbSize: size,
         hwnd,
         dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG,
-        uCount: 3,
+        uCount: 0, // ignored by FLASHW_TIMERNOFG — flashes until foreground
         dwTimeout: 0,
     };
     unsafe {
