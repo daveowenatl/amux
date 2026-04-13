@@ -285,61 +285,36 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "MSIX_PATH=$msixPath"
 
       - name: Sign MSIX — Azure Trusted Signing
-        if: runner.os == 'Windows' && env.AZURE_TENANT_ID != ''
-        shell: pwsh
-        env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          # Install the Trusted Signing tools
-          dotnet tool install --global AzureSignTool --version 6.*
-
-          # Sign the MSIX package
-          AzureSignTool sign `
-            --azure-key-vault-url "https://${{ secrets.SIGNING_ACCOUNT }}.codesigning.azure.net" `
-            --azure-key-vault-tenant-id "$env:AZURE_TENANT_ID" `
-            --azure-key-vault-client-id "$env:AZURE_CLIENT_ID" `
-            --azure-key-vault-client-secret "$env:AZURE_CLIENT_SECRET" `
-            --azure-key-vault-certificate "${{ secrets.CERT_PROFILE }}" `
-            --timestamp-rfc3161 "http://timestamp.acs.microsoft.com" `
-            --timestamp-digest sha256 `
-            --file-digest sha256 `
-            --verbose `
-            "${{ env.MSIX_PATH }}"
-
-          Write-Host "MSIX signed successfully" -ForegroundColor Green
+        if: runner.os == 'Windows' && secrets.AZURE_TENANT_ID != ''
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://eus.codesigning.azure.net
+          trusted-signing-account-name: ${{ secrets.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.CERT_PROFILE }}
+          files-folder: ${{ github.workspace }}
+          files-folder-filter: msix
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
       - name: Sign EXEs — Azure Trusted Signing
-        if: runner.os == 'Windows' && env.AZURE_TENANT_ID != ''
-        shell: pwsh
-        env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $staging = "amux-${{ matrix.target }}"
-
-          # Sign the standalone EXEs in the zip archive staging dir
-          # so the non-MSIX download is also signed.
-          $exes = Get-ChildItem "$staging\*.exe"
-          foreach ($exe in $exes) {
-              AzureSignTool sign `
-                --azure-key-vault-url "https://${{ secrets.SIGNING_ACCOUNT }}.codesigning.azure.net" `
-                --azure-key-vault-tenant-id "$env:AZURE_TENANT_ID" `
-                --azure-key-vault-client-id "$env:AZURE_CLIENT_ID" `
-                --azure-key-vault-client-secret "$env:AZURE_CLIENT_SECRET" `
-                --azure-key-vault-certificate "${{ secrets.CERT_PROFILE }}" `
-                --timestamp-rfc3161 "http://timestamp.acs.microsoft.com" `
-                --timestamp-digest sha256 `
-                --file-digest sha256 `
-                "$($exe.FullName)"
-              Write-Host "Signed: $($exe.Name)"
-          }
-          Write-Host "All EXEs signed" -ForegroundColor Green
+        if: runner.os == 'Windows' && secrets.AZURE_TENANT_ID != ''
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://eus.codesigning.azure.net
+          trusted-signing-account-name: ${{ secrets.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.CERT_PROFILE }}
+          files-folder: amux-${{ matrix.target }}
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
