@@ -275,8 +275,15 @@ jobs:
 
       # Sign EXEs BEFORE creating the zip so the archive contains
       # signed binaries. Sign MSIX separately after MakeAppx.
+      # The Azure identity SDK checks AZURE_* env vars via
+      # DefaultAzureCredential, so we set them in addition to
+      # passing them as action inputs.
       - name: Sign EXEs — Azure Trusted Signing
         if: runner.os == 'Windows' && vars.SIGNING_ENABLED == 'true'
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         uses: azure/trusted-signing-action@v1.2.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -293,6 +300,10 @@ jobs:
 
       - name: Sign MSIX — Azure Trusted Signing
         if: runner.os == 'Windows' && vars.SIGNING_ENABLED == 'true'
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         uses: azure/trusted-signing-action@v1.2.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
