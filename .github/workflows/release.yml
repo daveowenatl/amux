@@ -322,6 +322,8 @@ jobs:
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
+          trace: true
+          exclude-azure-cli-credential: true
 
       - name: Sign MSIX — Azure Trusted Signing
         if: runner.os == 'Windows' && vars.SIGNING_ENABLED == 'true'
