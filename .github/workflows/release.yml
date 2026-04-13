@@ -65,7 +65,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.target }}
+          # Include a hash of the lockfile so a libghostty-vt rev bump
+          # invalidates the cache (prevents stale DLL candidates from
+          # coexisting with the new one — see the multi-DLL guard below).
+          key: release-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
 
       - name: Build release binaries
         shell: bash
