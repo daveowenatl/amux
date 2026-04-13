@@ -285,7 +285,9 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "MSIX_PATH=$msixPath"
 
       - name: Sign MSIX — Azure Trusted Signing
-        if: runner.os == 'Windows' && secrets.AZURE_TENANT_ID != ''
+        if: runner.os == 'Windows' && env.HAS_SIGNING_SECRETS == 'true'
+        env:
+          HAS_SIGNING_SECRETS: ${{ secrets.AZURE_TENANT_ID != '' }}
         uses: azure/trusted-signing-action@v0.5.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -301,7 +303,9 @@ jobs:
           timestamp-digest: SHA256
 
       - name: Sign EXEs — Azure Trusted Signing
-        if: runner.os == 'Windows' && secrets.AZURE_TENANT_ID != ''
+        if: runner.os == 'Windows' && env.HAS_SIGNING_SECRETS == 'true'
+        env:
+          HAS_SIGNING_SECRETS: ${{ secrets.AZURE_TENANT_ID != '' }}
         uses: azure/trusted-signing-action@v0.5.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
