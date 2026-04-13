@@ -388,7 +388,33 @@ pub(crate) fn run() -> anyhow::Result<()> {
     let state = if let Some(session) = restored {
         restore_session(&session, &ipc_addr, &socket_token, &config, shell_override)
     } else {
-        fresh_startup(&ipc_addr, &socket_token, &config, shell_override)?
+        match fresh_startup(&ipc_addr, &socket_token, &config, shell_override) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to spawn initial shell: {e}");
+                // Show a message box on Windows so GUI-mode users see
+                // the error instead of a silent exit.
+                #[cfg(target_os = "windows")]
+                {
+                    use std::ffi::CString;
+                    let msg = CString::new(format!(
+                        "amux failed to start:\n\n{e}\n\nCheck that your shell \
+                         is installed and on PATH."
+                    ))
+                    .unwrap_or_default();
+                    let title = CString::new("amux").unwrap_or_default();
+                    unsafe {
+                        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxA(
+                            std::ptr::null_mut(),
+                            msg.as_ptr() as *const u8,
+                            title.as_ptr() as *const u8,
+                            windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+                        );
+                    }
+                }
+                return Err(e);
+            }
+        }
     };
 
     // Force dark appearance on macOS so the title bar matches the app's dark chrome.
