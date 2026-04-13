@@ -21,15 +21,15 @@ packaging/msix/
 ## CI Integration
 
 The release workflow (`.github/workflows/release.yml`) automatically builds
-an unsigned `.msix` package on every Windows release build:
+the `.msix` package on every Windows release build:
 
 1. Stages binaries + `AppxManifest.xml` + `Assets/` into a staging directory
 2. Updates the manifest version from the git tag (`v1.2.3` → `1.2.3.0`)
 3. Generates `resources.pri` via `MakePri.exe` (Windows SDK)
 4. Builds the `.msix` via `MakeAppx.exe`
-5. Uploads the `.msix` as a release artifact
-
-**The package is currently unsigned.** See "Code Signing" below.
+5. Signs the `.msix` + standalone `.exe` files via Azure Trusted Signing
+   (skipped if secrets aren't configured — produces an unsigned package)
+6. Uploads the `.msix` as a release artifact
 
 ## Prerequisites (Manual Builds)
 
@@ -132,9 +132,59 @@ Add-AppxPackage -AppInstallerFile amux.appinstaller
 Get-AppxPackage *amux* | Remove-AppxPackage
 ```
 
+## Azure Trusted Signing Setup
+
+The release workflow signs automatically when these GitHub Actions secrets
+are configured. Without them, signing is skipped and the `.msix` is unsigned.
+
+### 1. Create Azure resources
+
+1. Create an Azure account at https://portal.azure.com
+2. Create a **Trusted Signing** resource (search "Trusted Signing" in the portal)
+3. Complete identity verification (personal or organization)
+4. Create a **certificate profile** in the Trusted Signing resource
+
+### 2. Create a service principal
+
+```bash
+# Create an app registration for GitHub Actions
+az ad app create --display-name "amux-signing"
+
+# Note the appId (CLIENT_ID) and tenant (TENANT_ID) from output
+# Create a secret:
+az ad app credential reset --id <appId>
+# Note the password (CLIENT_SECRET)
+```
+
+Grant the service principal the "Trusted Signing Certificate Profile Signer"
+role on your Trusted Signing account in the Azure portal.
+
+### 3. Add GitHub secrets
+
+Go to **Settings → Secrets and variables → Actions** in the amux repo:
+
+| Secret | Value |
+|--------|-------|
+| `AZURE_TENANT_ID` | Your Azure AD tenant ID |
+| `AZURE_CLIENT_ID` | Service principal app ID |
+| `AZURE_CLIENT_SECRET` | Service principal password |
+| `SIGNING_ACCOUNT` | Trusted Signing account name (just the name, not the full URL) |
+| `CERT_PROFILE` | Certificate profile name |
+
+### 4. Update the manifest publisher
+
+Update the `Publisher` field in `AppxManifest.xml` and `amux.appinstaller`
+to match the subject of the Trusted Signing certificate exactly. Azure
+Trusted Signing certificates typically use a subject like
+`CN=<your org name>, O=<your org name>`.
+
+### 5. Verify
+
+Push a tag (`git tag v0.1.0 && git push --tags`) or trigger a manual
+workflow dispatch. The signing steps will run after MakeAppx and sign
+both the `.msix` and the standalone `.exe` files.
+
 ## Remaining Work
 
-- [ ] Set up Azure Trusted Signing and wire secrets into CI
-- [ ] Add signing step to the release workflow after MakeAppx
 - [ ] Test sideloading and auto-update flow end-to-end
 - [ ] Optional: submit to Microsoft Store ($19 one-time fee)
