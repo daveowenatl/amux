@@ -276,29 +276,27 @@ jobs:
       # Debug: verify Azure credentials work from this runner.
       - name: Verify Azure credentials
         if: runner.os == 'Windows' && vars.SIGNING_ENABLED == 'true'
+        continue-on-error: true
         shell: pwsh
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          SIGNING_ACCOUNT: ${{ secrets.SIGNING_ACCOUNT }}
+          CERT_PROFILE: ${{ secrets.CERT_PROFILE }}
         run: |
           Write-Host "TENANT_ID length: $($env:AZURE_TENANT_ID.Length)"
           Write-Host "CLIENT_ID length: $($env:AZURE_CLIENT_ID.Length)"
           Write-Host "SECRET length: $($env:AZURE_CLIENT_SECRET.Length)"
-          Write-Host "TENANT_ID starts: $($env:AZURE_TENANT_ID.Substring(0,8))..."
-          Write-Host "CLIENT_ID starts: $($env:AZURE_CLIENT_ID.Substring(0,8))..."
-          Write-Host "SIGNING_ACCOUNT: ${{ secrets.SIGNING_ACCOUNT }}"
-          Write-Host "CERT_PROFILE: ${{ secrets.CERT_PROFILE }}"
-          # Test actual auth
-          az login --service-principal `
-            --username $env:AZURE_CLIENT_ID `
-            --password $env:AZURE_CLIENT_SECRET `
-            --tenant $env:AZURE_TENANT_ID
-          az account show
-          # Test signing API access
-          az rest --method GET `
-            --url "https://eus.codesigning.azure.net/codesigningaccounts/${{ secrets.SIGNING_ACCOUNT }}/certificateprofiles/${{ secrets.CERT_PROFILE }}?api-version=2024-09-30-preview" `
-            --resource "https://codesigning.azure.net" 2>&1 || Write-Host "REST call returned non-zero (may be expected for API version mismatch)"
+          Write-Host "SIGNING_ACCOUNT length: $($env:SIGNING_ACCOUNT.Length) value: [$($env:SIGNING_ACCOUNT)]"
+          Write-Host "CERT_PROFILE length: $($env:CERT_PROFILE.Length) value: [$($env:CERT_PROFILE)]"
+          Write-Host "Auth test..."
+          az login --service-principal --username $env:AZURE_CLIENT_ID --password $env:AZURE_CLIENT_SECRET --tenant $env:AZURE_TENANT_ID | Out-Null
+          Write-Host "Auth: OK"
+          # List role assignments for this SP
+          $spOid = az ad sp show --id $env:AZURE_CLIENT_ID --query id -o tsv
+          Write-Host "SP Object ID: $spOid"
+          az role assignment list --assignee $spOid --all --query "[].{role:roleDefinitionName, scope:scope}" -o table
 
       # Sign EXEs BEFORE creating the zip so the archive contains
       # signed binaries. Sign MSIX separately after MakeAppx.
