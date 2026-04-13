@@ -1,3 +1,10 @@
+// On Windows, declare this as a GUI application so it doesn't
+// allocate a console window on launch. Without this, launching
+// from the Start menu / MSIX / Explorer creates a visible console
+// host that flashes briefly (or stays open). Debug/development
+// builds launched from a terminal still inherit the parent console.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod find_bar;
 mod fonts;
 mod frame_update;
