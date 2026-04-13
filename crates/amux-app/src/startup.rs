@@ -289,8 +289,38 @@ fn cleanup_legacy_claude_hooks_in_settings() {
     }
 }
 
+/// Show a Windows MessageBox with an error message. No-op on other platforms.
+#[cfg(target_os = "windows")]
+fn show_error_dialog(msg: &str) {
+    use std::ffi::CString;
+    let msg = CString::new(msg).unwrap_or_default();
+    let title = CString::new("amux").unwrap_or_default();
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxA(
+            std::ptr::null_mut(),
+            msg.as_ptr() as *const u8,
+            title.as_ptr() as *const u8,
+            windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+        );
+    }
+}
+
 pub(crate) fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+
+    // Install a panic hook that shows a MessageBox on Windows.
+    // With windows_subsystem = "windows", panics are completely
+    // invisible — the default handler writes to stderr which
+    // doesn't exist. This ensures the user sees something.
+    #[cfg(target_os = "windows")]
+    {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let msg = format!("amux crashed:\n\n{info}");
+            show_error_dialog(&msg);
+            default_hook(info);
+        }));
+    }
 
     // Windows: opt the process into dark-mode themed controls before any
     // windows are created. Must happen before `eframe::run_native` so the
@@ -392,26 +422,11 @@ pub(crate) fn run() -> anyhow::Result<()> {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("Failed to spawn initial shell: {e}");
-                // Show a message box on Windows so GUI-mode users see
-                // the error instead of a silent exit.
                 #[cfg(target_os = "windows")]
-                {
-                    use std::ffi::CString;
-                    let msg = CString::new(format!(
-                        "amux failed to start:\n\n{e}\n\nCheck that your shell \
-                         is installed and on PATH."
-                    ))
-                    .unwrap_or_default();
-                    let title = CString::new("amux").unwrap_or_default();
-                    unsafe {
-                        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxA(
-                            std::ptr::null_mut(),
-                            msg.as_ptr() as *const u8,
-                            title.as_ptr() as *const u8,
-                            windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
-                        );
-                    }
-                }
+                show_error_dialog(&format!(
+                    "amux failed to start:\n\n{e}\n\nCheck that your shell \
+                     is installed and on PATH."
+                ));
                 return Err(e);
             }
         }
@@ -457,6 +472,8 @@ pub(crate) fn run() -> anyhow::Result<()> {
         })),
         ..Default::default()
     };
+
+    tracing::info!("Launching window (eframe::run_native)");
 
     let ipc_addr_cleanup = ipc_addr.clone();
     let result = eframe::run_native(
@@ -533,7 +550,13 @@ pub(crate) fn run() -> anyhow::Result<()> {
             }))
         }),
     )
-    .map_err(|e| anyhow::anyhow!("{}", e));
+    .map_err(|e| {
+        let msg = format!("{e}");
+        tracing::error!("eframe::run_native failed: {msg}");
+        #[cfg(target_os = "windows")]
+        show_error_dialog(&format!("amux window failed to open:\n\n{msg}"));
+        anyhow::anyhow!("{msg}")
+    });
 
     cleanup_addr(&ipc_addr_cleanup);
     result
