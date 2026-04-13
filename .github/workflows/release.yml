@@ -201,15 +201,6 @@ jobs:
           # Surface the artifact path for the upload step.
           echo "ARCHIVE_PATH=${staging}.tar.gz" >> "$GITHUB_ENV"
 
-      - name: Archive (zip) — Windows
-        if: matrix.archive_ext == 'zip'
-        shell: pwsh
-        run: |
-          $staging = "amux-${{ matrix.target }}"
-          Compress-Archive -Path $staging -DestinationPath "$staging.zip" -Force
-          # Surface the artifact path for the upload step.
-          Add-Content -Path $env:GITHUB_ENV -Value "ARCHIVE_PATH=$staging.zip"
-
       - name: Build MSIX package — Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -256,10 +247,8 @@ jobs:
           Write-Host "MSIX version: $msixVersion"
 
           # 3. Generate resources.pri (required by MakeAppx for icon assets).
-          #    Find MakePri.exe from Windows SDK.
-          # Find the newest Windows SDK version by sorting on the parent
-          # version directory name (e.g. "10.0.22621.0"), not the "x64"
-          # leaf which is the same for every SDK installation.
+          #    Find the newest Windows SDK by sorting on the parent version
+          #    directory name (e.g. "10.0.22621.0"), not the "x64" leaf.
           $sdkBin = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\10.*\x64" -Directory |
                     Sort-Object { [version]$_.Parent.Name } -Descending | Select-Object -First 1
           if (-not $sdkBin) {
@@ -284,16 +273,32 @@ jobs:
           # Surface for upload
           Add-Content -Path $env:GITHUB_ENV -Value "MSIX_PATH=$msixPath"
 
-      - name: Sign MSIX — Azure Trusted Signing
-        if: runner.os == 'Windows' && env.HAS_SIGNING_SECRETS == 'true'
-        env:
-          HAS_SIGNING_SECRETS: ${{ secrets.AZURE_TENANT_ID != '' }}
+      # Sign EXEs BEFORE creating the zip so the archive contains
+      # signed binaries. Sign MSIX separately after MakeAppx.
+      - name: Sign EXEs — Azure Trusted Signing
+        if: runner.os == 'Windows' && vars.SIGNING_ENABLED == 'true'
         uses: azure/trusted-signing-action@v0.5.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
           azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          endpoint: https://eus.codesigning.azure.net
+          endpoint: ${{ vars.SIGNING_ENDPOINT || 'https://eus.codesigning.azure.net' }}
+          trusted-signing-account-name: ${{ secrets.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.CERT_PROFILE }}
+          files-folder: amux-${{ matrix.target }}
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign MSIX — Azure Trusted Signing
+        if: runner.os == 'Windows' && vars.SIGNING_ENABLED == 'true'
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.SIGNING_ENDPOINT || 'https://eus.codesigning.azure.net' }}
           trusted-signing-account-name: ${{ secrets.SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ secrets.CERT_PROFILE }}
           files-folder: ${{ github.workspace }}
@@ -302,23 +307,14 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
-      - name: Sign EXEs — Azure Trusted Signing
-        if: runner.os == 'Windows' && env.HAS_SIGNING_SECRETS == 'true'
-        env:
-          HAS_SIGNING_SECRETS: ${{ secrets.AZURE_TENANT_ID != '' }}
-        uses: azure/trusted-signing-action@v0.5.0
-        with:
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          endpoint: https://eus.codesigning.azure.net
-          trusted-signing-account-name: ${{ secrets.SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ secrets.CERT_PROFILE }}
-          files-folder: amux-${{ matrix.target }}
-          files-folder-filter: exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
+      # Create the Windows zip AFTER signing so it contains signed EXEs.
+      - name: Archive (zip) — Windows
+        if: matrix.archive_ext == 'zip'
+        shell: pwsh
+        run: |
+          $staging = "amux-${{ matrix.target }}"
+          Compress-Archive -Path $staging -DestinationPath "$staging.zip" -Force
+          Add-Content -Path $env:GITHUB_ENV -Value "ARCHIVE_PATH=$staging.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

@@ -147,29 +147,41 @@ are configured. Without them, signing is skipped and the `.msix` is unsigned.
 ### 2. Create a service principal
 
 ```bash
-# Create an app registration for GitHub Actions
-az ad app create --display-name "amux-signing"
+# Create an app registration + service principal in one step.
+# Save the appId (CLIENT_ID) and password (CLIENT_SECRET) from the output.
+az ad sp create-for-rbac --name "amux-github-signing"
 
-# Note the appId (CLIENT_ID) and tenant (TENANT_ID) from output
-# Create a secret:
-az ad app credential reset --id <appId>
-# Note the password (CLIENT_SECRET)
+# Get the service principal's object ID for role assignment:
+az ad sp show --id <appId> --query id -o tsv
+
+# Grant it permission to sign with your certificate:
+az role assignment create \
+  --assignee-object-id <objectId> \
+  --assignee-principal-type ServicePrincipal \
+  --role "Artifact Signing Certificate Profile Signer" \
+  --scope "/subscriptions/<SUB_ID>/resourceGroups/<RG>/providers/Microsoft.CodeSigning/codeSigningAccounts/<ACCOUNT>"
 ```
 
-Grant the service principal the "Trusted Signing Certificate Profile Signer"
-role on your Trusted Signing account in the Azure portal.
+### 3. Add GitHub secrets and variables
 
-### 3. Add GitHub secrets
+Go to **Settings → Secrets and variables → Actions** in the amux repo.
 
-Go to **Settings → Secrets and variables → Actions** in the amux repo:
+**Secrets:**
 
 | Secret | Value |
 |--------|-------|
-| `AZURE_TENANT_ID` | Your Azure AD tenant ID |
+| `AZURE_TENANT_ID` | Your Azure AD tenant ID (`az account show --query tenantId`) |
 | `AZURE_CLIENT_ID` | Service principal app ID |
 | `AZURE_CLIENT_SECRET` | Service principal password |
 | `SIGNING_ACCOUNT` | Trusted Signing account name (just the name, not the full URL) |
 | `CERT_PROFILE` | Certificate profile name |
+
+**Variables** (Settings → Secrets and variables → Actions → Variables tab):
+
+| Variable | Value |
+|----------|-------|
+| `SIGNING_ENABLED` | `true` (enables the signing steps) |
+| `SIGNING_ENDPOINT` | *(optional)* Override the Trusted Signing endpoint if your account is not in East US. Default: `https://eus.codesigning.azure.net` |
 
 ### 4. Update the manifest publisher
 
