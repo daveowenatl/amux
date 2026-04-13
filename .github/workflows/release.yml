@@ -298,11 +298,17 @@ jobs:
           Write-Host "SP Object ID: $spOid"
           az role assignment list --assignee $spOid --all --query "[].{role:roleDefinitionName, scope:scope}" -o table
 
+      # Establish an Azure CLI session so the Trusted Signing dlib
+      # can pick up the credential via AzureCliCredential in the
+      # DefaultAzureCredential chain.
+      - name: Azure Login
+        if: runner.os == 'Windows' && vars.SIGNING_ENABLED == 'true'
+        uses: azure/login@v2
+        with:
+          creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}","subscriptionId":"1b6edf01-7bb1-4fb7-8447-3fcc2eead97d"}'
+
       # Sign EXEs BEFORE creating the zip so the archive contains
       # signed binaries. Sign MSIX separately after MakeAppx.
-      # The Azure identity SDK checks AZURE_* env vars via
-      # DefaultAzureCredential, so we set them in addition to
-      # passing them as action inputs.
       - name: Sign EXEs — Azure Trusted Signing
         if: runner.os == 'Windows' && vars.SIGNING_ENABLED == 'true'
         env:
@@ -323,7 +329,6 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
           trace: true
-          exclude-azure-cli-credential: true
 
       - name: Sign MSIX — Azure Trusted Signing
         if: runner.os == 'Windows' && vars.SIGNING_ENABLED == 'true'
