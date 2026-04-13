@@ -22,7 +22,7 @@
   <Identity
     Name="DaveOwen.amux"
     Version="0.1.0.0"
-    Publisher="CN=PLACEHOLDER, O=PLACEHOLDER, L=PLACEHOLDER, S=PLACEHOLDER, C=US"
+    Publisher="CN=amux-dev, O=Dev, L=Local, S=Dev, C=US"
     ProcessorArchitecture="x64" />
 
   <Properties>
