@@ -123,5 +123,5 @@ amux-browser = { path = "crates/amux-browser" }
 # entirely once ghostty bumps past uucode 0.2.0 or upstream uucode fixes the
 # `b.path("")` resolution bug.
 [patch.crates-io]
-libghostty-vt = { git = "https://github.com/daveowenatl/libghostty-rs", rev = "6153355ae9ca440a933477614e38bdc324ab4d0d" }
-libghostty-vt-sys = { git = "https://github.com/daveowenatl/libghostty-rs", rev = "6153355ae9ca440a933477614e38bdc324ab4d0d" }
+libghostty-vt = { git = "https://github.com/daveowenatl/libghostty-rs", rev = "df2c639f681f1b0c96dfcb1b3345176e89a4a613" }
+libghostty-vt-sys = { git = "https://github.com/daveowenatl/libghostty-rs", rev = "df2c639f681f1b0c96dfcb1b3345176e89a4a613" }
