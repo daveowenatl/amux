@@ -633,6 +633,7 @@ impl AmuxApp {
             saved_workspaces.push(amux_session::SavedWorkspace {
                 id: ws.id,
                 title: ws.title.clone(),
+                user_title: ws.user_title.clone(),
                 tree: ws.tree.clone(),
                 focused_pane: ws.focused_pane,
                 zoomed: ws.zoomed,

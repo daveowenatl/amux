@@ -113,7 +113,8 @@ impl AmuxApp {
                 match self.rename_modal.as_ref().unwrap().target {
                     RenameTarget::Workspace(ws_id) => {
                         if let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == ws_id) {
-                            ws.title = new_name;
+                            ws.title = new_name.clone();
+                            ws.user_title = Some(new_name);
                         }
                     }
                     RenameTarget::Tab {

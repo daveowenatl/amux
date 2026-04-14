@@ -73,6 +73,10 @@ pub struct SessionData {
 pub struct SavedWorkspace {
     pub id: u64,
     pub title: String,
+    /// User-set title from the rename modal. Takes precedence over
+    /// agent-derived titles in the sidebar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_title: Option<String>,
     pub tree: PaneTree,
     pub focused_pane: u64,
     #[serde(default)]
@@ -320,6 +324,7 @@ mod tests {
             workspaces: vec![SavedWorkspace {
                 id: 0,
                 title: "default".to_string(),
+                user_title: None,
                 tree,
                 focused_pane: 0,
                 zoomed: None,

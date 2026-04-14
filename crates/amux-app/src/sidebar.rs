@@ -323,7 +323,13 @@ fn render_workspace_row(
 
     // Compute title text early so we can measure if it needs two lines.
     let title_font = crate::fonts::bold_font(TITLE_FONT_SIZE);
-    let display_title = if let Some(task) = status.as_ref().and_then(|s| s.task.as_ref()) {
+    // Title priority: user-set name (sticky) > agent task > surface
+    // title > default workspace name. A user who explicitly renamed
+    // the workspace via the rename modal should not have their choice
+    // overwritten by agent status or auto-detected titles.
+    let display_title = if let Some(ref ut) = ws.user_title {
+        ut.clone()
+    } else if let Some(task) = status.as_ref().and_then(|s| s.task.as_ref()) {
         format!("\u{2731} {task}")
     } else if let Some(st) = metadata.and_then(|m| m.surface_title.as_ref()) {
         st.clone()
