@@ -44,9 +44,7 @@ use amux_core::model::{DragState, SidebarState, Workspace};
 use amux_core::shell;
 use amux_ipc::IpcCommand;
 use amux_layout::{NavDirection, PaneId, PaneTree, SplitDirection};
-use amux_notify::{
-    flash_alpha, FlashReason, NotificationSource, NotificationStore, FLASH_DURATION,
-};
+use amux_notify::{flash_alpha, NotificationSource, NotificationStore, FLASH_DURATION};
 use amux_session::SessionData;
 use amux_term::config::AmuxTermConfig;
 use amux_term::font;
@@ -377,19 +375,7 @@ impl AmuxApp {
 
             // Clear notifications on the newly focused pane
             self.notifications.mark_pane_read(pane_id);
-            // Navigation flash — but suppress if other panes have unread
-            let pane_ids: Vec<u64> = self.active_workspace().tree.iter_panes();
-            if !self.notifications.has_unread_excluding(&pane_ids, pane_id) {
-                self.notifications
-                    .flash_pane(pane_id, FlashReason::Navigation);
-            }
         }
-    }
-
-    fn flash_focus(&mut self) {
-        let pane_id = self.focused_pane_id();
-        self.notifications
-            .flash_pane(pane_id, FlashReason::Navigation);
     }
 
     fn focused_pane_id(&self) -> PaneId {

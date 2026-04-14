@@ -1014,10 +1014,7 @@ impl AmuxApp {
                 let elapsed = started.elapsed().as_secs_f32();
                 if elapsed < FLASH_DURATION {
                     let alpha = flash_alpha(elapsed);
-                    let base_color = match state.flash_reason {
-                        Some(FlashReason::Navigation) => [0u8, 128, 128], // teal
-                        _ => [40, 120, 255],                              // blue
-                    };
+                    let base_color = [40u8, 120, 255]; // blue
                     let glow_alpha = (alpha * 0.6 * 255.0) as u8;
                     let ring_alpha = (alpha * 255.0) as u8;
                     // Glow (wider, more transparent). Anchor on ring_rect with
