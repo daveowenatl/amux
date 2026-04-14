@@ -229,14 +229,16 @@ jobs:
 
           # 2. Update the version in AppxManifest.xml from the git tag.
           #    MSIX requires a four-part version (Major.Minor.Patch.Revision).
-          #    On workflow_dispatch (manual runs without a tag), use 0.0.0.0
-          #    so the build still succeeds for testing.
+          #    Tagged releases: v1.2.3 → 1.2.3.0
+          #    Dev builds (workflow_dispatch): 0.0.0.<run_number> — always
+          #    incrementing so each build upgrades in-place over the previous
+          #    one, and below any real semver release.
           $refName = "${{ github.ref_name }}"
           if ($refName -match '^\d+\.' -or $refName -match '^v\d+\.') {
               $tag = $refName -replace '^v', ''
           } else {
-              $tag = '0.0.0'
-              Write-Host "Not a version tag ($refName), using fallback version"
+              $tag = "0.0.0.${{ github.run_number }}"
+              Write-Host "Not a version tag ($refName), using dev version: $tag"
           }
           $parts = $tag -split '\.'
           while ($parts.Count -lt 4) { $parts += '0' }
