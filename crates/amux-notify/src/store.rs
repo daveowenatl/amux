@@ -582,9 +582,9 @@ mod tests {
     #[test]
     fn flash_pane_sets_flash() {
         let mut store = NotificationStore::new();
-        store.flash_pane(10, FlashReason::Navigation);
+        store.flash_pane(10, FlashReason::NotificationArrival);
         let state = store.pane_state(10).unwrap();
-        assert_eq!(state.flash_reason, Some(FlashReason::Navigation));
+        assert_eq!(state.flash_reason, Some(FlashReason::NotificationArrival));
         assert!(state.flash_started_at.is_some());
         assert_eq!(state.unread_count, 0);
     }

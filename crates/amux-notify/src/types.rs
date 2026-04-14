@@ -39,8 +39,6 @@ impl NotificationSource {
 /// Why a pane is flashing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlashReason {
-    /// Pane received focus via keyboard nav or click (teal).
-    Navigation,
     /// A notification just arrived (blue).
     NotificationArrival,
     /// A notification was dismissed (blue).

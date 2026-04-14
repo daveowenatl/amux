@@ -445,8 +445,6 @@ impl AmuxApp {
             let ws = self.active_workspace();
             if let Some(neighbor) = ws.tree.neighbor(ws.focused_pane, dir, rect) {
                 self.set_focus(neighbor);
-            } else {
-                self.flash_focus();
             }
         }
         true
