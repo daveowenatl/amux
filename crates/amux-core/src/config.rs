@@ -28,7 +28,7 @@ pub struct ColorsConfig {
     pub accent: Option<String>,
     /// Sidebar background color.
     pub sidebar_bg: Option<String>,
-    /// Notification ring color (the blue ring on panes with unread notifications).
+    /// Notification ring color (the ring shown on panes with unread notifications).
     pub notification_ring: Option<String>,
     /// Unfocused pane dim overlay alpha (0 = no dimming, 255 = fully opaque).
     /// Default: 100 (~39% opacity black overlay).
