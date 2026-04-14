@@ -637,52 +637,6 @@ impl AmuxApp {
             });
         }
 
-        let notifications: Vec<amux_session::SavedNotification> = self
-            .notifications
-            .all_notifications()
-            .iter()
-            .map(|n| amux_session::SavedNotification {
-                id: n.id,
-                workspace_id: n.workspace_id,
-                pane_id: n.pane_id,
-                surface_id: n.surface_id,
-                title: n.title.clone(),
-                subtitle: n.subtitle.clone(),
-                body: n.body.clone(),
-                source: match n.source {
-                    NotificationSource::Toast => "toast",
-                    NotificationSource::Bell => "bell",
-                    NotificationSource::Cli => "cli",
-                }
-                .to_string(),
-                read: n.read,
-            })
-            .collect();
-
-        let workspace_statuses: std::collections::HashMap<u64, amux_session::SavedWorkspaceStatus> =
-            self.workspaces
-                .iter()
-                .filter_map(|ws| {
-                    self.notifications.workspace_status(ws.id).map(|status| {
-                        (
-                            ws.id,
-                            amux_session::SavedWorkspaceStatus {
-                                state: match status.state {
-                                    amux_notify::AgentState::Active => "active",
-                                    amux_notify::AgentState::Waiting => "waiting",
-                                    amux_notify::AgentState::Idle => "idle",
-                                }
-                                .to_string(),
-                                label: status.label.clone(),
-                                // task/message are transient agent state — don't persist
-                                task: None,
-                                message: None,
-                            },
-                        )
-                    })
-                })
-                .collect();
-
         SessionData {
             version: 1,
             saved_at: chrono_now(),
@@ -695,8 +649,6 @@ impl AmuxApp {
                 visible: self.sidebar.visible,
                 width: self.sidebar.width,
             },
-            notifications,
-            workspace_statuses,
         }
     }
 }

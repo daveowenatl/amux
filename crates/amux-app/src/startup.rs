@@ -766,28 +766,10 @@ pub(crate) fn restore_session(
         drag: None,
     };
 
-    // Restore only already-read notifications (unread ones are stale — the
-    // agent that created them is gone after restart).
-    let mut store = NotificationStore::new();
-    for saved_n in &session.notifications {
-        if !saved_n.read {
-            continue;
-        }
-        let source = match saved_n.source.as_str() {
-            "toast" => NotificationSource::Toast,
-            "bell" => NotificationSource::Bell,
-            _ => NotificationSource::Cli,
-        };
-        store.push_restored(
-            saved_n.workspace_id,
-            saved_n.pane_id,
-            saved_n.surface_id,
-            saved_n.title.clone(),
-            saved_n.subtitle.clone(),
-            saved_n.body.clone(),
-            source,
-        );
-    }
+    // Don't restore notifications — they're from dead agent sessions
+    // that can't be reattached. Starting fresh avoids stale unread
+    // badges in the sidebar. See #244.
+    let store = NotificationStore::new();
 
     // Don't restore workspace statuses — agent processes don't survive restart,
     // so any Active/Waiting state would be stale. They start as Idle implicitly.
