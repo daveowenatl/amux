@@ -981,7 +981,8 @@ pub(crate) fn spawn_surface(
         byte_rx,
         scroll_offset: 0,
         scroll_accum: 0.0,
-        last_scroll_at: Instant::now(),
+        // Use a past instant so the scrollbar doesn't flash on startup.
+        last_scroll_at: Instant::now() - Duration::from_secs(10),
         metadata,
         user_title: None,
         exited: None,
