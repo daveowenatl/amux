@@ -161,15 +161,12 @@ impl TerminalSnapshot {
                 let mut fg = color_to_f32(fg_color);
                 let mut bg = color_to_f32(bg_color);
 
-                // Apply selection highlighting (swap fg/bg)
+                // Apply selection highlighting using theme colors
                 let stable_row = start + row_idx;
                 if let Some(ref sel) = selection {
                     if sel.contains(col_idx, stable_row) {
-                        std::mem::swap(&mut fg, &mut bg);
-                        if bg == default_bg {
-                            fg = color_to_f32(palette.background);
-                            bg = color_to_f32(palette.foreground);
-                        }
+                        bg = color_to_f32(palette.selection_bg);
+                        fg = color_to_f32(palette.selection_fg);
                     }
                 }
 

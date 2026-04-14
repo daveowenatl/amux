@@ -808,9 +808,10 @@ impl AmuxApp {
             let (_, viewport_rows) = surface.pane.dimensions();
             if total_rows > viewport_rows {
                 let max_offset = total_rows - viewport_rows;
-                let bar_width = 6.0_f32;
+                let bar_width_default = 4.0_f32;
+                let bar_width_hover = 8.0_f32;
                 let hit_width = 16.0_f32;
-                let bar_margin = 2.0_f32;
+                let bar_margin = 4.0_f32;
                 let track_top = content_rect.min.y + 2.0;
                 let track_bottom = content_rect.max.y - 2.0;
                 let track_height = (track_bottom - track_top).max(0.0);
@@ -824,17 +825,7 @@ impl AmuxApp {
                     let scroll_frac = surface.scroll_offset as f32 / max_offset as f32;
                     let thumb_top = track_top + available * (1.0 - scroll_frac);
 
-                    let thumb_rect = egui::Rect::from_min_size(
-                        egui::pos2(content_rect.max.x - bar_width - bar_margin, thumb_top),
-                        egui::vec2(bar_width, thumb_height),
-                    );
-
-                    // Expanded thumb hit rect for easier grabbing
-                    let thumb_hit = egui::Rect::from_min_max(
-                        egui::pos2(content_rect.max.x - hit_width, thumb_top),
-                        egui::pos2(content_rect.max.x, thumb_top + thumb_height),
-                    );
-
+                    // Check hover/drag state first to pick the thumb width
                     let hit_left = content_rect.max.x - hit_width;
                     let pointer_pos = ui.input(|i| i.pointer.hover_pos());
                     let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
@@ -844,6 +835,26 @@ impl AmuxApp {
                     let in_hit_zone = pointer_pos.is_some_and(|p| {
                         p.x >= hit_left && p.y >= track_top && p.y <= track_bottom
                     });
+
+                    // Expand thumb width on hover for easier grabbing
+                    let is_dragging_this = self
+                        .scrollbar_drag
+                        .as_ref()
+                        .is_some_and(|d| d.pane_id == pane_id);
+                    let bar_width = if in_hit_zone || is_dragging_this {
+                        bar_width_hover
+                    } else {
+                        bar_width_default
+                    };
+
+                    let thumb_rect = egui::Rect::from_min_size(
+                        egui::pos2(content_rect.max.x - bar_width - bar_margin, thumb_top),
+                        egui::vec2(bar_width, thumb_height),
+                    );
+                    let thumb_hit = egui::Rect::from_min_max(
+                        egui::pos2(content_rect.max.x - hit_width, thumb_top),
+                        egui::pos2(content_rect.max.x, thumb_top + thumb_height),
+                    );
                     let on_thumb = pointer_pos.is_some_and(|p| thumb_hit.contains(p));
 
                     // Drag state machine
