@@ -796,17 +796,60 @@ impl AmuxApp {
         );
 
         // Scrollbar overlay — thin, auto-hiding, drawn on top of content.
+        // Captures a scroll-jump target if the user clicks/drags in the
+        // scrollbar track; applied mutably after this block.
+        let mut scrollbar_jump: Option<usize> = None;
         {
             let total_rows = surface.pane.scrollback_rows();
             let (_, viewport_rows) = surface.pane.dimensions();
             if total_rows > viewport_rows {
-                // Fade out after 1.5s of no scrolling
+                let max_offset = total_rows - viewport_rows;
+                let bar_width = 6.0_f32;
+                let hit_width = 16.0_f32; // wider invisible hit zone
+                let bar_margin = 2.0_f32;
+                let track_top = content_rect.min.y + 2.0;
+                let track_bottom = content_rect.max.y - 2.0;
+                let track_height = track_bottom - track_top;
+
+                let viewport_frac = viewport_rows as f32 / total_rows as f32;
+                let thumb_height = (track_height * viewport_frac).max(12.0);
+
+                // scroll_offset is lines from the bottom
+                let scroll_frac = surface.scroll_offset as f32 / max_offset as f32;
+                let thumb_top = track_top + (track_height - thumb_height) * (1.0 - scroll_frac);
+
+                let thumb_rect = egui::Rect::from_min_size(
+                    egui::pos2(content_rect.max.x - bar_width - bar_margin, thumb_top),
+                    egui::vec2(bar_width, thumb_height),
+                );
+
+                // Hit-test zone: wider than the visible thumb for easy grabbing
+                let hit_rect = egui::Rect::from_min_max(
+                    egui::pos2(content_rect.max.x - hit_width, track_top),
+                    egui::pos2(content_rect.max.x, track_bottom),
+                );
+
+                // Interaction: click/drag in the track to scroll
+                let scrollbar_id = ui.id().with("scrollbar").with(pane_id);
+                let response = ui.interact(hit_rect, scrollbar_id, egui::Sense::drag());
+                let hovering = response.hovered() || response.dragged();
+
+                if response.dragged() {
+                    if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+                        // Map pointer Y to scroll fraction
+                        let y_frac =
+                            ((pos.y - track_top) / (track_height - thumb_height)).clamp(0.0, 1.0);
+                        let new_offset = ((1.0 - y_frac) * max_offset as f32).round() as usize;
+                        scrollbar_jump = Some(new_offset);
+                    }
+                }
+
+                // Fade out after 1.5s of no scrolling (always visible when
+                // scrolled up, hovered, or dragged)
                 let since_scroll = surface.last_scroll_at.elapsed();
-                let alpha = if surface.scroll_offset > 0 {
-                    // Always visible when scrolled up (not at bottom)
+                let alpha = if surface.scroll_offset > 0 || hovering {
                     0.5_f32
                 } else if since_scroll.as_millis() < 1500 {
-                    // Fade: full opacity for 1s, then fade over 0.5s
                     let fade_start = 1000;
                     let fade_dur = 500;
                     let ms = since_scroll.as_millis() as u32;
@@ -820,30 +863,10 @@ impl AmuxApp {
                 };
 
                 if alpha > 0.01 {
-                    let bar_width = 4.0_f32;
-                    let bar_margin = 2.0_f32;
-                    let track_top = content_rect.min.y + 2.0;
-                    let track_bottom = content_rect.max.y - 2.0;
-                    let track_height = track_bottom - track_top;
-
-                    let viewport_frac = viewport_rows as f32 / total_rows as f32;
-                    let thumb_height = (track_height * viewport_frac).max(12.0);
-
-                    // scroll_offset is lines from the bottom
-                    let scroll_frac =
-                        surface.scroll_offset as f32 / (total_rows - viewport_rows) as f32;
-                    let thumb_top = track_top + (track_height - thumb_height) * (1.0 - scroll_frac);
-
-                    let thumb_rect = egui::Rect::from_min_size(
-                        egui::pos2(content_rect.max.x - bar_width - bar_margin, thumb_top),
-                        egui::vec2(bar_width, thumb_height),
-                    );
-
                     let a = (alpha * 255.0) as u8;
                     let color = egui::Color32::from_rgba_unmultiplied(200, 200, 200, a);
                     ui.painter().rect_filled(thumb_rect, bar_width / 2.0, color);
 
-                    // Request repaint during fade animation
                     if alpha < 0.5 {
                         ui.ctx().request_repaint();
                     }
@@ -851,9 +874,31 @@ impl AmuxApp {
             }
         }
 
+        // Capture values from the immutable surface borrow before we
+        // need mutable access for the scrollbar drag.
+        let exit_message = surface.exited.as_ref().map(|e| e.message.clone());
+
+        // Apply scrollbar drag (needs mutable access).
+        if let Some(new_offset) = scrollbar_jump {
+            if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
+                if let Some(surface) = managed.active_surface_mut() {
+                    let (_, rows) = surface.pane.dimensions();
+                    let total = surface.pane.scrollback_rows();
+                    let max_offset = total.saturating_sub(rows);
+                    let clamped = new_offset.min(max_offset);
+                    let delta = surface.scroll_offset as isize - clamped as isize;
+                    if surface.pane.manages_own_scroll() && delta != 0 {
+                        surface.pane.scroll_viewport(delta);
+                    }
+                    surface.scroll_offset = clamped;
+                    surface.last_scroll_at = Instant::now();
+                }
+            }
+        }
+
         // Render exit overlay when process has exited
-        if let Some(exit_info) = &surface.exited {
-            render::render_exit_overlay(ui, content_rect, &exit_info.message, self.font_size);
+        if let Some(msg) = &exit_message {
+            render::render_exit_overlay(ui, content_rect, msg, self.font_size);
         }
 
         // Render copy mode cursor overlay

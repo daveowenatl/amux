@@ -141,6 +141,17 @@ impl eframe::App for AmuxApp {
                         Err(_) => break,
                     }
                 }
+                // When new output arrives and the backend manages its own
+                // scroll, ghostty auto-scrolls to bottom. Sync our tracked
+                // scroll_offset so the scrollbar doesn't get stuck visible.
+                if bytes_this_frame > 0
+                    && surface.scroll_offset > 0
+                    && surface.pane.manages_own_scroll()
+                {
+                    // If the user was scrolled up and new output arrived,
+                    // ghostty scrolls to bottom. Reset our offset to match.
+                    surface.scroll_offset = 0;
+                }
                 if bytes_this_frame >= MAX_BYTES_PER_SURFACE_PER_FRAME {
                     pending_data = true;
                 }
