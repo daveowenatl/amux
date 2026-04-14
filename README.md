@@ -198,7 +198,7 @@ Fallback paths (checked if `~/.amux/config.toml` doesn't exist): `~/.config/amux
 Full reference: [`docs/configuration.md`](docs/configuration.md)
 
 ```toml
-font_family = "IBM Plex Mono"
+font_family = "JetBrains Mono"
 font_size = 14.0
 theme_source = "default"       # "default" (Monokai Classic) or "ghostty"
 # shell = "pwsh"               # auto-detected if unset
