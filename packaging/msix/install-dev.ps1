@@ -97,7 +97,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "  Signed successfully" -ForegroundColor Green
 
 # --- Install or upgrade ---
-$existing = Get-AppxPackage *amux* -ErrorAction SilentlyContinue
+$existing = Get-AppxPackage DaveOwen.amux -ErrorAction SilentlyContinue
 if ($existing) {
     Write-Host "Upgrading amux $($existing.Version) → new build..." -ForegroundColor Yellow
     Add-AppxPackage -Path $MsixPath -Update
@@ -108,7 +108,7 @@ if ($existing) {
 Write-Host "  Done!" -ForegroundColor Green
 
 # --- Verify ---
-$pkg = Get-AppxPackage *amux*
+$pkg = Get-AppxPackage DaveOwen.amux
 if ($pkg) {
     Write-Host "`namux installed:" -ForegroundColor Cyan
     Write-Host "  Version:  $($pkg.Version)"
