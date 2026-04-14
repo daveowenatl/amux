@@ -24,6 +24,7 @@ pub(crate) fn render_pane(
     find_highlights: &[(usize, usize, usize)],
     current_highlight: Option<usize>,
     cursor_blink_on: bool,
+    pane_dim_alpha: u8,
     #[cfg(feature = "gpu-renderer")] gpu_renderer: Option<&GpuRenderer>,
     #[cfg(feature = "gpu-renderer")] pane_id: u64,
 ) {
@@ -90,7 +91,7 @@ pub(crate) fn render_pane(
 
     // Dim unfocused panes with a semi-transparent overlay
     if !is_focused {
-        let dim_overlay = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100);
+        let dim_overlay = egui::Color32::from_rgba_unmultiplied(0, 0, 0, pane_dim_alpha);
         painter.rect_filled(rect, 0.0, dim_overlay);
     }
 

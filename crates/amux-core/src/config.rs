@@ -22,6 +22,17 @@ pub struct ColorsConfig {
     /// e.g. palette = ["#000000", "#cc0000", ...] for colors 0, 1, etc.
     #[serde(default)]
     pub palette: Vec<String>,
+
+    // --- Chrome colors ---
+    /// Accent color for active workspace highlight and active tab indicator.
+    pub accent: Option<String>,
+    /// Sidebar background color.
+    pub sidebar_bg: Option<String>,
+    /// Notification ring color (the blue ring on panes with unread notifications).
+    pub notification_ring: Option<String>,
+    /// Unfocused pane dim overlay alpha (0 = no dimming, 255 = fully opaque).
+    /// Default: 100 (~39% opacity black overlay).
+    pub pane_dim_alpha: Option<u8>,
 }
 
 impl ColorsConfig {

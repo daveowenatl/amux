@@ -789,6 +789,7 @@ impl AmuxApp {
             &find_highlights,
             current_highlight,
             cursor_blink_on,
+            self.theme.chrome.pane_dim_alpha,
             #[cfg(feature = "gpu-renderer")]
             self.gpu_renderer.as_ref(),
             #[cfg(feature = "gpu-renderer")]
@@ -998,7 +999,8 @@ impl AmuxApp {
         // 1. Persistent unread ring (NOT on focused pane, NOT during flash)
         if !is_focused && !flash_active && self.notifications.pane_unread(pane_u64) > 0 {
             // Steady blue ring with glow
-            let ring_color = egui::Color32::from_rgba_unmultiplied(40, 120, 255, 89); // 0.35 * 255
+            let rc = self.theme.chrome.notification_ring;
+            let ring_color = egui::Color32::from_rgba_unmultiplied(rc.r(), rc.g(), rc.b(), 89);
             ui.painter().rect_stroke(
                 ring_rect,
                 6.0,
@@ -1014,7 +1016,8 @@ impl AmuxApp {
                 let elapsed = started.elapsed().as_secs_f32();
                 if elapsed < FLASH_DURATION {
                     let alpha = flash_alpha(elapsed);
-                    let base_color = [40u8, 120, 255]; // blue
+                    let rc = self.theme.chrome.notification_ring;
+                    let base_color = [rc.r(), rc.g(), rc.b()];
                     let glow_alpha = (alpha * 0.6 * 255.0) as u8;
                     let ring_alpha = (alpha * 255.0) as u8;
                     // Glow (wider, more transparent). Anchor on ring_rect with
