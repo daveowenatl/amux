@@ -38,7 +38,7 @@ pub(crate) struct ChromeColors {
     pub tab_border: Color32,
     pub divider: Color32,
     pub accent: Color32,
-    /// Notification ring color (blue ring on panes with unread notifications).
+    /// Notification ring shown on panes with unread notifications.
     pub notification_ring: Color32,
     /// Unfocused pane dim overlay alpha (0 = no dimming, 255 = fully opaque).
     pub pane_dim_alpha: u8,
