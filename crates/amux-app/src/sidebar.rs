@@ -588,7 +588,7 @@ fn render_workspace_row(
         let (icon, default_text) = match status.state {
             amux_notify::AgentState::Active => ("\u{26A1}", "Running"), // ⚡
             amux_notify::AgentState::Waiting => ("\u{1F514}", "Needs input"), // 🔔
-            amux_notify::AgentState::Idle => ("\u{23F8}\u{FE0E}", "Idle"), // ⏸︎
+            amux_notify::AgentState::Idle => ("\u{23F8}", "Idle"), // ⏸ (no variation selector — FE0E renders as box on Windows)
         };
         let label = status.label.as_deref().unwrap_or(default_text);
         content_bottom += 4.0;
