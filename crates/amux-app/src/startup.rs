@@ -530,6 +530,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                     .and_then(|p| std::fs::metadata(p).ok()?.modified().ok()),
                 config_file_path,
                 config_last_checked: Instant::now(),
+                scrollbar_drag: None,
             }))
         }),
     )

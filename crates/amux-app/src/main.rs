@@ -252,6 +252,15 @@ struct AmuxApp {
     config_last_modified: Option<std::time::SystemTime>,
     /// When we last checked the config file's mtime (throttle to ~2s).
     config_last_checked: Instant,
+    /// Active scrollbar thumb drag: pane + anchor offset (click_y - thumb_top).
+    scrollbar_drag: Option<ScrollbarDrag>,
+}
+
+struct ScrollbarDrag {
+    pane_id: PaneId,
+    /// Distance from the mousedown point to the top of the thumb.
+    /// During drag: effective_thumb_top = mouse_y - anchor_offset.
+    anchor_offset: f32,
 }
 
 /// Editing state for a browser pane's omnibar.

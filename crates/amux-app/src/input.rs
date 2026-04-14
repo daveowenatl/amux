@@ -870,6 +870,16 @@ impl AmuxApp {
             return false;
         }
 
+        // Skip selection when the pointer is in the scrollbar hit zone
+        // (rightmost 16px of the content area) so the scrollbar drag
+        // interaction takes priority over text selection.
+        if let Some(pos) = pointer_pos {
+            let scrollbar_zone_left = content_rect.max.x - 16.0;
+            if pos.x >= scrollbar_zone_left && content_rect.contains(pos) {
+                return false;
+            }
+        }
+
         if primary_pressed {
             if let Some(pos) = pointer_pos {
                 if !content_rect.contains(pos) {
