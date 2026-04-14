@@ -7,6 +7,32 @@
 
 use crate::*;
 
+/// Truncate a tab title to fit within `max_chars`. When `is_path`
+/// is true (title sourced from CWD metadata), uses middle ellipsis
+/// to keep both the root and leaf visible: `~/src/…/my-branch`.
+/// Otherwise truncates from the end with trailing `…`.
+fn truncate_tab_title(title: &str, max_chars: usize, is_path: bool) -> String {
+    let len = title.chars().count();
+    if len <= max_chars {
+        return title.to_string();
+    }
+
+    if is_path {
+        // Middle ellipsis: keep the start (root) and end (leaf).
+        // Split roughly 40% start / 60% end so the leaf (most
+        // distinguishing part) gets more space.
+        let budget = max_chars.saturating_sub(1); // 1 char for …
+        let start_len = budget * 2 / 5;
+        let end_len = budget - start_len;
+        let start: String = title.chars().take(start_len).collect();
+        let end: String = title.chars().skip(len - end_len).collect();
+        format!("{start}\u{2026}{end}")
+    } else {
+        let prefix: String = title.chars().take(max_chars - 1).collect();
+        format!("{prefix}\u{2026}")
+    }
+}
+
 impl AmuxApp {
     /// Render a single pane: tab bar (if >1 surface) + terminal content.
     pub(crate) fn render_single_pane(
@@ -130,6 +156,7 @@ impl AmuxApp {
             struct TabInfo {
                 icon: TabIcon,
                 title: String,
+                is_path: bool,
                 is_dead: bool,
                 is_browser: bool,
             }
@@ -150,8 +177,8 @@ impl AmuxApp {
                             .user_title
                             .as_deref()
                             .unwrap_or(sanitized_pane_title.as_ref());
-                        let raw = if raw_title.is_empty() || raw_title == "?" {
-                            surface
+                        let (raw, is_path) = if raw_title.is_empty() || raw_title == "?" {
+                            let cwd_title = surface
                                 .metadata
                                 .cwd
                                 .as_deref()
@@ -167,12 +194,14 @@ impl AmuxApp {
                                     }
                                     p.to_string()
                                 })
-                                .unwrap_or_else(|| "Tab".to_string())
+                                .unwrap_or_else(|| "Tab".to_string());
+                            (cwd_title, true)
                         } else {
-                            raw_title.to_string()
+                            (raw_title.to_string(), false)
                         };
                         TabInfo {
                             icon: TabIcon::Terminal,
+                            is_path,
                             title: raw,
                             is_dead: surface.exited.is_some(),
                             is_browser: false,
@@ -189,6 +218,7 @@ impl AmuxApp {
                                 None => TabIcon::None,
                             },
                             title,
+                            is_path: false,
                             is_dead: false,
                             is_browser: true,
                         }
@@ -198,13 +228,7 @@ impl AmuxApp {
 
             for (idx, tab) in tabs.iter().enumerate() {
                 let is_active = idx == active_idx;
-                // Cap at 20 chars
-                let title = if tab.title.chars().count() > 20 {
-                    let prefix: String = tab.title.chars().take(17).collect();
-                    format!("{prefix}...")
-                } else {
-                    tab.title.clone()
-                };
+                let title = truncate_tab_title(&tab.title, 30, tab.is_path);
                 let is_dead = tab.is_dead;
                 let has_icon = !matches!(tab.icon, TabIcon::None);
                 let icon_space = if has_icon {
