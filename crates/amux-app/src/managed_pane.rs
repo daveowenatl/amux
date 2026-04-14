@@ -177,6 +177,8 @@ pub(crate) struct PaneSurface {
     pub(crate) byte_rx: mpsc::Receiver<Vec<u8>>,
     pub(crate) scroll_offset: usize,
     pub(crate) scroll_accum: f32,
+    /// When the user last scrolled this surface (for scrollbar auto-hide).
+    pub(crate) last_scroll_at: std::time::Instant,
     pub(crate) metadata: SurfaceMetadata,
     /// User-set title override. When set, takes precedence over OSC 0/2 title.
     pub(crate) user_title: Option<String>,

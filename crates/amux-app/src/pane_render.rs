@@ -795,9 +795,164 @@ impl AmuxApp {
             pane_id,
         );
 
+        // Scrollbar overlay — thin, auto-hiding, anchor-based dragging.
+        // Interaction model follows wezterm / OS scrollbar conventions:
+        //   mousedown on thumb → start drag with anchor offset
+        //   drag → thumb follows mouse exactly (no jump)
+        //   click above thumb → page up
+        //   click below thumb → page down
+        let mut scrollbar_jump: Option<usize> = None;
+        {
+            let total_rows = surface.pane.scrollback_rows();
+            let (_, viewport_rows) = surface.pane.dimensions();
+            if total_rows > viewport_rows {
+                let max_offset = total_rows - viewport_rows;
+                let bar_width = 6.0_f32;
+                let hit_width = 16.0_f32;
+                let bar_margin = 2.0_f32;
+                let track_top = content_rect.min.y + 2.0;
+                let track_bottom = content_rect.max.y - 2.0;
+                let track_height = (track_bottom - track_top).max(0.0);
+                if track_height < 20.0 {
+                    // Pane too small for a meaningful scrollbar
+                } else {
+                    let viewport_frac = viewport_rows as f32 / total_rows as f32;
+                    let thumb_height = (track_height * viewport_frac).max(12.0);
+                    let available = track_height - thumb_height;
+
+                    let scroll_frac = surface.scroll_offset as f32 / max_offset as f32;
+                    let thumb_top = track_top + available * (1.0 - scroll_frac);
+
+                    let thumb_rect = egui::Rect::from_min_size(
+                        egui::pos2(content_rect.max.x - bar_width - bar_margin, thumb_top),
+                        egui::vec2(bar_width, thumb_height),
+                    );
+
+                    // Expanded thumb hit rect for easier grabbing
+                    let thumb_hit = egui::Rect::from_min_max(
+                        egui::pos2(content_rect.max.x - hit_width, thumb_top),
+                        egui::pos2(content_rect.max.x, thumb_top + thumb_height),
+                    );
+
+                    let hit_left = content_rect.max.x - hit_width;
+                    let pointer_pos = ui.input(|i| i.pointer.hover_pos());
+                    let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+                    let primary_down = ui.input(|i| i.pointer.primary_down());
+                    let primary_released = ui.input(|i| i.pointer.primary_released());
+
+                    let in_hit_zone = pointer_pos.is_some_and(|p| {
+                        p.x >= hit_left && p.y >= track_top && p.y <= track_bottom
+                    });
+                    let on_thumb = pointer_pos.is_some_and(|p| thumb_hit.contains(p));
+
+                    // Drag state machine
+                    let is_dragging = self
+                        .scrollbar_drag
+                        .as_ref()
+                        .is_some_and(|d| d.pane_id == pane_id);
+
+                    if primary_released {
+                        if is_dragging {
+                            self.scrollbar_drag = None;
+                        }
+                    } else if primary_pressed && on_thumb {
+                        // Start anchor-based drag
+                        if let Some(pos) = pointer_pos {
+                            self.scrollbar_drag = Some(ScrollbarDrag {
+                                pane_id,
+                                anchor_offset: pos.y - thumb_top,
+                            });
+                        }
+                    } else if primary_pressed && in_hit_zone && !on_thumb {
+                        // Click above/below thumb → page up/down
+                        if let Some(pos) = pointer_pos {
+                            if pos.y < thumb_top {
+                                // Page up (increase scroll_offset)
+                                let new_off =
+                                    (surface.scroll_offset + viewport_rows).min(max_offset);
+                                scrollbar_jump = Some(new_off);
+                            } else {
+                                // Page down (decrease scroll_offset)
+                                let new_off = surface.scroll_offset.saturating_sub(viewport_rows);
+                                scrollbar_jump = Some(new_off);
+                            }
+                        }
+                    }
+
+                    // During drag: compute scroll from anchor
+                    if is_dragging && primary_down {
+                        if let Some(pos) = pointer_pos {
+                            let anchor = self.scrollbar_drag.as_ref().unwrap().anchor_offset;
+                            let effective_top = (pos.y - anchor - track_top).clamp(0.0, available);
+                            let frac = effective_top / available;
+                            let new_offset = ((1.0 - frac) * max_offset as f32).round() as usize;
+                            scrollbar_jump = Some(new_offset);
+                        }
+                    }
+
+                    let hovering = in_hit_zone || is_dragging;
+
+                    // Fade: visible while hovering/dragging, otherwise hold
+                    // for 1.5s after last scroll then fade over 0.5s.
+                    let since_scroll = surface.last_scroll_at.elapsed();
+                    let alpha = if hovering || is_dragging {
+                        0.6_f32
+                    } else {
+                        let hold_ms: u32 = 1500;
+                        let fade_ms: u32 = 500;
+                        let ms = since_scroll.as_millis() as u32;
+                        if ms < hold_ms {
+                            0.5
+                        } else if ms < hold_ms + fade_ms {
+                            0.5 * (1.0 - (ms - hold_ms) as f32 / fade_ms as f32)
+                        } else {
+                            0.0
+                        }
+                    };
+
+                    if alpha > 0.01 {
+                        let a = (alpha * 255.0) as u8;
+                        let color = egui::Color32::from_rgba_unmultiplied(200, 200, 200, a);
+                        ui.painter().rect_filled(thumb_rect, bar_width / 2.0, color);
+                        if alpha < 0.5 {
+                            ui.ctx().request_repaint();
+                        }
+                    }
+                } // track_height >= 20
+            }
+        }
+
+        // Capture values from the immutable surface borrow before we
+        // need mutable access for the scrollbar drag.
+        let exit_message = surface.exited.as_ref().map(|e| e.message.clone());
+
+        // Apply scrollbar drag (needs mutable access).
+        if let Some(new_offset) = scrollbar_jump {
+            if let Some(PaneEntry::Terminal(managed)) = self.panes.get_mut(&pane_id) {
+                if let Some(surface) = managed.active_surface_mut() {
+                    let (_, rows) = surface.pane.dimensions();
+                    let total = surface.pane.scrollback_rows();
+                    let max_offset = total.saturating_sub(rows);
+                    let clamped = new_offset.min(max_offset);
+                    if surface.pane.manages_own_scroll() {
+                        // Absolute positioning: reset to bottom then scroll
+                        // up by the exact desired offset. Incremental deltas
+                        // drift because we can't query ghostty's actual
+                        // viewport position.
+                        surface.pane.scroll_to_bottom();
+                        if clamped > 0 {
+                            surface.pane.scroll_viewport(-(clamped as isize));
+                        }
+                    }
+                    surface.scroll_offset = clamped;
+                    surface.last_scroll_at = Instant::now();
+                }
+            }
+        }
+
         // Render exit overlay when process has exited
-        if let Some(exit_info) = &surface.exited {
-            render::render_exit_overlay(ui, content_rect, &exit_info.message, self.font_size);
+        if let Some(msg) = &exit_message {
+            render::render_exit_overlay(ui, content_rect, msg, self.font_size);
         }
 
         // Render copy mode cursor overlay

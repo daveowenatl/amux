@@ -549,6 +549,7 @@ impl AmuxApp {
                         let whole_lines = surface.scroll_accum.trunc() as isize;
                         if whole_lines != 0 {
                             surface.scroll_accum -= whole_lines as f32;
+                            surface.last_scroll_at = Instant::now();
                             self.do_scroll_lines_for(pane_id, whole_lines);
                         }
                     }
@@ -867,6 +868,16 @@ impl AmuxApp {
         // Check if we're dragging a divider — skip selection if so
         if self.active_workspace().dragging_divider.is_some() {
             return false;
+        }
+
+        // Skip selection when the pointer is in the scrollbar hit zone
+        // (rightmost 16px of the content area) so the scrollbar drag
+        // interaction takes priority over text selection.
+        if let Some(pos) = pointer_pos {
+            let scrollbar_zone_left = content_rect.max.x - 16.0;
+            if pos.x >= scrollbar_zone_left && content_rect.contains(pos) {
+                return false;
+            }
         }
 
         if primary_pressed {
