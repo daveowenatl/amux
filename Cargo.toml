@@ -110,18 +110,13 @@ amux-browser = { path = "crates/amux-browser" }
 # bug that breaks builds on ARM64 Windows (both native and x86_64-under-
 # emulation). The crates.io release hardcodes `libghostty-vt.so.0.1.0` as the
 # expected shared library filename, which panics on Windows because Zig emits
-# `ghostty-vt.dll` + `ghostty-vt.lib` instead. The fork cherry-picks the two
-# unpublished `feat/windows-ci` commits from upstream on top of
-# upstream/master, with the ghostty commit pinned back to `bebca84` (matching
-# crates.io 0.1.1) to avoid a newer ghostty xcframework build-step regression
-# that breaks macOS, plus a uucode cache-patch commit on top (refs amux #188).
+# Fork carries three fixes not yet upstream:
+# 1. Windows artifact detection (upstream hardcodes .so, fork handles .dll/.lib)
+# 2. uucode v0.2.0 workaround (pre-generated tables.zig, refs amux #188)
+# 3. -Dcpu=baseline default so CI-built DLLs run on any x86_64 CPU (refs amux #229)
 #
-# Upstream tracking: https://github.com/uzaaft/libghostty-rs branches
-# `feat/windows-ci` + `static-linking`. Plan: open a PR against upstream once
-# amux's Windows CI is green with this patch, then drop the patch block when
-# a new crates.io version ships. Also: the uucode patch can be dropped
-# entirely once ghostty bumps past uucode 0.2.0 or upstream uucode fixes the
-# `b.path("")` resolution bug.
+# Drop (1) and (2) when upstream ships a new crates.io version.
+# Keep (3) permanently or upstream it.
 [patch.crates-io]
 libghostty-vt = { git = "https://github.com/daveowenatl/libghostty-rs", rev = "df2c639f681f1b0c96dfcb1b3345176e89a4a613" }
 libghostty-vt-sys = { git = "https://github.com/daveowenatl/libghostty-rs", rev = "df2c639f681f1b0c96dfcb1b3345176e89a4a613" }
