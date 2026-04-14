@@ -435,15 +435,22 @@ impl eframe::App for AmuxApp {
                     if ui.input(|i| i.pointer.primary_pressed()) {
                         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                             for &(id, rect) in &layout {
-                                if rect.contains(pos) && id != focused {
-                                    // Clear selection on old pane
-                                    let old_focused = focused;
-                                    if let Some(PaneEntry::Terminal(m)) =
-                                        self.panes.get_mut(&old_focused)
-                                    {
-                                        m.selection = None;
+                                if rect.contains(pos) {
+                                    if id != focused {
+                                        // Clear selection on old pane
+                                        let old_focused = focused;
+                                        if let Some(PaneEntry::Terminal(m)) =
+                                            self.panes.get_mut(&old_focused)
+                                        {
+                                            m.selection = None;
+                                        }
+                                        self.set_focus(id);
+                                    } else {
+                                        // Clicking the already-focused pane: clear
+                                        // any unread notifications so the sidebar
+                                        // badge disappears.
+                                        self.notifications.mark_pane_read(id);
                                     }
-                                    self.set_focus(id);
                                     break;
                                 }
                             }

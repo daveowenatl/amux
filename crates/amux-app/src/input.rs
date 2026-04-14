@@ -364,6 +364,8 @@ impl AmuxApp {
                     if self.workspaces.len() > 1 {
                         self.active_workspace_idx =
                             (self.active_workspace_idx + 1) % self.workspaces.len();
+                        let pane_ids: Vec<u64> = self.active_workspace().tree.iter_panes();
+                        self.notifications.mark_workspace_read(&pane_ids);
                     }
                     return true;
                 }
@@ -376,6 +378,8 @@ impl AmuxApp {
                         } else {
                             self.active_workspace_idx - 1
                         };
+                        let pane_ids: Vec<u64> = self.active_workspace().tree.iter_panes();
+                        self.notifications.mark_workspace_read(&pane_ids);
                     }
                     return true;
                 }
@@ -405,6 +409,8 @@ impl AmuxApp {
                         }
                         if idx < self.workspaces.len() {
                             self.active_workspace_idx = idx;
+                            let pane_ids: Vec<u64> = self.workspaces[idx].tree.iter_panes();
+                            self.notifications.mark_workspace_read(&pane_ids);
                             return true;
                         }
                     }
