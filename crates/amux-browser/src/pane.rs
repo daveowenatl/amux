@@ -363,99 +363,105 @@ impl BrowserPane {
         let ua = options.and_then(|o| o.user_agent).unwrap_or(&default_ua);
         builder = builder.with_user_agent(ua);
 
-        let webview = builder.build_as_child(parent)?;
+        // Register initialization scripts on the BUILDER so they run
+        // automatically on every page load, before page JS runs. This
+        // is critical on Windows (WebView2) where evaluate_script()
+        // after build_as_child() can race with DOM readiness — the
+        // scripts may execute before document.head exists, causing
+        // favicon detection and other features to silently fail.
+        // with_initialization_script() uses WebView2's
+        // AddScriptToExecuteOnDocumentCreated which guarantees
+        // execution at the right time.
+        builder = builder
+            // Console capture + dialog interception
+            .with_initialization_script(
+                r#"(function(){
+                    const orig = {log: console.log, warn: console.warn, error: console.error, info: console.info};
+                    function wrap(level) {
+                        return function() {
+                            orig[level].apply(console, arguments);
+                            try {
+                                const msg = Array.from(arguments).map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+                                window.ipc.postMessage(JSON.stringify({type:'console', level:level, message:'['+level+'] '+msg}));
+                            } catch(e) {}
+                        };
+                    }
+                    console.log = wrap('log');
+                    console.warn = wrap('warn');
+                    console.error = wrap('error');
+                    console.info = wrap('info');
 
-        // Inject console capture + dialog interception script
-        let _ = webview.evaluate_script(
-            r#"(function(){
-                const orig = {log: console.log, warn: console.warn, error: console.error, info: console.info};
-                function wrap(level) {
-                    return function() {
-                        orig[level].apply(console, arguments);
-                        try {
-                            const msg = Array.from(arguments).map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
-                            window.ipc.postMessage(JSON.stringify({type:'console', level:level, message:'['+level+'] '+msg}));
-                        } catch(e) {}
+                    window.alert = function(msg) {
+                        window.ipc.postMessage(JSON.stringify({type:'dialog', kind:'alert', message:String(msg)}));
                     };
-                }
-                console.log = wrap('log');
-                console.warn = wrap('warn');
-                console.error = wrap('error');
-                console.info = wrap('info');
-
-                window.alert = function(msg) {
-                    window.ipc.postMessage(JSON.stringify({type:'dialog', kind:'alert', message:String(msg)}));
-                };
-                window.confirm = function(msg) {
-                    window.ipc.postMessage(JSON.stringify({type:'dialog', kind:'confirm', message:String(msg)}));
-                    return true;
-                };
-                window.prompt = function(msg) {
-                    window.ipc.postMessage(JSON.stringify({type:'dialog', kind:'prompt', message:String(msg)}));
-                    return null;
-                };
-            })()"#,
-        );
-
-        // Monitor URL changes from SPA navigations (pushState/replaceState/popstate)
-        let _ = webview.evaluate_script(
-            r#"(function(){
-                var lastUrl = location.href;
-                function onUrlChange() {
-                    if (location.href !== lastUrl) {
-                        lastUrl = location.href;
-                        window.ipc.postMessage(JSON.stringify({type:'url_change', url:lastUrl}));
+                    window.confirm = function(msg) {
+                        window.ipc.postMessage(JSON.stringify({type:'dialog', kind:'confirm', message:String(msg)}));
+                        return true;
+                    };
+                    window.prompt = function(msg) {
+                        window.ipc.postMessage(JSON.stringify({type:'dialog', kind:'prompt', message:String(msg)}));
+                        return null;
+                    };
+                })()"#,
+            )
+            // SPA URL change tracking (pushState/replaceState/popstate)
+            .with_initialization_script(
+                r#"(function(){
+                    var lastUrl = location.href;
+                    function onUrlChange() {
+                        if (location.href !== lastUrl) {
+                            lastUrl = location.href;
+                            window.ipc.postMessage(JSON.stringify({type:'url_change', url:lastUrl}));
+                        }
                     }
-                }
-                var origPush = history.pushState;
-                history.pushState = function() {
-                    origPush.apply(this, arguments);
-                    onUrlChange();
-                };
-                var origReplace = history.replaceState;
-                history.replaceState = function() {
-                    origReplace.apply(this, arguments);
-                    onUrlChange();
-                };
-                window.addEventListener('popstate', onUrlChange);
-                window.addEventListener('hashchange', onUrlChange);
-            })()"#,
-        );
-
-        // Inject favicon detection script
-        let _ = webview.evaluate_script(
-            r#"(function(){
-                function sendFavicon() {
-                    const link = document.querySelector('link[rel~="icon"], link[rel="shortcut icon"]');
-                    const url = link ? link.href : (location.origin + '/favicon.ico');
-                    window.ipc.postMessage(JSON.stringify({type:'favicon', url:url}));
-                }
-                if (document.readyState === 'complete' || document.readyState === 'interactive') {
-                    sendFavicon();
-                }
-                document.addEventListener('DOMContentLoaded', sendFavicon);
-                window.addEventListener('load', sendFavicon);
-                new MutationObserver(function() { sendFavicon(); })
-                    .observe(document.head || document.documentElement, {childList:true, subtree:true});
-            })()"#,
-        );
-
-        // Notify the app when the webview receives focus (mousedown/focusin)
-        // so egui text fields (omnibar) can surrender focus.
-        let _ = webview.evaluate_script(
-            r#"(function(){
-                var sent = false;
-                function notify() {
-                    if (!sent) {
-                        sent = true;
-                        window.ipc.postMessage(JSON.stringify({type:'webview_focused'}));
-                        setTimeout(function(){ sent = false; }, 200);
+                    var origPush = history.pushState;
+                    history.pushState = function() {
+                        origPush.apply(this, arguments);
+                        onUrlChange();
+                    };
+                    var origReplace = history.replaceState;
+                    history.replaceState = function() {
+                        origReplace.apply(this, arguments);
+                        onUrlChange();
+                    };
+                    window.addEventListener('popstate', onUrlChange);
+                    window.addEventListener('hashchange', onUrlChange);
+                })()"#,
+            )
+            // Favicon detection
+            .with_initialization_script(
+                r#"(function(){
+                    function sendFavicon() {
+                        const link = document.querySelector('link[rel~="icon"], link[rel="shortcut icon"]');
+                        const url = link ? link.href : (location.origin + '/favicon.ico');
+                        window.ipc.postMessage(JSON.stringify({type:'favicon', url:url}));
                     }
-                }
-                document.addEventListener('mousedown', notify, true);
-                document.addEventListener('focusin', notify, true);
-            })()"#,
-        );
+                    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+                        sendFavicon();
+                    }
+                    document.addEventListener('DOMContentLoaded', sendFavicon);
+                    window.addEventListener('load', sendFavicon);
+                    new MutationObserver(function() { sendFavicon(); })
+                        .observe(document.head || document.documentElement, {childList:true, subtree:true});
+                })()"#,
+            )
+            // Webview focus notification
+            .with_initialization_script(
+                r#"(function(){
+                    var sent = false;
+                    function notify() {
+                        if (!sent) {
+                            sent = true;
+                            window.ipc.postMessage(JSON.stringify({type:'webview_focused'}));
+                            setTimeout(function(){ sent = false; }, 200);
+                        }
+                    }
+                    document.addEventListener('mousedown', notify, true);
+                    document.addEventListener('focusin', notify, true);
+                })()"#,
+            );
+
+        let webview = builder.build_as_child(parent)?;
 
         Ok(Self {
             webview,
