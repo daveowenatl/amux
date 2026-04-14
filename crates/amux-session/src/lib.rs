@@ -63,10 +63,6 @@ pub struct SessionData {
     pub next_workspace_id: u64,
     pub next_surface_id: u64,
     pub sidebar: SavedSidebar,
-    #[serde(default)]
-    pub notifications: Vec<SavedNotification>,
-    #[serde(default)]
-    pub workspace_statuses: HashMap<u64, SavedWorkspaceStatus>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -172,31 +168,6 @@ pub struct SavedSurface {
 pub struct SavedSidebar {
     pub visible: bool,
     pub width: f32,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SavedNotification {
-    pub id: u64,
-    pub workspace_id: u64,
-    pub pane_id: u64,
-    pub surface_id: u64,
-    pub title: String,
-    #[serde(default)]
-    pub subtitle: String,
-    pub body: String,
-    pub source: String,
-    pub read: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SavedWorkspaceStatus {
-    pub state: String,
-    #[serde(default)]
-    pub label: Option<String>,
-    #[serde(default)]
-    pub task: Option<String>,
-    #[serde(default)]
-    pub message: Option<String>,
 }
 
 // --- File Operations ---
@@ -339,8 +310,6 @@ mod tests {
                 visible: true,
                 width: 200.0,
             },
-            notifications: vec![],
-            workspace_statuses: HashMap::new(),
         }
     }
 
@@ -540,21 +509,5 @@ mod tests {
         let result = truncate_scrollback(text, 10);
         // excess=6, no newline found, returns text[6..] = "ghijklmnop"
         assert_eq!(result, "ghijklmnop");
-    }
-
-    #[test]
-    fn deserialize_notification_without_subtitle_defaults_empty() {
-        let json = r#"{
-            "id": 1,
-            "workspace_id": 1,
-            "pane_id": 10,
-            "surface_id": 100,
-            "title": "T",
-            "body": "B",
-            "source": "cli",
-            "read": false
-        }"#;
-        let n: SavedNotification = serde_json::from_str(json).unwrap();
-        assert_eq!(n.subtitle, "");
     }
 }
