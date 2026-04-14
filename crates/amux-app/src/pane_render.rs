@@ -998,7 +998,7 @@ impl AmuxApp {
 
         // 1. Persistent unread ring (NOT on focused pane, NOT during flash)
         if !is_focused && !flash_active && self.notifications.pane_unread(pane_u64) > 0 {
-            // Steady blue ring with glow
+            // Steady notification ring using the configured theme color
             let rc = self.theme.chrome.notification_ring;
             let ring_color = egui::Color32::from_rgba_unmultiplied(rc.r(), rc.g(), rc.b(), 89);
             ui.painter().rect_stroke(
