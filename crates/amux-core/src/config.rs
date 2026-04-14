@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 /// Default font family — must match `amux_term::DEFAULT_FONT_FAMILY`.
-pub const DEFAULT_FONT_FAMILY: &str = "IBM Plex Mono";
+pub const DEFAULT_FONT_FAMILY: &str = "JetBrains Mono";
 /// Default font size — must match `amux_term::DEFAULT_FONT_SIZE`.
 pub const DEFAULT_FONT_SIZE: f32 = 14.0;
 
@@ -878,7 +878,7 @@ mod tests {
         let toml_src = include_str!("../../../resources/default-config.toml");
         let config: AppConfig = toml::from_str(toml_src)
             .unwrap_or_else(|e| panic!("default-config.toml failed to parse: {e}"));
-        assert_eq!(config.font_family, "IBM Plex Mono");
+        assert_eq!(config.font_family, "JetBrains Mono");
         assert_eq!(config.font_size, 14.0);
         assert_eq!(config.theme_source, "default");
     }

@@ -16,7 +16,7 @@
 
 # Terminal font family. Resolved against system-installed fonts by cosmic-text.
 # Examples: "JetBrains Mono", "Menlo", "Cascadia Code"
-font_family = "IBM Plex Mono"
+font_family = "JetBrains Mono"
 
 # Terminal font size in points. Clamped to [4, 96].
 font_size = 14.0

@@ -1,16 +1,18 @@
 use cosmic_text::fontdb::Family;
 use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
 
-/// Bundled font bytes (IBM Plex, SIL OFL license). Single source of truth —
-/// all crates reference these statics instead of their own `include_bytes!`.
-pub static MONO_REGULAR: &[u8] = include_bytes!("../fonts/IBMPlexMono-Regular.ttf");
-pub static MONO_BOLD: &[u8] = include_bytes!("../fonts/IBMPlexMono-Bold.ttf");
-pub static MONO_ITALIC: &[u8] = include_bytes!("../fonts/IBMPlexMono-Italic.ttf");
-pub static MONO_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/IBMPlexMono-BoldItalic.ttf");
+/// Bundled terminal font (JetBrains Mono, SIL OFL license).
+/// Embedded at compile time so the default font always works,
+/// even on machines with no monospace fonts installed.
+pub static MONO_REGULAR: &[u8] = include_bytes!("../fonts/JetBrainsMono-Regular.ttf");
+pub static MONO_BOLD: &[u8] = include_bytes!("../fonts/JetBrainsMono-Bold.ttf");
+pub static MONO_ITALIC: &[u8] = include_bytes!("../fonts/JetBrainsMono-Italic.ttf");
+pub static MONO_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/JetBrainsMono-BoldItalic.ttf");
+/// Bundled UI font (IBM Plex Sans, SIL OFL license) for sidebar/tab text.
 pub static SANS_REGULAR: &[u8] = include_bytes!("../fonts/IBMPlexSans-Regular.ttf");
 pub static SANS_SEMIBOLD: &[u8] = include_bytes!("../fonts/IBMPlexSans-SemiBold.ttf");
 
-pub const DEFAULT_FONT_FAMILY: &str = "IBM Plex Mono";
+pub const DEFAULT_FONT_FAMILY: &str = "JetBrains Mono";
 pub const DEFAULT_FONT_SIZE: f32 = 14.0;
 
 /// Font decoration metrics extracted from OpenType tables (POST/OS2).
