@@ -572,7 +572,16 @@ impl AmuxApp {
         // Apply hot-reloadable fields:
 
         // Font size
-        if (new_config.font_size - self.app_config.font_size).abs() > f32::EPSILON {
+        // Font family
+        if new_config.font_family != self.app_config.font_family {
+            self.font_size = new_config.font_size;
+            #[cfg(feature = "gpu-renderer")]
+            if let Some(gpu) = &mut self.gpu_renderer {
+                gpu.set_font_family(&new_config.font_family, new_config.font_size);
+            }
+            tracing::info!("Hot-reloaded font_family: {}", new_config.font_family);
+        } else if (new_config.font_size - self.app_config.font_size).abs() > f32::EPSILON {
+            // Font size (only if family didn't change — set_font_family handles both)
             self.font_size = new_config.font_size;
             #[cfg(feature = "gpu-renderer")]
             if let Some(gpu) = &mut self.gpu_renderer {
@@ -613,16 +622,13 @@ impl AmuxApp {
         tracing::info!("Hot-reloaded theme/colors");
 
         // Store the full new config but preserve non-hot-reloadable fields
-        // (keybindings, shell, menu_bar_style, font_family require a restart
-        // or a FontSystem rebuild — see issue #216).
+        // (keybindings, shell, menu_bar_style require a restart).
         let keybindings_saved = self.app_config.keybindings.clone();
         let shell_saved = self.app_config.shell.clone();
         let menu_bar_style_saved = self.app_config.menu_bar_style;
-        let font_family_saved = self.app_config.font_family.clone();
         self.app_config = new_config;
         self.app_config.keybindings = keybindings_saved;
         self.app_config.shell = shell_saved;
         self.app_config.menu_bar_style = menu_bar_style_saved;
-        self.app_config.font_family = font_family_saved;
     }
 }

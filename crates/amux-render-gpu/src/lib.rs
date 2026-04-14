@@ -145,7 +145,40 @@ impl GpuRenderer {
         self.cell_height
     }
 
-    /// Update font size, re-measure cell dimensions, and invalidate caches.
+    /// Replace the font family. Creates a new `FontSystem`, recalculates
+    /// cell metrics, and invalidates all caches. If the requested family
+    /// isn't installed, cosmic-text silently falls back to its default.
+    pub fn set_font_family(&mut self, family: &str, font_size: f32) {
+        let config = FontConfig {
+            family: family.to_string(),
+            size: font_size,
+        };
+        let mut new_font_system = font::create_font_system(&config);
+        let line_height = (font_size * 1.3).ceil();
+        let metrics = Metrics::new(font_size, line_height);
+
+        if let Some(r) = self
+            .render_state
+            .renderer
+            .write()
+            .callback_resources
+            .get_mut::<TerminalGpuResources>()
+        {
+            let cell_width = font::measure_cell_width(&mut new_font_system, metrics);
+            r.font_system = new_font_system;
+            r.swash_cache = SwashCache::new();
+            r.metrics = metrics;
+            r.decoration_metrics = font::measure_decoration_metrics(&mut r.font_system, font_size);
+            r.pane_states.clear();
+            r.shape_cache.clear();
+            r.curly_tile = None;
+            r.dotted_tile = None;
+            r.atlas_bind_group_dirty = true;
+            self.cell_width = cell_width;
+            self.cell_height = line_height;
+        }
+    }
+
     pub fn set_font_size(&mut self, font_size: f32) {
         let line_height = (font_size * 1.3).ceil();
         let metrics = Metrics::new(font_size, line_height);
