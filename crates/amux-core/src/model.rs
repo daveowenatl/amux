@@ -16,6 +16,11 @@ use amux_layout::{PaneId, PaneTree, SplitDirection};
 pub struct Workspace {
     pub id: u64,
     pub title: String,
+    /// User-set title from the rename modal. When `Some`, this takes
+    /// precedence over agent status and auto-detected titles in the
+    /// sidebar display. Only written by the rename modal; never
+    /// overwritten by agent hooks or OSC sequences.
+    pub user_title: Option<String>,
     pub tree: PaneTree,
     pub focused_pane: PaneId,
     pub zoomed: Option<PaneId>,

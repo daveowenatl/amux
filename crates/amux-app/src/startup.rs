@@ -587,6 +587,7 @@ pub(crate) fn fresh_startup(
     let workspace = Workspace {
         id: 0,
         title: "Terminal 1".to_string(),
+        user_title: None,
         tree: PaneTree::new(initial_pane_id),
         focused_pane: initial_pane_id,
         zoomed: None,
@@ -736,6 +737,7 @@ pub(crate) fn restore_session(
         workspaces.push(Workspace {
             id: saved_ws.id,
             title: saved_ws.title.clone(),
+            user_title: saved_ws.user_title.clone(),
             tree: saved_ws.tree.clone(),
             focused_pane: focused,
             zoomed: saved_ws.zoomed.filter(|z| panes.contains_key(z)),

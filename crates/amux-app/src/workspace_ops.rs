@@ -112,6 +112,7 @@ impl AmuxApp {
                 let workspace = Workspace {
                     id: ws_id,
                     title,
+                    user_title: None,
                     tree: PaneTree::new(pane_id),
                     focused_pane: pane_id,
                     zoomed: None,
