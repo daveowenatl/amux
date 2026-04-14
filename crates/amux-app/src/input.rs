@@ -549,6 +549,7 @@ impl AmuxApp {
                         let whole_lines = surface.scroll_accum.trunc() as isize;
                         if whole_lines != 0 {
                             surface.scroll_accum -= whole_lines as f32;
+                            surface.last_scroll_at = Instant::now();
                             self.do_scroll_lines_for(pane_id, whole_lines);
                         }
                     }

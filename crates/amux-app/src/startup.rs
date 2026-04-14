@@ -980,6 +980,7 @@ pub(crate) fn spawn_surface(
         byte_rx,
         scroll_offset: 0,
         scroll_accum: 0.0,
+        last_scroll_at: Instant::now(),
         metadata,
         user_title: None,
         exited: None,
