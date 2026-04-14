@@ -49,7 +49,7 @@ impl AmuxApp {
 
         if let Some(pos) = pointer_pos {
             if !is_dragging {
-                if let Some(div) = dividers.iter().find(|d| d.rect.contains(pos)) {
+                if let Some(div) = dividers.iter().find(|d| d.rect.expand(4.0).contains(pos)) {
                     match div.direction {
                         SplitDirection::Horizontal => {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);

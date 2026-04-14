@@ -123,7 +123,7 @@ const DEFAULT_BROWSER_URL: &str = "https://www.google.com";
 const DEFAULT_SIDEBAR_WIDTH: f32 = 200.0;
 const TAB_BAR_HEIGHT: f32 = 26.0;
 const TAB_MIN_WIDTH: f32 = 100.0;
-const TAB_MAX_WIDTH: f32 = 240.0;
+const TAB_MAX_WIDTH: f32 = 360.0;
 /// Content top inset: tab bar height + 1px border between tab bar and content.
 const TAB_CONTENT_TOP_INSET: f32 = TAB_BAR_HEIGHT + 1.0;
 /// Height of the titlebar icon strip (sidebar toggle / bell / + icons
