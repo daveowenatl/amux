@@ -574,10 +574,10 @@ impl AmuxApp {
         // Font size
         // Font family
         if new_config.font_family != self.app_config.font_family {
+            self.font_size = new_config.font_size;
             #[cfg(feature = "gpu-renderer")]
             if let Some(gpu) = &mut self.gpu_renderer {
                 gpu.set_font_family(&new_config.font_family, new_config.font_size);
-                self.font_size = new_config.font_size;
             }
             tracing::info!("Hot-reloaded font_family: {}", new_config.font_family);
         } else if (new_config.font_size - self.app_config.font_size).abs() > f32::EPSILON {

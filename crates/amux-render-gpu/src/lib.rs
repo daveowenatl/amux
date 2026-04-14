@@ -145,10 +145,9 @@ impl GpuRenderer {
         self.cell_height
     }
 
-    /// Update font size, re-measure cell dimensions, and invalidate caches.
     /// Replace the font family. Creates a new `FontSystem`, recalculates
-    /// cell metrics, and invalidates all caches. If the font isn't found,
-    /// cosmic-text falls back to the system default (logged by the caller).
+    /// cell metrics, and invalidates all caches. If the requested family
+    /// isn't installed, cosmic-text silently falls back to its default.
     pub fn set_font_family(&mut self, family: &str, font_size: f32) {
         let config = FontConfig {
             family: family.to_string(),
