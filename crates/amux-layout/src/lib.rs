@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 pub type PaneId = u64;
 
-/// Divider thickness in logical pixels (split between the two children).
-const DIVIDER_PX: f32 = 4.0;
+/// Visible divider thickness in logical pixels.
+const DIVIDER_PX: f32 = 1.0;
 
 /// Minimum pane dimension in pixels (prevents degenerate splits).
 const MIN_PANE_PX: f32 = 20.0;
