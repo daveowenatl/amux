@@ -73,6 +73,12 @@ palette = [
     "#fdfff1",  # 15 bright white
 ]
 
+# Chrome / UI accent colors
+accent           = "#3d7dff"   # active workspace highlight + active tab indicator
+sidebar_bg       = "#1d1f25"   # sidebar background
+notification_ring = "#2878ff"  # ring on panes with unread notifications
+pane_dim_alpha   = 100         # unfocused pane overlay opacity (0-255, 0=none, 255=black)
+
 # ── Notifications ─────────────────────────────────────────────────────────────
 
 [notifications]

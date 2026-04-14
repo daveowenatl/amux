@@ -38,6 +38,10 @@ pub(crate) struct ChromeColors {
     pub tab_border: Color32,
     pub divider: Color32,
     pub accent: Color32,
+    /// Notification ring shown on panes with unread notifications.
+    pub notification_ring: Color32,
+    /// Unfocused pane dim overlay alpha (0 = no dimming, 255 = fully opaque).
+    pub pane_dim_alpha: u8,
 }
 
 /// Combined theme: terminal colors + UI chrome.
@@ -159,6 +163,8 @@ impl ChromeColors {
             tab_border: lighten_rgb(br, bg_g, bb, 0.15),
             divider: lighten_rgb(br, bg_g, bb, 0.18),
             accent,
+            notification_ring: Color32::from_rgb(40, 120, 255),
+            pane_dim_alpha: 100,
         }
     }
 }
@@ -206,6 +212,28 @@ impl Theme {
             if let Some(rgb) = config::ColorsConfig::parse_hex(hex) {
                 self.terminal.ansi[i] = rgb;
             }
+        }
+
+        // Chrome color overrides
+        if let Some(ref hex) = colors.accent {
+            if let Some([r, g, b]) = config::ColorsConfig::parse_hex(hex) {
+                let c = Color32::from_rgb(r, g, b);
+                self.chrome.accent = c;
+                self.chrome.sidebar_active_bg = c;
+            }
+        }
+        if let Some(ref hex) = colors.sidebar_bg {
+            if let Some([r, g, b]) = config::ColorsConfig::parse_hex(hex) {
+                self.chrome.sidebar_bg = Color32::from_rgb(r, g, b);
+            }
+        }
+        if let Some(ref hex) = colors.notification_ring {
+            if let Some([r, g, b]) = config::ColorsConfig::parse_hex(hex) {
+                self.chrome.notification_ring = Color32::from_rgb(r, g, b);
+            }
+        }
+        if let Some(alpha) = colors.pane_dim_alpha {
+            self.chrome.pane_dim_alpha = alpha;
         }
     }
 }
@@ -292,6 +320,8 @@ impl Default for Theme {
                 tab_border: Color32::from_rgb(0x3a, 0x3c, 0x43),
                 divider: Color32::from_rgb(0x3a, 0x3c, 0x43),
                 accent: Color32::from_rgb(0x3d, 0x7d, 0xff),
+                notification_ring: Color32::from_rgb(40, 120, 255),
+                pane_dim_alpha: 100,
             },
         }
     }
