@@ -38,8 +38,12 @@ pub(crate) fn encode_egui_key(
     // reliably from the key itself. For punctuation/digits, shifted output is
     // layout-dependent (e.g. '-' vs '_'), so omit text and let the encoder
     // rely on key + unshifted_codepoint.
+    //
+    // When Alt is active, do NOT synthesize text: on macOS, Option+key emits
+    // both Event::Key and Event::Text from egui, so synthesizing text here
+    // would cause double input. The encoder handles Alt as a pure modifier.
     let (text, unshifted_cp) = if let Some(ch) = key_to_char(key) {
-        let text = if ch.is_ascii_alphabetic() {
+        let text = if ch.is_ascii_alphabetic() && !modifiers.alt {
             let text_ch = if modifiers.shift {
                 ch.to_ascii_uppercase()
             } else {
