@@ -349,6 +349,16 @@ mod tests {
         }
         fn erase_scrollback(&mut self) {}
         fn focus_changed(&mut self, _focused: bool) {}
+        fn encode_key(
+            &mut self,
+            _key: amux_term::key_types::Key,
+            _mods: amux_term::key_types::Mods,
+            _action: amux_term::key_types::Action,
+            _text: Option<&str>,
+            _unshifted_codepoint: Option<char>,
+        ) -> Option<Vec<u8>> {
+            None
+        }
         fn drain_notifications(&self) -> Vec<NotificationEvent> {
             Vec::new()
         }

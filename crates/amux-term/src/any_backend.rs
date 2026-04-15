@@ -170,6 +170,21 @@ impl TerminalBackend for AnyBackend {
         delegate!(self, focus_changed, focused: bool)
     }
 
+    fn encode_key(
+        &mut self,
+        key: libghostty_vt::key::Key,
+        mods: libghostty_vt::key::Mods,
+        action: libghostty_vt::key::Action,
+        text: Option<&str>,
+        unshifted_codepoint: Option<char>,
+    ) -> Option<Vec<u8>> {
+        match self {
+            AnyBackend::Ghostty(inner) => {
+                inner.encode_key(key, mods, action, text, unshifted_codepoint)
+            }
+        }
+    }
+
     fn drain_notifications(&self) -> Vec<NotificationEvent> {
         delegate!(self, drain_notifications)
     }

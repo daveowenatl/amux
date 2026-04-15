@@ -321,12 +321,17 @@ impl KeybindingsConfig {
         }
         #[cfg(not(target_os = "macos"))]
         {
+            // All amux shortcuts use Ctrl+Shift+<key> so plain Ctrl+<key>
+            // combos pass through to the terminal (Ctrl+C, Ctrl+D, Ctrl+W, etc.).
             m.insert(Action::Copy, KeyCombo::parse("ctrl+shift+c").unwrap());
             m.insert(Action::Paste, KeyCombo::parse("ctrl+shift+v").unwrap());
-            m.insert(Action::Find, KeyCombo::parse("ctrl+f").unwrap());
+            m.insert(Action::Find, KeyCombo::parse("ctrl+shift+f").unwrap());
             m.insert(Action::SelectAll, KeyCombo::parse("ctrl+shift+a").unwrap());
             m.insert(Action::CopyMode, KeyCombo::parse("ctrl+shift+x").unwrap());
-            m.insert(Action::ToggleSidebar, KeyCombo::parse("ctrl+b").unwrap());
+            m.insert(
+                Action::ToggleSidebar,
+                KeyCombo::parse("ctrl+shift+b").unwrap(),
+            );
             m.insert(
                 Action::NewBrowserTab,
                 KeyCombo::parse("ctrl+shift+l").unwrap(),
@@ -344,11 +349,17 @@ impl KeybindingsConfig {
                 Action::PrevWorkspace,
                 KeyCombo::parse("ctrl+shift+[").unwrap(),
             );
-            m.insert(Action::NextTab, KeyCombo::parse("ctrl+tab").unwrap());
-            m.insert(Action::PrevTab, KeyCombo::parse("ctrl+shift+tab").unwrap());
-            m.insert(Action::SplitRight, KeyCombo::parse("ctrl+d").unwrap());
+            m.insert(
+                Action::NextTab,
+                KeyCombo::parse("ctrl+shift+pagedown").unwrap(),
+            );
+            m.insert(
+                Action::PrevTab,
+                KeyCombo::parse("ctrl+shift+pageup").unwrap(),
+            );
+            m.insert(Action::SplitRight, KeyCombo::parse("ctrl+shift+e").unwrap());
             m.insert(Action::SplitDown, KeyCombo::parse("ctrl+shift+d").unwrap());
-            m.insert(Action::ClosePane, KeyCombo::parse("ctrl+w").unwrap());
+            m.insert(Action::ClosePane, KeyCombo::parse("ctrl+shift+w").unwrap());
             m.insert(
                 Action::NavigateLeft,
                 KeyCombo::parse("ctrl+alt+left").unwrap(),
@@ -362,14 +373,11 @@ impl KeybindingsConfig {
                 Action::NavigateDown,
                 KeyCombo::parse("ctrl+alt+down").unwrap(),
             );
-            m.insert(
-                Action::ZoomToggle,
-                KeyCombo::parse("ctrl+shift+enter").unwrap(),
-            );
+            m.insert(Action::ZoomToggle, KeyCombo::parse("ctrl+shift+z").unwrap());
             m.insert(Action::DevTools, KeyCombo::parse("ctrl+shift+i").unwrap());
             m.insert(
                 Action::NotificationPanel,
-                KeyCombo::parse("ctrl+i").unwrap(),
+                KeyCombo::parse("ctrl+shift+p").unwrap(),
             );
             m.insert(
                 Action::JumpToUnread,

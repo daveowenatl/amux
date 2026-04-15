@@ -316,6 +316,22 @@ pub trait TerminalBackend {
     /// Notify terminal of focus change (DECSET 1004).
     fn focus_changed(&mut self, focused: bool);
 
+    // --- Key encoding ---
+
+    /// Encode a key event into PTY bytes using the terminal's current keyboard
+    /// protocol state (legacy, CSI-u/fixterms, Kitty, etc.).
+    ///
+    /// Returns `None` when the key event produces no output (e.g. bare modifier
+    /// press, or a plain character key that should be handled as text input).
+    fn encode_key(
+        &mut self,
+        key: libghostty_vt::key::Key,
+        mods: libghostty_vt::key::Mods,
+        action: libghostty_vt::key::Action,
+        text: Option<&str>,
+        unshifted_codepoint: Option<char>,
+    ) -> Option<Vec<u8>>;
+
     // --- Notifications ---
 
     /// Drain pending notification events from the alert handler.
