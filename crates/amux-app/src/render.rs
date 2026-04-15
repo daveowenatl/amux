@@ -119,16 +119,12 @@ pub(crate) fn render_pane(
             let mut fg = color_to_egui(cell.fg);
             let mut bg = color_to_egui(cell.bg);
 
-            // Selection: swap fg/bg for selected cells (reverse video)
+            // Selection: use theme selection colors
             let stable_row = start + row_idx;
             if let Some(sel) = selection {
                 if sel.contains(col_idx, stable_row) {
-                    std::mem::swap(&mut fg, &mut bg);
-                    // Ensure selected empty cells have visible bg
-                    if bg == bg_default {
-                        bg = color_to_egui(palette.foreground);
-                        fg = bg_default;
-                    }
+                    bg = color_to_egui(palette.selection_bg);
+                    fg = color_to_egui(palette.selection_fg);
                 }
             }
 
