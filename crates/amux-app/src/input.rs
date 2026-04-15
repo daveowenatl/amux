@@ -1097,9 +1097,12 @@ impl AmuxApp {
                     key,
                     pressed: true,
                     modifiers,
+                    repeat,
                     ..
                 } => {
-                    if let Some(bytes) = key_encode::encode_egui_key(key, modifiers) {
+                    if let Some(bytes) =
+                        key_encode::encode_egui_key(&mut surface.pane, key, modifiers, *repeat)
+                    {
                         surface.snap_scroll_to_bottom();
                         let _ = surface.pane.write_bytes(&bytes);
                     }

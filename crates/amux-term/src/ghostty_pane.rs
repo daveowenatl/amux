@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::sync::{mpsc, Arc, Mutex};
 
+use libghostty_vt::key as gkey;
 use libghostty_vt::render::{CellIterator, CursorVisualStyle, Dirty, RenderState, RowIterator};
 use libghostty_vt::style::RgbColor;
 use libghostty_vt::terminal::{Mode, Options as TerminalOptions, Terminal};
@@ -48,6 +49,9 @@ pub struct GhosttyPane<'alloc, 'cb> {
     cached_cursor_shape: CursorShape,
     /// Cached working directory URL (from OSC 7 via pwd()).
     cached_working_dir: Option<Url>,
+    /// libghostty key encoder — reused across calls, configured from terminal
+    /// state on each encode so it picks up Kitty keyboard protocol flags.
+    key_encoder: gkey::Encoder<'alloc>,
 }
 
 impl<'alloc, 'cb> GhosttyPane<'alloc, 'cb>
@@ -133,6 +137,9 @@ where
         let render_state =
             RenderState::new().map_err(|e| TermError::PtySetupFailed(anyhow::anyhow!("{e}")))?;
 
+        let key_encoder = gkey::Encoder::new()
+            .map_err(|e| TermError::PtySetupFailed(anyhow::anyhow!("key encoder: {e}")))?;
+
         Ok(Self {
             terminal,
             render_state: RefCell::new(render_state),
@@ -147,6 +154,7 @@ where
             palette_overridden: false,
             cached_cursor_shape: CursorShape::Default,
             cached_working_dir: None,
+            key_encoder,
         })
     }
 
@@ -879,6 +887,37 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
         let mut buf = [0u8; 8];
         if let Ok(n) = event.encode(&mut buf) {
             self.terminal.vt_write(&buf[..n]);
+        }
+    }
+
+    fn encode_key(
+        &mut self,
+        key: gkey::Key,
+        mods: gkey::Mods,
+        action: gkey::Action,
+        text: Option<&str>,
+        unshifted_codepoint: Option<char>,
+    ) -> Option<Vec<u8>> {
+        // Sync encoder options (Kitty flags, DECCKM, etc.) from terminal state.
+        self.key_encoder.set_options_from_terminal(&self.terminal);
+
+        #[cfg(target_os = "macos")]
+        self.key_encoder
+            .set_macos_option_as_alt(gkey::OptionAsAlt::True);
+
+        let mut event = gkey::Event::new().ok()?;
+        event.set_key(key);
+        event.set_mods(mods);
+        event.set_action(action);
+        event.set_utf8(text);
+        if let Some(cp) = unshifted_codepoint {
+            event.set_unshifted_codepoint(cp);
+        }
+
+        let mut buf = Vec::with_capacity(32);
+        match self.key_encoder.encode_to_vec(&event, &mut buf) {
+            Ok(()) if !buf.is_empty() => Some(buf),
+            _ => None,
         }
     }
 

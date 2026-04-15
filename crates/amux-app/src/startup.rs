@@ -823,7 +823,7 @@ pub(crate) fn spawn_surface(
     cmd.env("AMUX_WORKSPACE_ID", workspace_id.to_string());
     cmd.env("AMUX_SURFACE_ID", surface_id.to_string());
     cmd.env("TERM", "xterm-256color");
-    cmd.env("TERM_PROGRAM", "amux");
+    cmd.env("TERM_PROGRAM", "ghostty");
     cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
 
     // Point AMUX_BIN to the CLI binary so shell integration scripts can invoke it

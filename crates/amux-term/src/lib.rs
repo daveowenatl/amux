@@ -12,3 +12,8 @@ pub use backend::{
     AdvanceResult, Color, CursorPos, CursorShape, Palette, ProcessExit, ScreenCell, ScreenRow,
     SequenceNo, StableRow, TermError, TerminalBackend,
 };
+
+/// Re-export libghostty-vt key types for use by the input layer.
+pub mod key_types {
+    pub use libghostty_vt::key::{Action, Key, Mods};
+}
