@@ -475,6 +475,11 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
         self.terminal
             .resize(cols, rows, 0, 0)
             .map_err(|e| TermError::ResizeFailed(anyhow::anyhow!("{e}")))?;
+        // Bump seqno so the renderer takes a fresh snapshot at the new
+        // dimensions. Without this, the render state stays stale until
+        // new bytes arrive — causing garbled output after pane splits.
+        self.seqno += 1;
+        self.refresh_render_cache();
         Ok(())
     }
 

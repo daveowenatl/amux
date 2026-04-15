@@ -419,8 +419,8 @@ impl eframe::App for AmuxApp {
                     if sel_changed {
                         self.selection_changed = true;
                     }
-                    self.render_single_pane(ui, zoomed_id, panel_rect, true);
                     self.resize_pane_if_needed(zoomed_id, panel_rect, ui);
+                    self.render_single_pane(ui, zoomed_id, panel_rect, true);
                 } else {
                     // Normal mode: render all panes at computed rects
                     let layout = self.active_workspace().tree.layout(panel_rect);
@@ -475,12 +475,18 @@ impl eframe::App for AmuxApp {
                         painter.rect_filled(div.rect, 0.0, self.theme.chrome.divider);
                     }
 
+                    // Resize panes BEFORE rendering so the terminal state
+                    // matches the new layout on the same frame. Without this,
+                    // the first frame after a split renders stale dimensions.
+                    for &(id, rect) in &layout {
+                        self.resize_pane_if_needed(id, rect, ui);
+                    }
+
                     // Render each pane (with its own tab bar)
                     let focused = self.focused_pane_id();
                     for &(id, rect) in &layout {
                         let is_focused = id == focused;
                         self.render_single_pane(ui, id, rect, is_focused);
-                        self.resize_pane_if_needed(id, rect, ui);
                     }
                 }
 
