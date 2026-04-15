@@ -944,10 +944,26 @@ impl AmuxApp {
                 ) {
                     Ok(params) => {
                         let ws_id = params.workspace_id.parse::<u64>().unwrap_or(0);
-                        let pane_id = params
-                            .pane_id
-                            .parse::<u64>()
-                            .unwrap_or(self.focused_pane_id());
+                        // The CLI sends AMUX_SURFACE_ID as pane_id (since
+                        // there's no AMUX_PANE_ID env var). Resolve the
+                        // actual pane_id by searching for a managed pane
+                        // that contains a surface with this ID.
+                        let raw_id = params.pane_id.parse::<u64>().unwrap_or(0);
+                        let pane_id = self
+                            .panes
+                            .iter()
+                            .find_map(|(&pid, entry)| {
+                                if pid == raw_id {
+                                    return Some(pid);
+                                }
+                                if let PaneEntry::Terminal(managed) = entry {
+                                    if managed.surfaces().any(|s| s.id == raw_id) {
+                                        return Some(pid);
+                                    }
+                                }
+                                None
+                            })
+                            .unwrap_or_else(|| self.focused_pane_id());
                         let surface_id = params
                             .surface_id
                             .as_ref()
