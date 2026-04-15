@@ -74,6 +74,7 @@ pub(crate) enum SidebarAction {
 // ---------------------------------------------------------------------------
 
 /// Paint an X icon (two diagonal lines) centered at `center` with the given `size` and `color`.
+/// Stroke width scales with size so larger glyphs don't look hairline.
 pub(crate) fn paint_close_x(
     painter: &egui::Painter,
     center: egui::Pos2,
@@ -81,7 +82,7 @@ pub(crate) fn paint_close_x(
     color: Color32,
 ) {
     let half = size / 2.0;
-    let stroke = egui::Stroke::new(1.2, color);
+    let stroke = egui::Stroke::new((size * 0.18).clamp(1.0, 2.0), color);
     painter.line_segment(
         [
             egui::pos2(center.x - half, center.y - half),
@@ -549,7 +550,7 @@ fn render_workspace_row(
         } else {
             CLOSE_BTN_COLOR
         };
-        paint_close_x(ui.painter(), btn_center, 4.0, btn_color);
+        paint_close_x(ui.painter(), btn_center, 8.0, btn_color);
         if response.clicked() && pointer_over_btn {
             actions.push(SidebarAction::CloseWorkspace(idx));
             return (actions, rect);

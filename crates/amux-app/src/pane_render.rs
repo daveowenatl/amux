@@ -347,8 +347,8 @@ impl AmuxApp {
                 );
 
                 // Close button — only visible on hover
-                let close_center = egui::pos2(x + tab_w - 10.0, tab_rect.center().y);
-                let close_rect = egui::Rect::from_center_size(close_center, egui::vec2(12.0, 12.0));
+                let close_center = egui::pos2(x + tab_w - 12.0, tab_rect.center().y);
+                let close_rect = egui::Rect::from_center_size(close_center, egui::vec2(16.0, 16.0));
                 if tab_hovered {
                     let close_hovered = hover_pos.is_some_and(|p| close_rect.contains(p));
                     let close_color = if close_hovered {
@@ -356,7 +356,7 @@ impl AmuxApp {
                     } else {
                         egui::Color32::from_gray(90)
                     };
-                    sidebar::paint_close_x(painter, close_center, 3.5, close_color);
+                    sidebar::paint_close_x(painter, close_center, 8.0, close_color);
                 }
 
                 // Right-click context menu. `Response::context_menu`
