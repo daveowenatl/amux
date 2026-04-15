@@ -33,15 +33,23 @@ pub(crate) fn encode_egui_key(
         return None;
     }
 
-    // For character keys with modifiers, provide the unshifted codepoint and
-    // UTF-8 text so the encoder can produce correct Kitty/CSI-u sequences.
+    // For character keys with modifiers, provide the unshifted codepoint.
+    // Only synthesize UTF-8 text for alphabetic keys where Shift can be derived
+    // reliably from the key itself. For punctuation/digits, shifted output is
+    // layout-dependent (e.g. '-' vs '_'), so omit text and let the encoder
+    // rely on key + unshifted_codepoint.
     let (text, unshifted_cp) = if let Some(ch) = key_to_char(key) {
-        let text_str = if modifiers.shift {
-            ch.to_uppercase().to_string()
+        let text = if ch.is_ascii_alphabetic() {
+            let text_ch = if modifiers.shift {
+                ch.to_ascii_uppercase()
+            } else {
+                ch
+            };
+            Some(text_ch.to_string())
         } else {
-            ch.to_string()
+            None
         };
-        (Some(text_str), Some(ch))
+        (text, Some(ch))
     } else {
         (None, None)
     };
@@ -153,7 +161,11 @@ fn egui_mods_to_ghostty(m: &egui::Modifiers) -> Mods {
     if m.alt {
         mods |= Mods::ALT;
     }
-    if m.command {
+    // On macOS, `command` maps to the Cmd/Super key. On non-macOS, egui sets
+    // `command` as an alias for Ctrl (the "platform command key"), so mapping
+    // it to SUPER would incorrectly add SUPER to every Ctrl combo.
+    #[cfg(target_os = "macos")]
+    if m.mac_cmd || m.command {
         mods |= Mods::SUPER;
     }
     mods
