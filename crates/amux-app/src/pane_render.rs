@@ -356,7 +356,7 @@ impl AmuxApp {
                     } else {
                         egui::Color32::from_gray(90)
                     };
-                    sidebar::paint_close_x(painter, close_center, 8.0, close_color);
+                    sidebar::paint_close_x(painter, close_center, 6.0, close_color);
                 }
 
                 // Right-click context menu. `Response::context_menu`

@@ -550,7 +550,7 @@ fn render_workspace_row(
         } else {
             CLOSE_BTN_COLOR
         };
-        paint_close_x(ui.painter(), btn_center, 8.0, btn_color);
+        paint_close_x(ui.painter(), btn_center, 6.0, btn_color);
         if response.clicked() && pointer_over_btn {
             actions.push(SidebarAction::CloseWorkspace(idx));
             return (actions, rect);
