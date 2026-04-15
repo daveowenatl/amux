@@ -285,11 +285,6 @@ impl eframe::App for AmuxApp {
                 match action {
                     sidebar::SidebarAction::SwitchWorkspace(idx) => {
                         self.active_workspace_idx = idx;
-                        // Mark notifications read when switching to a workspace
-                        if idx < self.workspaces.len() {
-                            let pane_ids: Vec<u64> = self.workspaces[idx].tree.iter_panes();
-                            self.notifications.mark_workspace_read(&pane_ids);
-                        }
                     }
                     sidebar::SidebarAction::CreateWorkspace => {
                         self.create_workspace(None);
