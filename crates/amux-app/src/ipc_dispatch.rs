@@ -948,18 +948,41 @@ impl AmuxApp {
                             .pane_id
                             .parse::<u64>()
                             .unwrap_or(self.focused_pane_id());
+                        let surface_id = params
+                            .surface_id
+                            .as_ref()
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(0);
                         let title = params.title.unwrap_or_default();
                         let subtitle = params.subtitle.unwrap_or_default();
-                        let nid = self.deliver_notification(
+                        // Explicit notify.send always creates an unread
+                        // notification — no Tier 3 suppression. If
+                        // someone (agent, user, hook) explicitly sends
+                        // a notification, it should always be visible:
+                        // ring, badge, reorder, sound, system toast.
+                        // The user might be looking at scrollback, a
+                        // different part of the screen, or just not
+                        // paying attention.
+                        let nid = self.notifications.push(
                             ws_id,
                             pane_id,
-                            0,
-                            title,
+                            surface_id,
+                            title.clone(),
                             subtitle,
-                            params.body,
+                            params.body.clone(),
                             NotificationSource::Cli,
-                            false,
                         );
+                        if self.app_config.notifications.auto_reorder_workspaces {
+                            self.bubble_workspace(ws_id);
+                        }
+                        // System toast + sound (same as Tier 1/2)
+                        if self.app_config.notifications.system_notifications {
+                            self.system_notifier
+                                .send(&title, &params.body, ws_id, pane_id);
+                        }
+                        if let Some(player) = &self.sound_player {
+                            player.play();
+                        }
                         Response::ok(req.id.clone(), serde_json::json!({"notification_id": nid}))
                     }
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),

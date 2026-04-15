@@ -124,6 +124,29 @@ pub async fn handle_claude_hook(client: &mut IpcClient, event: &str) -> anyhow::
     if let Some(params) = status_update_for(event, &data, &ws_id) {
         client.call("status.set", params).await?;
     }
+
+    // "Notification" means Claude needs input. In addition to updating
+    // the status pill (above), deliver a stored notification so the
+    // pane ring, sidebar badge, and auto_reorder_workspaces all fire.
+    if event == "Notification" {
+        let surface_id = std::env::var("AMUX_SURFACE_ID").unwrap_or_else(|_| "0".to_string());
+        let message = data
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Needs input");
+        let _ = client
+            .call(
+                "notify.send",
+                json!({
+                    "workspace_id": ws_id,
+                    "surface_id": surface_id,
+                    "title": "Claude Code",
+                    "body": message,
+                }),
+            )
+            .await;
+    }
+
     Ok(())
 }
 

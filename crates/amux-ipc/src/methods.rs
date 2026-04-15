@@ -156,6 +156,8 @@ pub struct NotifySendParams {
     pub workspace_id: String,
     pub pane_id: String,
     #[serde(default)]
+    pub surface_id: Option<String>,
+    #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
     pub subtitle: Option<String>,

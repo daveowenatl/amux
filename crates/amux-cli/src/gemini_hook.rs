@@ -139,12 +139,31 @@ fn truncate(s: &str, max: usize) -> String {
 pub async fn handle_gemini_hook(client: &mut IpcClient, event: &str) -> anyhow::Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
-    let data: Value = serde_json::from_str(&input).unwrap_or_default();
+    let data: Value = serde_json::from_str(&input).unwrap_or_else(|_| json!({}));
     let ws_id = std::env::var("AMUX_WORKSPACE_ID").unwrap_or_else(|_| "0".to_string());
 
     if let Some(params) = status_update_for(event, &data, &ws_id) {
         client.call("status.set", params).await?;
     }
+
+    // "Notification" means Gemini needs input. Deliver a stored
+    // notification so pane ring, sidebar badge, and
+    // auto_reorder_workspaces all fire.
+    if event == "Notification" {
+        let surface_id = std::env::var("AMUX_SURFACE_ID").unwrap_or_else(|_| "0".to_string());
+        let _ = client
+            .call(
+                "notify.send",
+                json!({
+                    "workspace_id": ws_id,
+                    "surface_id": surface_id,
+                    "title": "Gemini CLI",
+                    "body": "Needs input",
+                }),
+            )
+            .await;
+    }
+
     Ok(())
 }
 
