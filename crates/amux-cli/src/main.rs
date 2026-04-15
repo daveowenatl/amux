@@ -738,7 +738,9 @@ async fn main() -> anyhow::Result<()> {
             let ws_id = workspace
                 .or_else(|| std::env::var("AMUX_WORKSPACE_ID").ok())
                 .unwrap_or_else(|| "0".to_string());
-            let pane_id = pane.unwrap_or_else(|| "0".to_string());
+            let pane_id = pane
+                .or_else(|| std::env::var("AMUX_SURFACE_ID").ok())
+                .unwrap_or_else(|| "0".to_string());
             let mut params = serde_json::json!({
                 "workspace_id": ws_id,
                 "pane_id": pane_id,
