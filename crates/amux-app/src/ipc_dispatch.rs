@@ -944,26 +944,33 @@ impl AmuxApp {
                 ) {
                     Ok(params) => {
                         let ws_id = params.workspace_id.parse::<u64>().unwrap_or(0);
-                        // The CLI sends AMUX_SURFACE_ID as pane_id (since
-                        // there's no AMUX_PANE_ID env var). Resolve the
-                        // actual pane_id by searching for a managed pane
-                        // that contains a surface with this ID.
-                        let raw_id = params.pane_id.parse::<u64>().unwrap_or(0);
-                        let pane_id = self
-                            .panes
-                            .iter()
-                            .find_map(|(&pid, entry)| {
-                                if pid == raw_id {
-                                    return Some(pid);
-                                }
-                                if let PaneEntry::Terminal(managed) = entry {
-                                    if managed.surfaces().any(|s| s.id == raw_id) {
+                        // Resolve pane_id: CLI may send a surface ID, a
+                        // pane ID, or nothing. Search managed panes for
+                        // a match by pane ID or surface ID, then fall
+                        // back to the focused pane.
+                        let raw_id = params
+                            .pane_id
+                            .as_ref()
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(0);
+                        let pane_id = if raw_id == 0 {
+                            self.focused_pane_id()
+                        } else {
+                            self.panes
+                                .iter()
+                                .find_map(|(&pid, entry)| {
+                                    if pid == raw_id {
                                         return Some(pid);
                                     }
-                                }
-                                None
-                            })
-                            .unwrap_or_else(|| self.focused_pane_id());
+                                    if let PaneEntry::Terminal(managed) = entry {
+                                        if managed.surfaces().any(|s| s.id == raw_id) {
+                                            return Some(pid);
+                                        }
+                                    }
+                                    None
+                                })
+                                .unwrap_or_else(|| self.focused_pane_id())
+                        };
                         let surface_id = params
                             .surface_id
                             .as_ref()
@@ -971,34 +978,46 @@ impl AmuxApp {
                             .unwrap_or(0);
                         let title = params.title.unwrap_or_default();
                         let subtitle = params.subtitle.unwrap_or_default();
+                        let body = params.body;
                         // Explicit notify.send always creates an unread
                         // notification — no Tier 3 suppression. If
                         // someone (agent, user, hook) explicitly sends
-                        // a notification, it should always be visible:
-                        // ring, badge, reorder, sound, system toast.
-                        // The user might be looking at scrollback, a
-                        // different part of the screen, or just not
-                        // paying attention.
+                        // a notification, it should always be visible.
                         let nid = self.notifications.push(
                             ws_id,
                             pane_id,
                             surface_id,
                             title.clone(),
-                            subtitle,
-                            params.body.clone(),
+                            subtitle.clone(),
+                            body.clone(),
                             NotificationSource::Cli,
                         );
                         if self.app_config.notifications.auto_reorder_workspaces {
                             self.bubble_workspace(ws_id);
                         }
-                        // System toast + sound (same as Tier 1/2)
+                        // System toast + sound + custom command
                         if self.app_config.notifications.system_notifications {
-                            self.system_notifier
-                                .send(&title, &params.body, ws_id, pane_id);
+                            self.system_notifier.send(&title, &body, ws_id, pane_id);
                         }
                         if let Some(player) = &self.sound_player {
                             player.play();
                         }
+                        if let Some(cmd) = &self.app_config.notifications.custom_command {
+                            self.system_notifier
+                                .run_custom_command(cmd, &title, &body, "cli");
+                        }
+                        // Broadcast to IPC subscribers
+                        self.event_broadcaster.send(amux_ipc::ServerEvent {
+                            event: "notification".to_string(),
+                            data: serde_json::json!({
+                                "notification_id": nid,
+                                "workspace_id": ws_id,
+                                "pane_id": pane_id,
+                                "title": title,
+                                "subtitle": subtitle,
+                                "body": body,
+                            }),
+                        });
                         Response::ok(req.id.clone(), serde_json::json!({"notification_id": nid}))
                     }
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),

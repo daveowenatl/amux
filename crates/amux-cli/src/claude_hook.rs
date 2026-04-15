@@ -130,6 +130,7 @@ pub async fn handle_claude_hook(client: &mut IpcClient, event: &str) -> anyhow::
     // pane ring, sidebar badge, and auto_reorder_workspaces all fire.
     if event == "Notification" {
         let surface_id = std::env::var("AMUX_SURFACE_ID").unwrap_or_else(|_| "0".to_string());
+        let pane_id = surface_id.clone();
         let message = data
             .get("message")
             .and_then(|v| v.as_str())
@@ -139,6 +140,7 @@ pub async fn handle_claude_hook(client: &mut IpcClient, event: &str) -> anyhow::
                 "notify.send",
                 json!({
                     "workspace_id": ws_id,
+                    "pane_id": pane_id,
                     "surface_id": surface_id,
                     "title": "Claude Code",
                     "body": message,
