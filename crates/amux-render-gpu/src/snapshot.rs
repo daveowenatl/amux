@@ -132,8 +132,11 @@ impl TerminalSnapshot {
         let (screen_rows, start) = if backend.manages_own_scroll() {
             // Backend manages viewport scrolling internally (e.g., libghostty).
             // read_screen_cells returns the already-scrolled viewport.
+            // Account for scroll_offset so selection stable-row math matches
+            // the coordinates produced by pointer_to_cell().
             let total = backend.scrollback_rows();
-            let vp_start = total.saturating_sub(rows);
+            let end = total.saturating_sub(scroll_offset);
+            let vp_start = end.saturating_sub(rows);
             (backend.read_screen_cells(0), vp_start)
         } else {
             let total = backend.scrollback_rows();
