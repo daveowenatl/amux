@@ -963,6 +963,124 @@ impl AmuxApp {
 
             if has_active_selection {
                 if let Some(pos) = pointer_pos {
+                    // Auto-scroll when dragging above or below the content area.
+                    // Scroll speed increases with distance from the edge (1–5 lines).
+                    let scroll_lines = if pos.y < content_rect.min.y {
+                        let overshoot = content_rect.min.y - pos.y;
+                        let speed = ((overshoot / cell_height).ceil() as usize).clamp(1, 5);
+                        Some(speed as isize) // scroll up (toward history)
+                    } else if pos.y > content_rect.max.y {
+                        let overshoot = pos.y - content_rect.max.y;
+                        let speed = ((overshoot / cell_height).ceil() as usize).clamp(1, 5);
+                        Some(-(speed as isize)) // scroll down (toward bottom)
+                    } else {
+                        None
+                    };
+
+                    if let Some(delta) = scroll_lines {
+                        if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
+                            if let Some(surface) = m.active_surface_mut() {
+                                if surface.pane.manages_own_scroll() {
+                                    surface.pane.scroll_viewport(-delta);
+                                    // Sync tracked offset from backend.
+                                    // Positive delta = scroll up = increase offset.
+                                    if delta > 0 {
+                                        surface.scroll_offset = surface
+                                            .scroll_offset
+                                            .saturating_add(delta as usize)
+                                            .min(
+                                                surface
+                                                    .pane
+                                                    .scrollback_rows()
+                                                    .saturating_sub(visible_rows),
+                                            );
+                                    } else {
+                                        surface.scroll_offset = surface
+                                            .scroll_offset
+                                            .saturating_sub(delta.unsigned_abs());
+                                    }
+                                } else {
+                                    if delta > 0 {
+                                        surface.scroll_offset = surface
+                                            .scroll_offset
+                                            .saturating_add(delta as usize)
+                                            .min(
+                                                surface
+                                                    .pane
+                                                    .scrollback_rows()
+                                                    .saturating_sub(visible_rows),
+                                            );
+                                    } else {
+                                        surface.scroll_offset = surface
+                                            .scroll_offset
+                                            .saturating_sub(delta.unsigned_abs());
+                                    }
+                                }
+                            }
+                        }
+                        // Re-read updated scroll_offset for pointer_to_cell.
+                        let managed = match self.panes.get(&pane_id) {
+                            Some(PaneEntry::Terminal(m)) => m,
+                            _ => return false,
+                        };
+                        let surface = match managed.active_surface() {
+                            Some(s) => s,
+                            None => return false,
+                        };
+                        // Shadow outer variables with updated values.
+                        let scroll_offset = surface.scroll_offset;
+                        let total_rows = surface.pane.scrollback_rows();
+
+                        // Request repaint so scrolling continues while mouse is held.
+                        ui.ctx().request_repaint();
+
+                        let (col, stable_row) = selection::pointer_to_cell(
+                            pos,
+                            content_rect,
+                            cell_width,
+                            cell_height,
+                            scroll_offset,
+                            total_rows,
+                            visible_rows,
+                        );
+                        let col = col.min(cols.saturating_sub(1));
+
+                        if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
+                            let line_text = m
+                                .active_surface()
+                                .map(|sf| selection::line_text_string(&sf.pane, stable_row, cols))
+                                .unwrap_or_default();
+                            if let Some(ref mut sel) = m.selection {
+                                match sel.mode {
+                                    SelectionMode::Cell => {
+                                        sel.end = (col, stable_row);
+                                    }
+                                    SelectionMode::Word => {
+                                        let (_, wend) =
+                                            selection::word_bounds_in_line(&line_text, col);
+                                        if stable_row > sel.anchor.1
+                                            || (stable_row == sel.anchor.1 && col >= sel.anchor.0)
+                                        {
+                                            sel.end = (wend, stable_row);
+                                        } else {
+                                            let (wstart, _) =
+                                                selection::word_bounds_in_line(&line_text, col);
+                                            sel.end = (wstart, stable_row);
+                                        }
+                                    }
+                                    SelectionMode::Line => {
+                                        if stable_row >= sel.anchor.1 {
+                                            sel.end = (cols.saturating_sub(1), stable_row);
+                                        } else {
+                                            sel.end = (0, stable_row);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        return true;
+                    }
+
                     let (col, stable_row) = selection::pointer_to_cell(
                         pos,
                         content_rect,
