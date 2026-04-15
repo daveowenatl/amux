@@ -751,13 +751,31 @@ pub(crate) fn restore_session(
     // If nothing restored, fall back to fresh
     if workspaces.is_empty() {
         tracing::warn!("Session restore produced no workspaces, starting fresh");
-        return match fresh_startup(ipc_addr, socket_token, config, shell_override) {
-            Ok(result) => result,
+        match fresh_startup(ipc_addr, socket_token, config, shell_override) {
+            Ok(result) => return result,
             Err(e) => {
                 tracing::error!("Fresh startup also failed: {}", e);
-                panic!("Cannot start amux: {}", e);
+                #[cfg(target_os = "windows")]
+                {
+                    use std::ffi::CString;
+                    let msg = CString::new(format!(
+                        "amux failed to start after session restore:\n\n{e}\n\n\
+                         Check that your shell is installed and on PATH."
+                    ))
+                    .unwrap_or_default();
+                    let title = CString::new("amux").unwrap_or_default();
+                    unsafe {
+                        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxA(
+                            std::ptr::null_mut(),
+                            msg.as_ptr() as *const u8,
+                            title.as_ptr() as *const u8,
+                            windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+                        );
+                    }
+                }
+                panic!("Cannot start amux: {e}");
             }
-        };
+        }
     }
 
     let sidebar = SidebarState {
