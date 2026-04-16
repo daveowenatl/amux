@@ -37,9 +37,11 @@ BG = (37, 40, 48, 255)        # #252830 — Monokai background
 FG = (253, 151, 31, 255)      # #fd971f — Monokai orange
 TRANSPARENT = (0, 0, 0, 0)
 
-# Font size as a fraction of icon height. 0.75 puts the 'a' much bigger
-# than the previous ~0.45. Rounded-rect corner radius is fraction of size.
-GLYPH_FRACTION = 0.75
+# Target ink height of the rendered 'a' as a fraction of icon height.
+# Measured from actual ink bounds, NOT font_size — lowercase glyphs fill
+# only the x-height (~50% of font_size), so we scale the font size up
+# until the visible ink reaches this ratio.
+GLYPH_INK_FRACTION = 0.55
 CORNER_FRACTION = 0.18
 
 
@@ -67,20 +69,26 @@ def render_icon(size: int, *, rounded: bool, wide_width: Optional[int] = None) -
     else:
         draw.rounded_rectangle([(0, 0), (w - 1, h - 1)], radius=radius, fill=BG)
 
-    # Font at GLYPH_FRACTION of icon height.
-    font_size = max(int(size * GLYPH_FRACTION), 8)
+    # Scale font size so the rendered 'a' ink fills GLYPH_INK_FRACTION of
+    # the icon. Approach: render at a probe size, measure actual ink
+    # bounds, then scale linearly to hit the target.
+    label = "a"
+    target_ink_height = h * GLYPH_INK_FRACTION
+
+    probe_size = max(int(h * 0.5), 10)
+    probe_font = ImageFont.truetype(str(FONT_PATH), probe_size)
+    probe_bbox = draw.textbbox((0, 0), label, font=probe_font, anchor="lt")
+    probe_ink_height = max(probe_bbox[3] - probe_bbox[1], 1)
+
+    font_size = max(int(probe_size * target_ink_height / probe_ink_height), 8)
     font = ImageFont.truetype(str(FONT_PATH), font_size)
 
-    # Measure the glyph ink bounds (actual pixels drawn) rather than the
-    # font's advance box, so we can center the visible glyph. textbbox
-    # returns the *ink* bounding box when anchor="lt".
-    label = "a"
+    # Final measurement with the scaled font.
     bbox = draw.textbbox((0, 0), label, font=font, anchor="lt")
     tw = bbox[2] - bbox[0]
     th = bbox[3] - bbox[1]
 
-    # Nudge up slightly: lowercase 'a' has its optical center above geometric
-    # center because it sits on the baseline with no descender.
+    # Center on the ink bbox, not the font's line box.
     x = (w - tw) // 2 - bbox[0]
     y = (h - th) // 2 - bbox[1]
     draw.text((x, y), label, fill=FG, font=font, anchor="lt")
@@ -121,7 +129,7 @@ def main() -> None:
 
     print(f"Generating icons in {ASSETS_DIR}/")
     print(f"  font: {FONT_PATH.name}")
-    print(f"  glyph fraction: {GLYPH_FRACTION}")
+    print(f"  glyph ink fraction: {GLYPH_INK_FRACTION}")
     print(f"  bg: {BG[:3]}  fg: {FG[:3]}")
     print()
 
