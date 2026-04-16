@@ -203,6 +203,7 @@ name = "amux-notify"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "tracing",
 ]
 
 [[package]]

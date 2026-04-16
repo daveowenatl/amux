@@ -7,3 +7,4 @@ description = "amux OSC notification parsing + in-app store"
 
 [dependencies]
 serde = { workspace = true }
+tracing = { workspace = true }

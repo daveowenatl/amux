@@ -70,9 +70,12 @@ pub mod priority {
 /// `"agent.message"`, `"claude.tool"`, `"git.branch"`). A fresh write to the
 /// same key replaces the prior entry; a call to
 /// [`super::NotificationStore::remove_entry`] expires it.
+///
+/// The key is carried on the `BTreeMap` — it's not duplicated here. Iterate
+/// via [`WorkspaceStatus::entries_by_priority`] to get `(&str, &StatusEntry)`
+/// pairs.
 #[derive(Debug, Clone)]
 pub struct StatusEntry {
-    pub key: String,
     pub text: String,
     pub priority: i32,
     pub icon: Option<String>,
@@ -100,9 +103,21 @@ pub struct WorkspaceStatus {
 
 /// Reserved entry keys used by the legacy sidebar view. Named here rather
 /// than inline so renames are a single edit.
+///
+/// The `"agent.*"` namespace is reserved for these three keys and is the only
+/// thing that [`NotificationStore::set_status`] writes. Integrations should
+/// pick their own namespace (`"claude.tool"`, `"gemini.state"`, …);
+/// [`NotificationStore::upsert_entry`] rejects writes whose key begins with
+/// `"agent."` so third-party publishers can't stomp the legacy sidebar slots.
+///
+/// [`NotificationStore::set_status`]: super::NotificationStore::set_status
+/// [`NotificationStore::upsert_entry`]: super::NotificationStore::upsert_entry
 pub const KEY_AGENT_LABEL: &str = "agent.label";
 pub const KEY_AGENT_TASK: &str = "agent.task";
 pub const KEY_AGENT_MESSAGE: &str = "agent.message";
+
+/// Reserved key namespace. See [`KEY_AGENT_LABEL`].
+pub const AGENT_KEY_PREFIX: &str = "agent.";
 
 impl WorkspaceStatus {
     /// Fetch an entry by key.
@@ -130,9 +145,10 @@ impl WorkspaceStatus {
 
     /// All entries sorted by descending priority, then by key for stable
     /// output on ties. The sidebar will iterate this once G20 lands.
-    pub fn entries_by_priority(&self) -> Vec<&StatusEntry> {
-        let mut v: Vec<&StatusEntry> = self.entries.values().collect();
-        v.sort_by(|a, b| b.priority.cmp(&a.priority).then_with(|| a.key.cmp(&b.key)));
+    pub fn entries_by_priority(&self) -> Vec<(&str, &StatusEntry)> {
+        let mut v: Vec<(&str, &StatusEntry)> =
+            self.entries.iter().map(|(k, e)| (k.as_str(), e)).collect();
+        v.sort_by(|a, b| b.1.priority.cmp(&a.1.priority).then_with(|| a.0.cmp(b.0)));
         v
     }
 }

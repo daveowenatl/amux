@@ -31,7 +31,6 @@ fn apply_legacy_field(
             entries.insert(
                 key.to_string(),
                 StatusEntry {
-                    key: key.to_string(),
                     text: s,
                     priority,
                     icon: None,
@@ -343,6 +342,12 @@ impl NotificationStore {
     /// `Some("")` expires the entry and `None` leaves it untouched, so
     /// callers driven by the `status.set` IPC can continue to publish just
     /// the fields they want to change.
+    ///
+    /// `state` is **always** authoritative and replaces the existing agent
+    /// state on every call — the `None`-preserves convention applies only to
+    /// the three text fields handled via the shim. Callers that want to
+    /// publish text under their own key without mutating agent state should
+    /// use [`Self::upsert_entry`] instead.
     pub fn set_status(
         &mut self,
         workspace_id: u64,
@@ -397,6 +402,10 @@ impl NotificationStore {
     /// another source's content. Creates the workspace-status record with
     /// [`AgentState::Idle`] if it didn't already exist — callers that need a
     /// specific state should also call [`Self::set_status`].
+    ///
+    /// Keys beginning with [`AGENT_KEY_PREFIX`] (`"agent."`) are reserved for
+    /// the legacy sidebar slots written by [`Self::set_status`] and are
+    /// rejected here with a warning log; use `set_status` to write those.
     pub fn upsert_entry(
         &mut self,
         workspace_id: u64,
@@ -407,6 +416,12 @@ impl NotificationStore {
         color: Option<[u8; 4]>,
     ) {
         let key = key.into();
+        if key.starts_with(AGENT_KEY_PREFIX) {
+            tracing::warn!(
+                "upsert_entry rejected reserved key '{key}' (use set_status for agent.* slots)"
+            );
+            return;
+        }
         let text = text.into();
         let now = Instant::now();
         let status = self
@@ -420,9 +435,8 @@ impl NotificationStore {
             });
         status.updated_at = now;
         status.entries.insert(
-            key.clone(),
+            key,
             StatusEntry {
-                key,
                 text,
                 priority,
                 icon,
@@ -789,9 +803,9 @@ mod tests {
 
         // Entries surface with the expected priorities.
         let by_pri = status.entries_by_priority();
-        assert_eq!(by_pri[0].key, KEY_AGENT_LABEL);
-        assert_eq!(by_pri[1].key, KEY_AGENT_TASK);
-        assert_eq!(by_pri[2].key, KEY_AGENT_MESSAGE);
+        assert_eq!(by_pri[0].0, KEY_AGENT_LABEL);
+        assert_eq!(by_pri[1].0, KEY_AGENT_TASK);
+        assert_eq!(by_pri[2].0, KEY_AGENT_MESSAGE);
     }
 
     #[test]
@@ -870,9 +884,49 @@ mod tests {
         let ordered: Vec<&str> = status
             .entries_by_priority()
             .iter()
-            .map(|e| e.key.as_str())
+            .map(|(k, _)| *k)
             .collect();
         assert_eq!(ordered, vec!["b.high", "a.tie", "c.mid", "a.low"]);
+    }
+
+    #[test]
+    fn upsert_entry_rejects_reserved_agent_prefix() {
+        let mut store = NotificationStore::new();
+        // External publishers must not be able to write the legacy sidebar
+        // slots — set_status is the only legitimate writer for "agent.*".
+        store.upsert_entry(
+            1,
+            KEY_AGENT_MESSAGE,
+            "should not appear",
+            priority::MESSAGE,
+            None,
+            None,
+        );
+        // No workspace status record is created because the write was
+        // rejected before reaching the map.
+        assert!(store.workspace_status(1).is_none());
+
+        // With a pre-existing status from set_status, the agent.* entry
+        // written by set_status survives an external upsert_entry attempt.
+        store.set_status(
+            2,
+            AgentState::Active,
+            None,
+            None,
+            Some("real message".into()),
+        );
+        store.upsert_entry(
+            2,
+            KEY_AGENT_MESSAGE,
+            "should be rejected",
+            priority::MESSAGE,
+            None,
+            None,
+        );
+        assert_eq!(
+            store.workspace_status(2).unwrap().message(),
+            Some("real message")
+        );
     }
 
     #[test]
