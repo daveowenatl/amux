@@ -2,6 +2,44 @@
 
 use crate::*;
 
+/// Show a native error dialog so GUI-mode users see fatal errors instead of
+/// a silent exit. On macOS this uses NSAlert, on Windows a MessageBox, and
+/// on Linux it falls back to eprintln (no guaranteed desktop dialog API).
+fn show_fatal_error(message: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSAlert, NSAlertStyle, NSApplication};
+        use objc2_foundation::{MainThreadMarker, NSString};
+        if let Some(mtm) = MainThreadMarker::new() {
+            // Ensure NSApplication is initialized so the alert can display.
+            let _ = NSApplication::sharedApplication(mtm);
+            let alert = NSAlert::new(mtm);
+            alert.setAlertStyle(NSAlertStyle::Critical);
+            alert.setMessageText(&NSString::from_str("amux"));
+            alert.setInformativeText(&NSString::from_str(message));
+            alert.runModal();
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::CString;
+        let msg = CString::new(message).unwrap_or_default();
+        let title = CString::new("amux").unwrap_or_default();
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxA(
+                std::ptr::null_mut(),
+                msg.as_ptr() as *const u8,
+                title.as_ptr() as *const u8,
+                windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+            );
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        eprintln!("amux fatal error: {message}");
+    }
+}
+
 /// Load the embedded app icon for the window title bar / taskbar.
 /// The 256px PNG is embedded at compile time so there's no file I/O at runtime.
 fn load_app_icon() -> egui::IconData {
@@ -392,26 +430,10 @@ pub(crate) fn run() -> anyhow::Result<()> {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("Failed to spawn initial shell: {e}");
-                // Show a message box on Windows so GUI-mode users see
-                // the error instead of a silent exit.
-                #[cfg(target_os = "windows")]
-                {
-                    use std::ffi::CString;
-                    let msg = CString::new(format!(
-                        "amux failed to start:\n\n{e}\n\nCheck that your shell \
-                         is installed and on PATH."
-                    ))
-                    .unwrap_or_default();
-                    let title = CString::new("amux").unwrap_or_default();
-                    unsafe {
-                        windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxA(
-                            std::ptr::null_mut(),
-                            msg.as_ptr() as *const u8,
-                            title.as_ptr() as *const u8,
-                            windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
-                        );
-                    }
-                }
+                show_fatal_error(&format!(
+                    "amux failed to start:\n\n{e}\n\nCheck that your shell \
+                     is installed and on PATH."
+                ));
                 return Err(e);
             }
         }
@@ -751,13 +773,17 @@ pub(crate) fn restore_session(
     // If nothing restored, fall back to fresh
     if workspaces.is_empty() {
         tracing::warn!("Session restore produced no workspaces, starting fresh");
-        return match fresh_startup(ipc_addr, socket_token, config, shell_override) {
-            Ok(result) => result,
+        match fresh_startup(ipc_addr, socket_token, config, shell_override) {
+            Ok(result) => return result,
             Err(e) => {
                 tracing::error!("Fresh startup also failed: {}", e);
-                panic!("Cannot start amux: {}", e);
+                show_fatal_error(&format!(
+                    "amux failed to start after session restore:\n\n{e}\n\n\
+                     Check that your shell is installed and on PATH."
+                ));
+                panic!("Cannot start amux: {e}");
             }
-        };
+        }
     }
 
     let sidebar = SidebarState {
