@@ -909,8 +909,9 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
         };
         let mut buf = [0u8; 8];
         if let Ok(n) = event.encode(&mut buf) {
-            let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = writer.write_all(&buf[..n]);
+            if let Err(e) = self.write_bytes(&buf[..n]) {
+                tracing::warn!("failed to write focus event to PTY: {e}");
+            }
         }
     }
 
