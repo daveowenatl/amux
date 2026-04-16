@@ -734,6 +734,7 @@ async fn main() -> anyhow::Result<()> {
             priority,
             icon,
             color,
+            ttl,
             workspace,
         } => {
             if key.starts_with("agent.") {
@@ -760,6 +761,13 @@ async fn main() -> anyhow::Result<()> {
                     anyhow::anyhow!("invalid color '{c}' (expected #RRGGBB or #RRGGBBAA)")
                 })?;
                 params["color"] = serde_json::json!(rgba);
+            }
+            if let Some(secs) = ttl {
+                if !secs.is_finite() || secs <= 0.0 {
+                    anyhow::bail!("--ttl must be a positive number of seconds (got {secs})");
+                }
+                let ttl_ms = (secs * 1000.0).round() as u64;
+                params["ttl_ms"] = serde_json::json!(ttl_ms);
             }
             let resp = client.call("status.upsert_entry", params).await?;
             if cli.json {

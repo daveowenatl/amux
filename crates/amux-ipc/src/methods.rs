@@ -143,6 +143,12 @@ pub struct UpsertEntryParams {
     /// RGBA tuple. Wire format is a 4-element array of bytes.
     #[serde(default)]
     pub color: Option<[u8; 4]>,
+    /// Optional TTL in milliseconds. When set, the entry is filtered out of
+    /// the render list once its deadline has passed — a safety net for
+    /// integrations that publish transient entries (e.g. "running tool X")
+    /// but might not survive to clean them up explicitly.
+    #[serde(default)]
+    pub ttl_ms: Option<u64>,
 }
 
 /// Parameters for `status.remove_entry`: expire a previously-published
