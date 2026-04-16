@@ -315,6 +315,12 @@ fn render_workspace_row(
     let status = notifications.workspace_status(ws.id);
     let has_status = status.is_some();
     let has_progress = status.as_ref().and_then(|s| s.progress).is_some();
+    let progress_label = status
+        .as_ref()
+        .filter(|s| s.progress.is_some())
+        .and_then(|s| s.progress_label.as_deref())
+        .filter(|l| !l.is_empty());
+    let has_progress_label = progress_label.is_some();
     // Filter empty-string entries: upsert_entry lets publishers write empty
     // text, and we shouldn't reserve a subtitle line for a blank message.
     // G3: render from the debounced `displayed` projection so rapid bursts
@@ -379,6 +385,9 @@ fn render_workspace_row(
     }
     if has_progress {
         row_h += PROGRESS_BAR_HEIGHT + 4.0;
+    }
+    if has_progress_label {
+        row_h += METADATA_LINE_HEIGHT + 2.0;
     }
 
     let avail_w = ui.available_width();
@@ -715,8 +724,26 @@ fn render_workspace_row(
         content_bottom += NOTIF_PREVIEW_HEIGHT;
     }
 
-    // --- Progress bar ---
+    // --- Progress bar (optional label row + thin bar) ---
     if let Some(progress) = status.as_ref().and_then(|s| s.progress) {
+        // Label sits above the bar so the bar stays aligned with the
+        // same baseline whether or not there's a label; keeps the row
+        // visual rhythm consistent across workspaces.
+        if let Some(label) = progress_label {
+            content_bottom += 2.0;
+            let label_x = rect.min.x + content_left;
+            let max_w = avail_w - content_left - ROW_H_PAD;
+            let label_font = egui::FontId::proportional(METADATA_FONT_SIZE);
+            let truncated = truncate_text(ui, label, &label_font, max_w);
+            ui.painter().text(
+                egui::pos2(label_x, content_bottom),
+                egui::Align2::LEFT_TOP,
+                &truncated,
+                label_font,
+                meta_color,
+            );
+            content_bottom += METADATA_LINE_HEIGHT;
+        }
         content_bottom += 4.0;
         let bar_x = rect.min.x + content_left;
         let bar_w = avail_w - content_left - ROW_H_PAD;

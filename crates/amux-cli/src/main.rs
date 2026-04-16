@@ -787,6 +787,48 @@ async fn main() -> anyhow::Result<()> {
                 print_response(&resp, false);
             }
         }
+        Command::SetProgress {
+            value,
+            label,
+            clear,
+            workspace,
+        } => {
+            let ws_id = workspace
+                .or_else(|| std::env::var("AMUX_WORKSPACE_ID").ok())
+                .unwrap_or_else(|| "0".to_string());
+            let value = if clear { None } else { value };
+            if let Some(v) = value {
+                if !v.is_finite() {
+                    anyhow::bail!("progress value must be finite (got {v})");
+                }
+                if !(0.0..=1.0).contains(&v) {
+                    anyhow::bail!("progress value must be in [0.0, 1.0] (got {v})");
+                }
+            } else if !clear && label.is_some() {
+                // A label without a bar is meaningless — the server
+                // drops labels on a `None` value anyway. Surface this
+                // to the caller so a script bug doesn't silently no-op.
+                anyhow::bail!("--label requires a progress value or --clear");
+            }
+            let mut params = serde_json::json!({
+                "workspace_id": ws_id,
+                "value": value,
+            });
+            if let Some(ref l) = label {
+                params["label"] = serde_json::json!(l);
+            }
+            let resp = client.call("status.progress", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                match value {
+                    Some(v) => println!("Progress set to {v:.2}"),
+                    None => println!("Progress cleared"),
+                }
+            } else {
+                print_response(&resp, false);
+            }
+        }
         Command::RemoveEntry { key, workspace } => {
             if key.starts_with("agent.") {
                 anyhow::bail!(

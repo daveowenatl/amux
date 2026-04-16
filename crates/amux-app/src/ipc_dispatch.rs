@@ -970,6 +970,30 @@ impl AmuxApp {
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
                 }
             }
+            "status.progress" => {
+                match serde_json::from_value::<amux_ipc::methods::StatusProgressParams>(
+                    req.params.clone(),
+                ) {
+                    Ok(params) => {
+                        let ws_id = params.workspace_id.parse::<u64>().unwrap_or(0);
+                        // Clamp to [0.0, 1.0] so malformed callers (sending
+                        // raw counters or percentages) can't paint an
+                        // out-of-bounds bar. NaN collapses to `None` rather
+                        // than sticking as a poison value.
+                        let value = params.value.and_then(|v| {
+                            if v.is_nan() {
+                                None
+                            } else {
+                                Some(v.clamp(0.0, 1.0))
+                            }
+                        });
+                        self.notifications
+                            .set_progress(ws_id, value, params.label.clone());
+                        Response::ok(req.id.clone(), serde_json::json!({}))
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
             "status.remove_entry" => {
                 match serde_json::from_value::<amux_ipc::methods::RemoveEntryParams>(
                     req.params.clone(),
