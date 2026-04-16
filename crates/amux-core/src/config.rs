@@ -9,7 +9,7 @@ pub const DEFAULT_FONT_SIZE: f32 = 14.0;
 
 /// Custom color palette configuration.
 /// Colors are specified as hex strings: "#rrggbb" or "rrggbb".
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ColorsConfig {
     pub foreground: Option<String>,

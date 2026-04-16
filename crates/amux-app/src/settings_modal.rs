@@ -21,14 +21,24 @@ fn color_picker_row(
     if response.changed() {
         *color = Some(rgb);
     }
-    if color.is_some() {
-        if ui.small_button("Reset").clicked() {
-            *color = None;
-        }
-    } else {
-        ui.weak("default");
-    }
     ui.end_row();
+}
+
+/// Build a ColorsConfig from the modal's current color state.
+fn colors_from_modal(modal: &SettingsModal) -> config::ColorsConfig {
+    config::ColorsConfig {
+        foreground: modal.foreground.map(rgb_to_hex),
+        background: modal.background.map(rgb_to_hex),
+        cursor_fg: modal.cursor_fg.map(rgb_to_hex),
+        cursor_bg: modal.cursor_bg.map(rgb_to_hex),
+        selection_fg: modal.selection_fg.map(rgb_to_hex),
+        selection_bg: modal.selection_bg.map(rgb_to_hex),
+        accent: modal.accent.map(rgb_to_hex),
+        sidebar_bg: modal.sidebar_bg.map(rgb_to_hex),
+        notification_ring: modal.notification_ring.map(rgb_to_hex),
+        pane_dim_alpha: Some(modal.pane_dim_alpha),
+        palette: Vec::new(),
+    }
 }
 
 fn hex_to_rgb(s: &str) -> Option<[u8; 3]> {
@@ -65,6 +75,7 @@ pub(crate) struct SettingsModal {
     /// Snapshot of original values for cancel/revert.
     original_font_size: f32,
     original_font_family: String,
+    original_colors: config::ColorsConfig,
 }
 
 impl SettingsModal {
@@ -95,6 +106,7 @@ impl SettingsModal {
             pane_dim_alpha: config.colors.pane_dim_alpha.unwrap_or(100),
             original_font_size: config.font_size,
             original_font_family: config.font_family.clone(),
+            original_colors: config.colors.clone(),
         }
     }
 }
@@ -197,7 +209,7 @@ impl AmuxApp {
                     ];
 
                     egui::Grid::new("colors_grid")
-                        .num_columns(3)
+                        .num_columns(2)
                         .spacing([8.0, 4.0])
                         .show(ui, |ui| {
                             color_picker_row(
@@ -229,7 +241,6 @@ impl AmuxApp {
                             // Chrome
                             ui.separator();
                             ui.separator();
-                            ui.separator();
                             ui.end_row();
                             color_picker_row(ui, "Accent", &mut modal.accent, accent_default);
                             color_picker_row(
@@ -251,6 +262,20 @@ impl AmuxApp {
                         ui.add(egui::Slider::new(&mut modal.pane_dim_alpha, 0..=255));
                     });
 
+                    ui.add_space(4.0);
+                    if ui.button("Reset colors to defaults").clicked() {
+                        modal.foreground = None;
+                        modal.background = None;
+                        modal.cursor_fg = None;
+                        modal.cursor_bg = None;
+                        modal.selection_fg = None;
+                        modal.selection_bg = None;
+                        modal.accent = None;
+                        modal.sidebar_bg = None;
+                        modal.notification_ring = None;
+                        modal.pane_dim_alpha = 100;
+                    }
+
                     ui.add_space(8.0);
 
                     // --- Buttons ---
@@ -271,6 +296,14 @@ impl AmuxApp {
                             gpu.set_font_size(self.font_size);
                         }
                     }
+
+                    // Live preview color changes — rebuild theme + propagate
+                    // to all panes whenever the modal's color state changes.
+                    let live_colors = colors_from_modal(modal);
+                    if live_colors != self.app_config.colors {
+                        self.app_config.colors = live_colors;
+                        self.rebuild_theme_and_propagate();
+                    }
                 });
         });
 
@@ -283,14 +316,48 @@ impl AmuxApp {
             self.save_config_to_disk();
             self.settings_modal = None;
         } else if cancel {
-            // Revert live-previewed changes
+            // Revert live-previewed font + colors
             let modal = self.settings_modal.as_ref().unwrap();
             self.font_size = modal.original_font_size;
             #[cfg(feature = "gpu-renderer")]
             if let Some(gpu) = &mut self.gpu_renderer {
                 gpu.set_font_size(self.font_size);
             }
+            let original_colors = modal.original_colors.clone();
+            if self.app_config.colors != original_colors {
+                self.app_config.colors = original_colors;
+                self.rebuild_theme_and_propagate();
+            }
             self.settings_modal = None;
+        }
+    }
+
+    /// Rebuild the theme from app_config.colors and propagate the new
+    /// palette to all running panes. Used by both live color preview
+    /// and the cancel-revert path.
+    fn rebuild_theme_and_propagate(&mut self) {
+        let mut new_theme = match self.app_config.theme_source.as_str() {
+            "ghostty" => {
+                if let Some(ghostty_cfg) = amux_ghostty_config::GhosttyConfig::load() {
+                    crate::theme::Theme::from_ghostty(&ghostty_cfg)
+                } else {
+                    crate::theme::Theme::default()
+                }
+            }
+            _ => crate::theme::Theme::default(),
+        };
+        new_theme.apply_color_config(&self.app_config.colors);
+        let mut term_config = (*self.config).clone();
+        new_theme.apply_to_palette(&mut term_config.color_palette);
+        let new_palette = term_config.color_palette.clone();
+        self.config = std::sync::Arc::new(term_config);
+        self.theme = new_theme;
+        for entry in self.panes.values_mut() {
+            if let PaneEntry::Terminal(managed) = entry {
+                for surface in managed.surfaces_mut() {
+                    surface.pane.set_palette(new_palette.clone());
+                }
+            }
         }
     }
 
