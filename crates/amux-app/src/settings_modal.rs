@@ -6,6 +6,34 @@
 
 use crate::*;
 
+/// A labeled color picker with optional "clear" button.
+/// `color` is None when using theme default, Some([r,g,b]) when overridden.
+fn color_picker_field(ui: &mut egui::Ui, label: &str, color: &mut Option<[u8; 3]>) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let mut rgb = color.unwrap_or([128, 128, 128]);
+        let response = ui.color_edit_button_srgb(&mut rgb);
+        if response.changed() {
+            *color = Some(rgb);
+        }
+        if color.is_some() {
+            if ui.small_button("Clear").clicked() {
+                *color = None;
+            }
+        } else {
+            ui.weak("(default)");
+        }
+    });
+}
+
+fn hex_to_rgb(s: &str) -> Option<[u8; 3]> {
+    config::ColorsConfig::parse_hex(s)
+}
+
+fn rgb_to_hex(rgb: [u8; 3]) -> String {
+    format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
+}
+
 /// Editable settings state — populated from AppConfig on open,
 /// applied back on Save.
 pub(crate) struct SettingsModal {
@@ -18,6 +46,17 @@ pub(crate) struct SettingsModal {
     pub(crate) auto_reorder_workspaces: bool,
     pub(crate) sound: String,
     pub(crate) play_when_focused: bool,
+    // Colors (None = use theme default)
+    pub(crate) foreground: Option<[u8; 3]>,
+    pub(crate) background: Option<[u8; 3]>,
+    pub(crate) cursor_fg: Option<[u8; 3]>,
+    pub(crate) cursor_bg: Option<[u8; 3]>,
+    pub(crate) selection_fg: Option<[u8; 3]>,
+    pub(crate) selection_bg: Option<[u8; 3]>,
+    pub(crate) accent: Option<[u8; 3]>,
+    pub(crate) sidebar_bg: Option<[u8; 3]>,
+    pub(crate) notification_ring: Option<[u8; 3]>,
+    pub(crate) pane_dim_alpha: u8,
     /// Snapshot of original values for cancel/revert.
     original_font_size: f32,
     original_font_family: String,
@@ -35,6 +74,20 @@ impl SettingsModal {
             auto_reorder_workspaces: config.notifications.auto_reorder_workspaces,
             sound: config.notifications.sound.sound.clone(),
             play_when_focused: config.notifications.sound.play_when_focused,
+            foreground: config.colors.foreground.as_deref().and_then(hex_to_rgb),
+            background: config.colors.background.as_deref().and_then(hex_to_rgb),
+            cursor_fg: config.colors.cursor_fg.as_deref().and_then(hex_to_rgb),
+            cursor_bg: config.colors.cursor_bg.as_deref().and_then(hex_to_rgb),
+            selection_fg: config.colors.selection_fg.as_deref().and_then(hex_to_rgb),
+            selection_bg: config.colors.selection_bg.as_deref().and_then(hex_to_rgb),
+            accent: config.colors.accent.as_deref().and_then(hex_to_rgb),
+            sidebar_bg: config.colors.sidebar_bg.as_deref().and_then(hex_to_rgb),
+            notification_ring: config
+                .colors
+                .notification_ring
+                .as_deref()
+                .and_then(hex_to_rgb),
+            pane_dim_alpha: config.colors.pane_dim_alpha.unwrap_or(100),
             original_font_size: config.font_size,
             original_font_family: config.font_family.clone(),
         }
@@ -124,6 +177,31 @@ impl AmuxApp {
 
                     ui.add_space(8.0);
 
+                    // --- Colors ---
+                    ui.heading("Colors");
+                    ui.add_space(4.0);
+                    ui.label("Leave blank for theme default. Use #rrggbb hex.");
+                    ui.add_space(2.0);
+
+                    color_picker_field(ui, "Foreground:", &mut modal.foreground);
+                    color_picker_field(ui, "Background:", &mut modal.background);
+                    color_picker_field(ui, "Cursor fg:", &mut modal.cursor_fg);
+                    color_picker_field(ui, "Cursor bg:", &mut modal.cursor_bg);
+                    color_picker_field(ui, "Selection fg:", &mut modal.selection_fg);
+                    color_picker_field(ui, "Selection bg:", &mut modal.selection_bg);
+
+                    ui.add_space(4.0);
+                    ui.label("Chrome");
+                    color_picker_field(ui, "Accent:", &mut modal.accent);
+                    color_picker_field(ui, "Sidebar bg:", &mut modal.sidebar_bg);
+                    color_picker_field(ui, "Notif ring:", &mut modal.notification_ring);
+                    ui.horizontal(|ui| {
+                        ui.label("Pane dim:");
+                        ui.add(egui::Slider::new(&mut modal.pane_dim_alpha, 0..=255));
+                    });
+
+                    ui.add_space(8.0);
+
                     // --- Buttons ---
                     ui.horizontal(|ui| {
                         if ui.button("Save").clicked() {
@@ -183,6 +261,18 @@ impl AmuxApp {
         self.app_config.notifications.sound.sound = modal.sound.clone();
         self.app_config.notifications.sound.play_when_focused = modal.play_when_focused;
 
+        // Colors
+        self.app_config.colors.foreground = modal.foreground.map(rgb_to_hex);
+        self.app_config.colors.background = modal.background.map(rgb_to_hex);
+        self.app_config.colors.cursor_fg = modal.cursor_fg.map(rgb_to_hex);
+        self.app_config.colors.cursor_bg = modal.cursor_bg.map(rgb_to_hex);
+        self.app_config.colors.selection_fg = modal.selection_fg.map(rgb_to_hex);
+        self.app_config.colors.selection_bg = modal.selection_bg.map(rgb_to_hex);
+        self.app_config.colors.accent = modal.accent.map(rgb_to_hex);
+        self.app_config.colors.sidebar_bg = modal.sidebar_bg.map(rgb_to_hex);
+        self.app_config.colors.notification_ring = modal.notification_ring.map(rgb_to_hex);
+        self.app_config.colors.pane_dim_alpha = Some(modal.pane_dim_alpha);
+
         #[cfg(feature = "gpu-renderer")]
         if let Some(gpu) = &mut self.gpu_renderer {
             gpu.set_font_size(self.font_size);
@@ -236,6 +326,37 @@ impl AmuxApp {
                 s["sound"] = toml_edit::value(&self.app_config.notifications.sound.sound);
                 s["play_when_focused"] =
                     toml_edit::value(self.app_config.notifications.sound.play_when_focused);
+            }
+        }
+
+        // Colors
+        let colors = doc["colors"]
+            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+            .as_table_mut();
+        if let Some(c) = colors {
+            fn set_opt_color(table: &mut toml_edit::Table, key: &str, val: &Option<String>) {
+                match val {
+                    Some(v) => table[key] = toml_edit::value(v),
+                    None => {
+                        table.remove(key);
+                    }
+                }
+            }
+            set_opt_color(c, "foreground", &self.app_config.colors.foreground);
+            set_opt_color(c, "background", &self.app_config.colors.background);
+            set_opt_color(c, "cursor_fg", &self.app_config.colors.cursor_fg);
+            set_opt_color(c, "cursor_bg", &self.app_config.colors.cursor_bg);
+            set_opt_color(c, "selection_fg", &self.app_config.colors.selection_fg);
+            set_opt_color(c, "selection_bg", &self.app_config.colors.selection_bg);
+            set_opt_color(c, "accent", &self.app_config.colors.accent);
+            set_opt_color(c, "sidebar_bg", &self.app_config.colors.sidebar_bg);
+            set_opt_color(
+                c,
+                "notification_ring",
+                &self.app_config.colors.notification_ring,
+            );
+            if let Some(alpha) = self.app_config.colors.pane_dim_alpha {
+                c["pane_dim_alpha"] = toml_edit::value(alpha as i64);
             }
         }
 
