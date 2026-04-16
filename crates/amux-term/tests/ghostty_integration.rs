@@ -402,3 +402,38 @@ fn seqno_increments_on_advance() {
         "expected seqno to increment: {before} -> {after}"
     );
 }
+
+/// Regression: focus_changed used to call terminal.vt_write(b"\x1b[I"), and
+/// since CSI I as VT *output* is interpreted as CHT (Cursor Horizontal Tab —
+/// advance one tab stop), every focus toggle moved the cursor forward 8
+/// columns. The fix routes the focus-report bytes through the PTY writer
+/// (so the application reads them from stdin), and only emits them when the
+/// app has enabled DECSET 1004. Either way, the cursor must not move.
+#[test]
+fn focus_changed_does_not_move_cursor() {
+    let cmd = CommandBuilder::new("true");
+    let mut pane = GhosttyPane::spawn(80, 24, cmd, 10_000).expect("spawn failed");
+
+    // Establish a known cursor position.
+    pane.feed_bytes(b"hello");
+    let before = pane.cursor();
+    assert!(before.x > 0, "cursor should have advanced past column 0");
+
+    // Toggle focus a few times. Pre-fix this would tab the cursor forward
+    // each call (mode 1004 not enabled, so post-fix it should be a no-op).
+    pane.focus_changed(false);
+    pane.focus_changed(true);
+    pane.focus_changed(false);
+    pane.focus_changed(true);
+
+    let after = pane.cursor();
+    assert_eq!(
+        before.x, after.x,
+        "cursor x must not change on focus toggle (1004 disabled): {} -> {}",
+        before.x, after.x
+    );
+    assert_eq!(
+        before.y, after.y,
+        "cursor y must not change on focus toggle"
+    );
+}
