@@ -14,9 +14,13 @@ use crate::types::*;
 ///
 /// Interprets the legacy `Some("")` / `Some(value)` / `None` convention:
 /// empty string expires the entry, non-empty upserts it, `None` leaves the
-/// existing entry untouched.
+/// existing entry untouched. Operates on both `entries` (authoritative)
+/// and `pending_removals` (G3 debounce tombstones) so a removal survives
+/// the debounce window and an upsert cancels any prior pending removal
+/// for the same key.
 fn apply_legacy_field(
     entries: &mut BTreeMap<String, StatusEntry>,
+    pending_removals: &mut BTreeMap<String, Instant>,
     key: &str,
     priority: i32,
     value: Option<String>,
@@ -24,9 +28,10 @@ fn apply_legacy_field(
 ) {
     match value {
         None => {}
-        Some(s) if s.is_empty() => {
-            entries.remove(key);
+        Some(s) if s.is_empty() && entries.remove(key).is_some() => {
+            pending_removals.insert(key.to_string(), now);
         }
+        Some(s) if s.is_empty() => {}
         Some(s) => {
             entries.insert(
                 key.to_string(),
@@ -42,8 +47,75 @@ fn apply_legacy_field(
                     expires_at: None,
                 },
             );
+            // Re-insertion cancels any pending removal for the same key —
+            // otherwise a later `commit_displayed_at` could drop the
+            // just-re-inserted entry once the old tombstone window elapses.
+            pending_removals.remove(key);
         }
     }
+}
+
+/// Returns `true` when two entries carry the same user-visible value —
+/// ignores `updated_at` (commit timing, not content) and `expires_at`
+/// (a TTL bump alone shouldn't trigger a re-render).
+fn status_entry_eq(a: &StatusEntry, b: &StatusEntry) -> bool {
+    a.text == b.text && a.priority == b.priority && a.icon == b.icon && a.color == b.color
+}
+
+/// Apply G3 debounce to a single workspace's status in-place. Shared by
+/// [`NotificationStore::commit_displayed_at`] and the per-workspace test
+/// entry point. Returns `true` if anything about `displayed` actually
+/// changed (insert, update, or remove) so callers can track whether a
+/// repaint is warranted.
+fn commit_workspace_displayed(
+    status: &mut WorkspaceStatus,
+    now: Instant,
+    debounce: Duration,
+) -> bool {
+    let mut changed = false;
+    // Promote writes that have been stable for at least `debounce`.
+    for (key, entry) in &status.entries {
+        if now.saturating_duration_since(entry.updated_at) < debounce {
+            continue;
+        }
+        let existing = status.displayed.get(key);
+        if existing.is_some_and(|d| status_entry_eq(d, entry)) {
+            continue;
+        }
+        status.displayed.insert(key.clone(), entry.clone());
+        changed = true;
+    }
+    // Drop tombstones whose debounce window has expired.
+    let ready: Vec<String> = status
+        .pending_removals
+        .iter()
+        .filter(|(_, &t)| now.saturating_duration_since(t) >= debounce)
+        .map(|(k, _)| k.clone())
+        .collect();
+    for key in ready {
+        status.pending_removals.remove(&key);
+        // Only mark `changed` when `displayed` actually loses something.
+        if status.displayed.remove(&key).is_some() {
+            changed = true;
+        }
+    }
+    // Defensive cleanup: a key that vanished from `entries` without a
+    // tombstone (possible if `entries` was mutated directly in tests)
+    // shouldn't linger in `displayed` forever. Only purges after a full
+    // debounce window to keep the semantics of removals consistent.
+    let orphans: Vec<String> = status
+        .displayed
+        .iter()
+        .filter(|(k, _)| {
+            !status.entries.contains_key(*k) && !status.pending_removals.contains_key(*k)
+        })
+        .map(|(k, _)| k.clone())
+        .collect();
+    for key in orphans {
+        status.displayed.remove(&key);
+        changed = true;
+    }
+    changed
 }
 
 // ---------------------------------------------------------------------------
@@ -59,6 +131,13 @@ pub struct NotificationStore {
 }
 
 impl NotificationStore {
+    /// Default debounce window for the `displayed` snapshot promotion
+    /// pass (parity plan G3). Matches cmux's 40ms trailing debounce —
+    /// the interval is small enough that intentional status changes still
+    /// feel instant, but long enough that a burst of tool-call writes
+    /// doesn't flash through values the user can't read.
+    pub const DEBOUNCE_WINDOW: Duration = Duration::from_millis(40);
+
     pub fn new() -> Self {
         Self {
             notifications: Vec::new(),
@@ -360,7 +439,21 @@ impl NotificationStore {
         task: Option<String>,
         message: Option<String>,
     ) {
-        let now = Instant::now();
+        self.set_status_at(workspace_id, state, label, task, message, Instant::now());
+    }
+
+    /// Same as [`Self::set_status`] but takes the current time explicitly —
+    /// used by tests that need deterministic debounce behaviour without
+    /// racing `Instant::now()` inside the store.
+    pub fn set_status_at(
+        &mut self,
+        workspace_id: u64,
+        state: AgentState,
+        label: Option<String>,
+        task: Option<String>,
+        message: Option<String>,
+        now: Instant,
+    ) {
         let entry = self
             .workspace_statuses
             .entry(workspace_id)
@@ -369,6 +462,8 @@ impl NotificationStore {
                 updated_at: now,
                 progress: None,
                 entries: BTreeMap::new(),
+                displayed: BTreeMap::new(),
+                pending_removals: BTreeMap::new(),
             });
         entry.state = state;
         entry.updated_at = now;
@@ -377,6 +472,7 @@ impl NotificationStore {
 
         apply_legacy_field(
             &mut entry.entries,
+            &mut entry.pending_removals,
             KEY_AGENT_LABEL,
             priority::LABEL,
             label,
@@ -384,6 +480,7 @@ impl NotificationStore {
         );
         apply_legacy_field(
             &mut entry.entries,
+            &mut entry.pending_removals,
             KEY_AGENT_TASK,
             priority::TASK,
             task,
@@ -391,6 +488,7 @@ impl NotificationStore {
         );
         apply_legacy_field(
             &mut entry.entries,
+            &mut entry.pending_removals,
             KEY_AGENT_MESSAGE,
             priority::MESSAGE,
             message,
@@ -424,6 +522,32 @@ impl NotificationStore {
         color: Option<[u8; 4]>,
         ttl: Option<Duration>,
     ) {
+        self.upsert_entry_at(
+            workspace_id,
+            key,
+            text,
+            priority,
+            icon,
+            color,
+            ttl,
+            Instant::now(),
+        );
+    }
+
+    /// Same as [`Self::upsert_entry`] but takes the current time explicitly —
+    /// used by tests that need deterministic debounce behaviour.
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_entry_at(
+        &mut self,
+        workspace_id: u64,
+        key: impl Into<String>,
+        text: impl Into<String>,
+        priority: i32,
+        icon: Option<String>,
+        color: Option<[u8; 4]>,
+        ttl: Option<Duration>,
+        now: Instant,
+    ) {
         let key = key.into();
         if key.starts_with(AGENT_KEY_PREFIX) {
             tracing::warn!(
@@ -432,7 +556,6 @@ impl NotificationStore {
             return;
         }
         let text = text.into();
-        let now = Instant::now();
         let expires_at = StatusEntry::ttl_to_expires_at(now, ttl);
         let status = self
             .workspace_statuses
@@ -442,8 +565,13 @@ impl NotificationStore {
                 updated_at: now,
                 progress: None,
                 entries: BTreeMap::new(),
+                displayed: BTreeMap::new(),
+                pending_removals: BTreeMap::new(),
             });
         status.updated_at = now;
+        // Re-insertion supersedes any tombstone for the same key — see
+        // the commentary on `apply_legacy_field` for why this matters.
+        status.pending_removals.remove(&key);
         status.entries.insert(
             key,
             StatusEntry {
@@ -490,11 +618,29 @@ impl NotificationStore {
     ///
     /// Used by tool-end hooks (G2) to expire just the tool's entry without
     /// disturbing other publishers. Safe to call on a missing workspace.
+    ///
+    /// G3: if the removed key was already visible in `displayed`, a
+    /// tombstone is recorded on `pending_removals` so the displayed
+    /// snapshot holds the value for the debounce window before dropping
+    /// it — avoids flashing the sidebar empty on a rapid tool-end.
     pub fn remove_entry(&mut self, workspace_id: u64, key: &str) -> bool {
+        self.remove_entry_at(workspace_id, key, Instant::now())
+    }
+
+    /// Same as [`Self::remove_entry`] but takes the current time
+    /// explicitly — used by tests that need deterministic tombstone
+    /// behaviour without `std::thread::sleep`.
+    pub fn remove_entry_at(&mut self, workspace_id: u64, key: &str, now: Instant) -> bool {
         if let Some(status) = self.workspace_statuses.get_mut(&workspace_id) {
             let removed = status.entries.remove(key).is_some();
             if removed {
-                status.updated_at = Instant::now();
+                status.updated_at = now;
+                // Only tombstone if the key is actually in the displayed
+                // snapshot; otherwise the removal has no visible effect
+                // and the tombstone would just bloat the map.
+                if status.displayed.contains_key(key) {
+                    status.pending_removals.insert(key.to_string(), now);
+                }
             }
             removed
         } else {
@@ -513,6 +659,65 @@ impl NotificationStore {
     /// Get workspace agent status.
     pub fn workspace_status(&self, workspace_id: u64) -> Option<&WorkspaceStatus> {
         self.workspace_statuses.get(&workspace_id)
+    }
+
+    /// Refresh the `displayed` debounced snapshot across all workspaces.
+    /// Call once per frame (or on each event tick) with `Instant::now()`
+    /// and [`Self::DEBOUNCE_WINDOW`].
+    ///
+    /// For each workspace:
+    /// - promote `entries[k]` into `displayed[k]` when
+    ///   `now - entry.updated_at >= debounce` (the write has been stable
+    ///   for long enough to display);
+    /// - drop keys from `displayed` when `pending_removals[k] + debounce
+    ///   <= now` (a removal has survived the debounce window);
+    /// - garbage-collect stale `displayed` entries that are neither in
+    ///   `entries` nor tombstoned — this is defensive cleanup and should
+    ///   never fire in normal operation.
+    ///
+    /// Returns the number of workspaces whose displayed state changed —
+    /// callers can use this to decide whether to request a repaint.
+    pub fn commit_displayed_at(&mut self, now: Instant, debounce: Duration) -> usize {
+        let mut changed = 0usize;
+        for status in self.workspace_statuses.values_mut() {
+            if commit_workspace_displayed(status, now, debounce) {
+                changed += 1;
+            }
+        }
+        changed
+    }
+
+    /// Earliest `Instant` at which a pending debounce transition will be
+    /// ready to apply. Returns `None` if nothing is pending. Callers use
+    /// this to wake the frame loop at the right moment rather than
+    /// polling blindly — e.g. `ctx.request_repaint_after(wakeup - now)`.
+    ///
+    /// Only entries that would actually change `displayed` on commit are
+    /// counted: an entry whose text already matches `displayed[k]`
+    /// contributes nothing (there's no pending work for it).
+    pub fn next_commit_at(&self, debounce: Duration) -> Option<Instant> {
+        let mut earliest: Option<Instant> = None;
+        let mut consider = |deadline: Instant| {
+            earliest = Some(match earliest {
+                Some(existing) if existing <= deadline => existing,
+                _ => deadline,
+            });
+        };
+        for status in self.workspace_statuses.values() {
+            for (key, entry) in &status.entries {
+                let already_shown = status
+                    .displayed
+                    .get(key)
+                    .is_some_and(|d| status_entry_eq(d, entry));
+                if !already_shown {
+                    consider(entry.updated_at + debounce);
+                }
+            }
+            for &ts in status.pending_removals.values() {
+                consider(ts + debounce);
+            }
+        }
+        earliest
     }
 
     /// Clean up all state for a closed pane.
@@ -1414,5 +1619,175 @@ mod tests {
         // pane_state (and thus no flash) is created by the restore path.
         assert_eq!(store.pane_unread(10), 0);
         assert!(store.pane_state(10).is_none());
+    }
+
+    // --- G3: debounced displayed snapshot ----------------------------------
+
+    const DEBOUNCE: Duration = Duration::from_millis(40);
+
+    fn new_ws(store: &mut NotificationStore, ws: u64) {
+        // Touch set_status to materialize the workspace entry.
+        store.set_status(ws, AgentState::Idle, None, None, None);
+    }
+
+    #[test]
+    fn fresh_upsert_is_held_until_debounce_elapses() {
+        let mut store = NotificationStore::new();
+        new_ws(&mut store, 1);
+        let t0 = Instant::now();
+        store.upsert_entry_at(1, "claude.tool", "Running cargo", 60, None, None, None, t0);
+        // Commit right at the write instant → still under debounce, hold.
+        store.commit_displayed_at(t0, DEBOUNCE);
+        let status = store.workspace_status(1).unwrap();
+        assert!(status.displayed.is_empty(), "must wait for debounce");
+
+        // Commit a tick after the window → now visible.
+        store.commit_displayed_at(t0 + DEBOUNCE, DEBOUNCE);
+        let status = store.workspace_status(1).unwrap();
+        assert_eq!(
+            status.displayed.get("claude.tool").map(|e| e.text.as_str()),
+            Some("Running cargo")
+        );
+    }
+
+    #[test]
+    fn transient_write_removed_within_debounce_is_never_shown() {
+        // Regression for the flicker bug class this whole feature targets:
+        // a rapid upsert → remove burst must NOT flash the value on screen.
+        let mut store = NotificationStore::new();
+        new_ws(&mut store, 1);
+        let t0 = Instant::now();
+        store.upsert_entry_at(1, "claude.tool", "Running test", 60, None, None, None, t0);
+        store.remove_entry_at(1, "claude.tool", t0 + Duration::from_millis(10));
+        store.commit_displayed_at(t0 + Duration::from_millis(50), DEBOUNCE);
+        let status = store.workspace_status(1).unwrap();
+        assert!(
+            status.displayed.is_empty(),
+            "upsert-then-remove inside the debounce window must not render"
+        );
+    }
+
+    #[test]
+    fn removal_after_display_holds_for_debounce_then_drops() {
+        let mut store = NotificationStore::new();
+        new_ws(&mut store, 1);
+        let t0 = Instant::now();
+        store.upsert_entry_at(1, "claude.tool", "Running test", 60, None, None, None, t0);
+        // Promote the value to displayed.
+        store.commit_displayed_at(t0 + DEBOUNCE, DEBOUNCE);
+        assert_eq!(
+            store.workspace_status(1).unwrap().displayed.len(),
+            1,
+            "precondition: value must be visible"
+        );
+
+        // Remove the entry; commit immediately — displayed must still hold.
+        let t_remove = t0 + DEBOUNCE + Duration::from_millis(5);
+        store.remove_entry_at(1, "claude.tool", t_remove);
+        store.commit_displayed_at(t_remove, DEBOUNCE);
+        assert_eq!(
+            store.workspace_status(1).unwrap().displayed.len(),
+            1,
+            "removal must not vanish the displayed value inside the window"
+        );
+
+        // After the full debounce window, displayed drops the entry.
+        store.commit_displayed_at(t_remove + DEBOUNCE, DEBOUNCE);
+        assert!(store.workspace_status(1).unwrap().displayed.is_empty());
+        assert!(store
+            .workspace_status(1)
+            .unwrap()
+            .pending_removals
+            .is_empty());
+    }
+
+    #[test]
+    fn reinsert_within_window_cancels_tombstone() {
+        // upsert → show → remove → reinsert within debounce: the final
+        // state must persist; we must not drop the re-inserted value when
+        // the old tombstone would otherwise have expired.
+        let mut store = NotificationStore::new();
+        new_ws(&mut store, 1);
+        let t0 = Instant::now();
+        store.upsert_entry_at(1, "claude.tool", "A", 60, None, None, None, t0);
+        store.commit_displayed_at(t0 + DEBOUNCE, DEBOUNCE);
+
+        let t1 = t0 + DEBOUNCE + Duration::from_millis(5);
+        store.remove_entry_at(1, "claude.tool", t1);
+        // Reinsert a few ms later, still inside the tombstone window.
+        let t2 = t1 + Duration::from_millis(5);
+        store.upsert_entry_at(1, "claude.tool", "B", 60, None, None, None, t2);
+
+        // Step far past both the original tombstone expiry and the new
+        // entry's debounce window. Displayed should now be "B".
+        store.commit_displayed_at(t2 + DEBOUNCE + Duration::from_millis(50), DEBOUNCE);
+        let status = store.workspace_status(1).unwrap();
+        assert_eq!(
+            status.displayed.get("claude.tool").map(|e| e.text.as_str()),
+            Some("B"),
+            "re-inserted value must win over the stale tombstone"
+        );
+        assert!(status.pending_removals.is_empty());
+    }
+
+    #[test]
+    fn next_commit_at_reports_earliest_deadline() {
+        let mut store = NotificationStore::new();
+        new_ws(&mut store, 1);
+        let t0 = Instant::now();
+        store.upsert_entry_at(1, "claude.tool", "first", 60, None, None, None, t0);
+        // Next commit = t0 + DEBOUNCE.
+        let wake = store.next_commit_at(DEBOUNCE).unwrap();
+        assert_eq!(
+            wake - t0,
+            DEBOUNCE,
+            "wake ({:?} after t0) should be exactly DEBOUNCE",
+            wake - t0
+        );
+
+        // After commit, same entry is now displayed. next_commit_at should
+        // stop reporting a deadline for it.
+        store.commit_displayed_at(wake, DEBOUNCE);
+        assert!(store.next_commit_at(DEBOUNCE).is_none());
+    }
+
+    #[test]
+    fn legacy_field_clear_tombstones_the_message_slot() {
+        // A set_status with Some("") used to be the flicker trigger —
+        // make sure the G3 tombstone path holds the displayed message for
+        // the debounce window on that path too.
+        let mut store = NotificationStore::new();
+        let t0 = Instant::now();
+        store.set_status_at(
+            1,
+            AgentState::Active,
+            None,
+            None,
+            Some("Running cargo".into()),
+            t0,
+        );
+        store.commit_displayed_at(t0 + DEBOUNCE, DEBOUNCE);
+        assert_eq!(
+            store.workspace_status(1).unwrap().displayed_message(),
+            Some("Running cargo")
+        );
+
+        // Clear via set_status(Some("")) and commit right away — displayed
+        // must still hold the old message for the debounce window.
+        let t_clear = t0 + DEBOUNCE + Duration::from_millis(5);
+        store.set_status_at(
+            1,
+            AgentState::Active,
+            None,
+            None,
+            Some(String::new()),
+            t_clear,
+        );
+        store.commit_displayed_at(t_clear, DEBOUNCE);
+        assert_eq!(
+            store.workspace_status(1).unwrap().displayed_message(),
+            Some("Running cargo"),
+            "displayed must not blank mid-debounce"
+        );
     }
 }
