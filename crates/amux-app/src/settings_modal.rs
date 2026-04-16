@@ -154,7 +154,13 @@ impl AmuxApp {
 
                     ui.horizontal(|ui| {
                         ui.label("Font size:");
-                        ui.add(egui::Slider::new(&mut modal.font_size, 4.0..=96.0).step_by(1.0));
+                        if ui.small_button("−").clicked() {
+                            modal.font_size = (modal.font_size - 1.0).max(4.0);
+                        }
+                        ui.label(format!("{}", modal.font_size as u32));
+                        if ui.small_button("+").clicked() {
+                            modal.font_size = (modal.font_size + 1.0).min(96.0);
+                        }
                     });
 
                     ui.horizontal(|ui| {

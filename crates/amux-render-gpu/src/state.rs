@@ -53,6 +53,7 @@ pub struct PaneRenderState {
     cursor_shape: CursorShape,
     scroll_offset: usize,
     is_focused: bool,
+    pane_dim_alpha: u8,
     selection_range: Option<((usize, usize), (usize, usize))>,
     highlight_hash: u64,
     current_highlight: Option<usize>,
@@ -106,6 +107,7 @@ impl PaneRenderState {
             cursor_shape: CursorShape::Default,
             scroll_offset: 0,
             is_focused: false,
+            pane_dim_alpha: 0,
             selection_range: None,
             highlight_hash: 0,
             current_highlight: None,
@@ -142,6 +144,7 @@ impl PaneRenderState {
             || self.cursor_shape != snap.cursor_shape
             || self.scroll_offset != snap.scroll_offset
             || self.is_focused != snap.is_focused
+            || self.pane_dim_alpha != snap.pane_dim_alpha
             || self.rect_x != rect.x
             || self.rect_y != rect.y
             || self.rect_w != rect.width
@@ -175,6 +178,7 @@ impl PaneRenderState {
         self.cursor_shape = snap.cursor_shape;
         self.scroll_offset = snap.scroll_offset;
         self.is_focused = snap.is_focused;
+        self.pane_dim_alpha = snap.pane_dim_alpha;
         self.selection_range = snap.selection_range;
         self.highlight_hash = hash_highlight_ranges(&snap.highlight_ranges);
         self.current_highlight = snap.current_highlight;

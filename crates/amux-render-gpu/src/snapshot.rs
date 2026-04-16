@@ -22,6 +22,10 @@ pub struct TerminalSnapshot {
     pub cursor_bg: [f32; 4],
     pub cursor_fg: [f32; 4],
     pub is_focused: bool,
+    /// Configured dim overlay alpha (0–255) for unfocused panes. Stored
+    /// here so the GPU renderer's dirty-check can detect changes and
+    /// rebuild cell buffers when the user adjusts pane_dim_alpha.
+    pub pane_dim_alpha: u8,
     pub scroll_offset: usize,
     /// Text under the cursor (for block cursor rendering).
     pub cursor_text: String,
@@ -121,6 +125,9 @@ impl TerminalSnapshot {
         seqno: usize,
         highlight_ranges: Vec<(usize, usize, usize)>,
         current_highlight: Option<usize>,
+        // Dim overlay alpha (0–255, matches CPU path semantics): 0 = no dim,
+        // 255 = fully black. Applied to unfocused panes.
+        pane_dim_alpha: u8,
     ) -> Self {
         let palette = backend.palette();
         let cursor = backend.cursor();
@@ -216,8 +223,14 @@ impl TerminalSnapshot {
             }
         }
 
-        // Dim background colors for unfocused panes.
-        let dim_factor = if is_focused { 1.0 } else { 0.6 };
+        // Dim background colors for unfocused panes. The CPU path overlays a
+        // black rect with alpha=pane_dim_alpha; approximate the same visual by
+        // multiplying cell backgrounds by (1 - alpha/255).
+        let dim_factor = if is_focused {
+            1.0
+        } else {
+            1.0 - (pane_dim_alpha as f32 / 255.0)
+        };
         let dimmed_bg = dim_color(default_bg, dim_factor);
         if !is_focused {
             for cell in &mut cells {
@@ -240,6 +253,7 @@ impl TerminalSnapshot {
             cursor_bg,
             cursor_fg,
             is_focused,
+            pane_dim_alpha,
             scroll_offset,
             cursor_text,
             cursor_text_bold,
@@ -401,8 +415,19 @@ mod tests {
             palette: Palette::default(),
         };
 
-        let snap =
-            TerminalSnapshot::from_backend(&backend, 2, 1, 0, true, None, 0, 0, Vec::new(), None);
+        let snap = TerminalSnapshot::from_backend(
+            &backend,
+            2,
+            1,
+            0,
+            true,
+            None,
+            0,
+            0,
+            Vec::new(),
+            None,
+            0,
+        );
 
         // Normal cell: fg=red, bg=blue (unchanged)
         assert_eq!(snap.cells[0].fg, [1.0, 0.0, 0.0, 1.0]);
