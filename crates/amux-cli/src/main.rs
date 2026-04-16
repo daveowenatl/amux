@@ -796,6 +796,15 @@ async fn main() -> anyhow::Result<()> {
             let ws_id = workspace
                 .or_else(|| std::env::var("AMUX_WORKSPACE_ID").ok())
                 .unwrap_or_else(|| "0".to_string());
+            // Require exactly one of VALUE or --clear. clap already
+            // rejects `--clear 0.5` via `conflicts_with`; this is the
+            // missing half — a bare `amux set-progress` shouldn't
+            // silently clear the bar by sending a null value.
+            if value.is_none() && !clear {
+                anyhow::bail!(
+                    "set-progress requires either a VALUE or --clear (bare invocation has no effect)"
+                );
+            }
             let value = if clear { None } else { value };
             if let Some(v) = value {
                 if !v.is_finite() {
@@ -804,11 +813,6 @@ async fn main() -> anyhow::Result<()> {
                 if !(0.0..=1.0).contains(&v) {
                     anyhow::bail!("progress value must be in [0.0, 1.0] (got {v})");
                 }
-            } else if !clear && label.is_some() {
-                // A label without a bar is meaningless — the server
-                // drops labels on a `None` value anyway. Surface this
-                // to the caller so a script bug doesn't silently no-op.
-                anyhow::bail!("--label requires a progress value or --clear");
             }
             let mut params = serde_json::json!({
                 "workspace_id": ws_id,

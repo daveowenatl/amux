@@ -326,16 +326,20 @@ pub(crate) enum Command {
     /// sidebar row).
     ///
     /// `VALUE` is a fraction in `[0.0, 1.0]` — pass `--clear` instead
-    /// to drop the bar entirely. `--label` attaches a short caption
-    /// ("compiling 34/120"); it renders next to the bar and only while
-    /// a value is present.
+    /// to drop the bar entirely. Exactly one of `VALUE` or `--clear`
+    /// is required. `--label` attaches a short caption
+    /// ("compiling 34/120"); it renders above the bar and only while
+    /// a value is present, so it can't be combined with `--clear`.
     #[command(name = "set-progress")]
     SetProgress {
-        /// Progress value between 0.0 and 1.0. Conflicts with `--clear`.
+        /// Progress value between 0.0 and 1.0. Required unless
+        /// `--clear` is set; conflicts with `--clear`.
         #[arg(conflicts_with = "clear")]
         value: Option<f32>,
-        /// Optional short caption rendered beside the bar.
-        #[arg(long)]
+        /// Optional short caption rendered above the bar. Only
+        /// meaningful while a value is present, so it can't be
+        /// combined with `--clear`.
+        #[arg(long, conflicts_with = "clear")]
         label: Option<String>,
         /// Clear the progress bar (and its label).
         #[arg(long)]

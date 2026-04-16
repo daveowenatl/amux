@@ -987,8 +987,7 @@ impl AmuxApp {
                                 Some(v.clamp(0.0, 1.0))
                             }
                         });
-                        self.notifications
-                            .set_progress(ws_id, value, params.label.clone());
+                        self.notifications.set_progress(ws_id, value, params.label);
                         Response::ok(req.id.clone(), serde_json::json!({}))
                     }
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
