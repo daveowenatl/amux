@@ -5,10 +5,43 @@
 //! unread counting, workspace status updates, flash animation triggering,
 //! and per-pane notification state.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
 use crate::types::*;
+
+/// Helper for the [`NotificationStore::set_status`] back-compat shim.
+///
+/// Interprets the legacy `Some("")` / `Some(value)` / `None` convention:
+/// empty string expires the entry, non-empty upserts it, `None` leaves the
+/// existing entry untouched.
+fn apply_legacy_field(
+    entries: &mut BTreeMap<String, StatusEntry>,
+    key: &str,
+    priority: i32,
+    value: Option<String>,
+    now: Instant,
+) {
+    match value {
+        None => {}
+        Some(s) if s.is_empty() => {
+            entries.remove(key);
+        }
+        Some(s) => {
+            entries.insert(
+                key.to_string(),
+                StatusEntry {
+                    key: key.to_string(),
+                    text: s,
+                    priority,
+                    icon: None,
+                    color: None,
+                    updated_at: now,
+                },
+            );
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // NotificationStore
@@ -303,6 +336,13 @@ impl NotificationStore {
     }
 
     /// Set workspace agent status. Clears any existing progress bar.
+    ///
+    /// Back-compat shim over the keyed-entry model: `label`/`task`/`message`
+    /// map to the reserved [`KEY_AGENT_LABEL`] / [`KEY_AGENT_TASK`] /
+    /// [`KEY_AGENT_MESSAGE`] keys. Preserves the historical convention where
+    /// `Some("")` expires the entry and `None` leaves it untouched, so
+    /// callers driven by the `status.set` IPC can continue to publish just
+    /// the fields they want to change.
     pub fn set_status(
         &mut self,
         workspace_id: u64,
@@ -311,30 +351,101 @@ impl NotificationStore {
         task: Option<String>,
         message: Option<String>,
     ) {
-        let existing = self.workspace_statuses.get(&workspace_id);
-        // Normalize empty strings to None, then preserve existing if not provided.
-        // Some("") means "clear", None means "keep previous".
-        let task = match task {
-            Some(s) if s.is_empty() => None,
-            Some(s) => Some(s),
-            None => existing.and_then(|s| s.task.clone()),
-        };
-        let message = match message {
-            Some(s) if s.is_empty() => None,
-            Some(s) => Some(s),
-            None => existing.and_then(|s| s.message.clone()),
-        };
-        self.workspace_statuses.insert(
-            workspace_id,
-            WorkspaceStatus {
+        let now = Instant::now();
+        let entry = self
+            .workspace_statuses
+            .entry(workspace_id)
+            .or_insert_with(|| WorkspaceStatus {
                 state,
-                label,
-                updated_at: Instant::now(),
+                updated_at: now,
                 progress: None,
-                task,
-                message,
+                entries: BTreeMap::new(),
+            });
+        entry.state = state;
+        entry.updated_at = now;
+        // set_status is a "coarse" update: clears any existing progress.
+        entry.progress = None;
+
+        apply_legacy_field(
+            &mut entry.entries,
+            KEY_AGENT_LABEL,
+            priority::LABEL,
+            label,
+            now,
+        );
+        apply_legacy_field(
+            &mut entry.entries,
+            KEY_AGENT_TASK,
+            priority::TASK,
+            task,
+            now,
+        );
+        apply_legacy_field(
+            &mut entry.entries,
+            KEY_AGENT_MESSAGE,
+            priority::MESSAGE,
+            message,
+            now,
+        );
+    }
+
+    /// Publish / replace a keyed status entry for a workspace.
+    ///
+    /// Primary API for [#260](https://github.com/daveowenatl/amux/issues/260)
+    /// parity work: hooks, CLI, and integrations publish under their own key
+    /// so that one source expiring (e.g. a tool completing) doesn't blank
+    /// another source's content. Creates the workspace-status record with
+    /// [`AgentState::Idle`] if it didn't already exist — callers that need a
+    /// specific state should also call [`Self::set_status`].
+    pub fn upsert_entry(
+        &mut self,
+        workspace_id: u64,
+        key: impl Into<String>,
+        text: impl Into<String>,
+        priority: i32,
+        icon: Option<String>,
+        color: Option<[u8; 4]>,
+    ) {
+        let key = key.into();
+        let text = text.into();
+        let now = Instant::now();
+        let status = self
+            .workspace_statuses
+            .entry(workspace_id)
+            .or_insert_with(|| WorkspaceStatus {
+                state: AgentState::Idle,
+                updated_at: now,
+                progress: None,
+                entries: BTreeMap::new(),
+            });
+        status.updated_at = now;
+        status.entries.insert(
+            key.clone(),
+            StatusEntry {
+                key,
+                text,
+                priority,
+                icon,
+                color,
+                updated_at: now,
             },
         );
+    }
+
+    /// Remove a keyed status entry. Returns `true` if an entry was removed.
+    ///
+    /// Used by tool-end hooks (G2) to expire just the tool's entry without
+    /// disturbing other publishers. Safe to call on a missing workspace.
+    pub fn remove_entry(&mut self, workspace_id: u64, key: &str) -> bool {
+        if let Some(status) = self.workspace_statuses.get_mut(&workspace_id) {
+            let removed = status.entries.remove(key).is_some();
+            if removed {
+                status.updated_at = Instant::now();
+            }
+            removed
+        } else {
+            false
+        }
     }
 
     /// Set workspace progress (0.0–1.0). Pass `None` to clear.
@@ -646,12 +757,122 @@ mod tests {
         );
         let status = store.workspace_status(1).unwrap();
         assert_eq!(status.state, AgentState::Active);
-        assert_eq!(status.label.as_deref(), Some("Running tests"));
+        assert_eq!(status.label(), Some("Running tests"));
 
+        // None preserves label under the legacy shim.
         store.set_status(1, AgentState::Idle, None, None, None);
         let status = store.workspace_status(1).unwrap();
         assert_eq!(status.state, AgentState::Idle);
-        assert!(status.label.is_none());
+        assert_eq!(status.label(), Some("Running tests"));
+
+        // Some("") expires the entry.
+        store.set_status(1, AgentState::Idle, Some(String::new()), None, None);
+        let status = store.workspace_status(1).unwrap();
+        assert!(status.label().is_none());
+    }
+
+    #[test]
+    fn set_status_maps_to_reserved_keys() {
+        let mut store = NotificationStore::new();
+        store.set_status(
+            1,
+            AgentState::Active,
+            Some("Working".into()),
+            Some("Refactor foo".into()),
+            Some("reading bar.rs".into()),
+        );
+        let status = store.workspace_status(1).unwrap();
+        assert_eq!(status.label(), Some("Working"));
+        assert_eq!(status.task(), Some("Refactor foo"));
+        assert_eq!(status.message(), Some("reading bar.rs"));
+        assert_eq!(status.entries.len(), 3);
+
+        // Entries surface with the expected priorities.
+        let by_pri = status.entries_by_priority();
+        assert_eq!(by_pri[0].key, KEY_AGENT_LABEL);
+        assert_eq!(by_pri[1].key, KEY_AGENT_TASK);
+        assert_eq!(by_pri[2].key, KEY_AGENT_MESSAGE);
+    }
+
+    #[test]
+    fn upsert_entry_and_remove_entry() {
+        let mut store = NotificationStore::new();
+        store.upsert_entry(
+            1,
+            "claude.tool",
+            "Reading file",
+            priority::MESSAGE,
+            Some("\u{1F4C4}".into()),
+            None,
+        );
+        let status = store.workspace_status(1).unwrap();
+        let entry = status.entry("claude.tool").unwrap();
+        assert_eq!(entry.text, "Reading file");
+        assert_eq!(entry.priority, priority::MESSAGE);
+        assert_eq!(entry.icon.as_deref(), Some("\u{1F4C4}"));
+
+        // Upsert replaces in place.
+        store.upsert_entry(
+            1,
+            "claude.tool",
+            "Editing file",
+            priority::MESSAGE,
+            None,
+            None,
+        );
+        assert_eq!(
+            store
+                .workspace_status(1)
+                .unwrap()
+                .entry("claude.tool")
+                .unwrap()
+                .text,
+            "Editing file"
+        );
+
+        // Remove expires the key and leaves others alone.
+        store.upsert_entry(1, "git.branch", "main", priority::USER_GENERIC, None, None);
+        assert!(store.remove_entry(1, "claude.tool"));
+        let status = store.workspace_status(1).unwrap();
+        assert!(status.entry("claude.tool").is_none());
+        assert!(status.entry("git.branch").is_some());
+
+        // Double-remove returns false.
+        assert!(!store.remove_entry(1, "claude.tool"));
+    }
+
+    #[test]
+    fn upsert_entry_creates_status_if_missing() {
+        let mut store = NotificationStore::new();
+        assert!(store.workspace_status(1).is_none());
+        store.upsert_entry(
+            1,
+            "user.generic",
+            "hello",
+            priority::USER_GENERIC,
+            None,
+            None,
+        );
+        let status = store.workspace_status(1).unwrap();
+        assert_eq!(status.state, AgentState::Idle);
+        assert_eq!(status.entry("user.generic").unwrap().text, "hello");
+    }
+
+    #[test]
+    fn entries_by_priority_sorts_descending() {
+        let mut store = NotificationStore::new();
+        store.upsert_entry(1, "a.low", "low", 10, None, None);
+        store.upsert_entry(1, "b.high", "high", 100, None, None);
+        store.upsert_entry(1, "c.mid", "mid", 50, None, None);
+        // Ties break by key ascending: insert two at priority 50.
+        store.upsert_entry(1, "a.tie", "tie", 50, None, None);
+        let status = store.workspace_status(1).unwrap();
+        let ordered: Vec<&str> = status
+            .entries_by_priority()
+            .iter()
+            .map(|e| e.key.as_str())
+            .collect();
+        assert_eq!(ordered, vec!["b.high", "a.tie", "c.mid", "a.low"]);
     }
 
     #[test]
