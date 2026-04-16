@@ -82,8 +82,10 @@ pub struct StatusEntry {
     pub color: Option<[u8; 4]>,
     pub updated_at: Instant,
     /// Absolute deadline after which the entry is considered expired and is
-    /// filtered out of the render list. `None` means sticky until an explicit
-    /// [`super::NotificationStore::remove_entry`] call.
+    /// filtered out of the render list. `None` means there is no automatic
+    /// expiry — the entry persists until removed via
+    /// [`super::NotificationStore::remove_entry`] or overwritten by a later
+    /// [`super::NotificationStore::upsert_entry`] call for the same key.
     ///
     /// TTL acts as a safety net for integrations that publish a transient
     /// entry (e.g. "running tool X") but might not survive to clean it up
