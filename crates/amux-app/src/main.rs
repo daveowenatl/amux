@@ -175,6 +175,12 @@ struct AmuxApp {
     last_click_time: Instant,
     last_click_pos: egui::Pos2,
     click_count: u32,
+    /// Single-click press info captured but not yet promoted to a SelectionState.
+    /// Held until the mouse moves past the press cell (then we paint the
+    /// selection) or the button releases without moving (then we discard it,
+    /// avoiding the "click leaves a square on the terminal" bug).
+    /// Stores (pane_id, col, stable_row).
+    pending_selection_start: Option<(PaneId, usize, usize)>,
     wants_exit: bool,
     font_size: f32,
     find_state: Option<FindState>,

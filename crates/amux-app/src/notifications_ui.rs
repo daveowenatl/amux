@@ -491,7 +491,7 @@ impl AmuxApp {
         let min_left = horizontal_margin.min(max_left);
         let panel_left = (bell_center_x - panel_width / 2.0).clamp(min_left, max_left);
 
-        egui::Window::new("Notifications")
+        let window_response = egui::Window::new("Notifications")
             .title_bar(false)
             .movable(false)
             .collapsible(false)
@@ -612,6 +612,22 @@ impl AmuxApp {
             }
             self.set_focus(pane_id as PaneId);
         }
+        // Click outside the panel dismisses it. Use interact_pos at press time
+        // and check it's outside the window rect. Skip when egui itself is using
+        // the pointer (e.g., dragging the scrollbar inside the panel).
+        if let Some(resp) = window_response {
+            let panel_rect = resp.response.rect;
+            let pressed_outside = ctx.input(|i| {
+                i.pointer.primary_pressed()
+                    && i.pointer
+                        .interact_pos()
+                        .is_some_and(|p| !panel_rect.contains(p))
+            });
+            if pressed_outside && !ctx.is_using_pointer() {
+                close_panel = true;
+            }
+        }
+
         if close_panel {
             self.show_notification_panel = false;
         }

@@ -427,8 +427,12 @@ impl eframe::App for AmuxApp {
                     let layout = self.active_workspace().tree.layout(panel_rect);
                     let focused = self.focused_pane_id();
 
-                    // Click-to-focus + selection start
-                    if ui.input(|i| i.pointer.primary_pressed()) {
+                    // Click-to-focus + selection start. Skip when the click
+                    // landed on an egui overlay (modal, popup) so clicking
+                    // inside a Settings or rename modal doesn't change the
+                    // focused pane behind it.
+                    if ui.input(|i| i.pointer.primary_pressed()) && !ui.ctx().is_pointer_over_area()
+                    {
                         if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                             for &(id, rect) in &layout {
                                 if rect.contains(pos) {

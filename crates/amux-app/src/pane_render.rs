@@ -61,6 +61,7 @@ impl AmuxApp {
         // TODO: replace with screenshot+hide for smoother UX.
         let overlay_open = self.show_notification_panel
             || self.rename_modal.is_some()
+            || self.settings_modal.is_some()
             || self.find_state.is_some();
         for &bid in &browser_pane_ids {
             if let Some(PaneEntry::Browser(b)) = self.panes.get(&bid) {
