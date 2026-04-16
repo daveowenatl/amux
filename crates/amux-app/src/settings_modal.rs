@@ -6,24 +6,29 @@
 
 use crate::*;
 
-/// A labeled color picker with optional "clear" button.
-/// `color` is None when using theme default, Some([r,g,b]) when overridden.
-fn color_picker_field(ui: &mut egui::Ui, label: &str, color: &mut Option<[u8; 3]>) {
-    ui.horizontal(|ui| {
-        ui.label(label);
-        let mut rgb = color.unwrap_or([128, 128, 128]);
-        let response = ui.color_edit_button_srgb(&mut rgb);
-        if response.changed() {
-            *color = Some(rgb);
+/// A color picker grid row. Shows the theme default color in the swatch when
+/// no override is set; clicking the swatch promotes it to an explicit override.
+/// "Reset" clears back to theme default.
+fn color_picker_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    color: &mut Option<[u8; 3]>,
+    theme_default: [u8; 3],
+) {
+    ui.label(label);
+    let mut rgb = color.unwrap_or(theme_default);
+    let response = ui.color_edit_button_srgb(&mut rgb);
+    if response.changed() {
+        *color = Some(rgb);
+    }
+    if color.is_some() {
+        if ui.small_button("Reset").clicked() {
+            *color = None;
         }
-        if color.is_some() {
-            if ui.small_button("Clear").clicked() {
-                *color = None;
-            }
-        } else {
-            ui.weak("(default)");
-        }
-    });
+    } else {
+        ui.weak("default");
+    }
+    ui.end_row();
 }
 
 fn hex_to_rgb(s: &str) -> Option<[u8; 3]> {
@@ -180,21 +185,67 @@ impl AmuxApp {
                     // --- Colors ---
                     ui.heading("Colors");
                     ui.add_space(4.0);
-                    ui.label("Leave blank for theme default. Use #rrggbb hex.");
-                    ui.add_space(2.0);
 
-                    color_picker_field(ui, "Foreground:", &mut modal.foreground);
-                    color_picker_field(ui, "Background:", &mut modal.background);
-                    color_picker_field(ui, "Cursor fg:", &mut modal.cursor_fg);
-                    color_picker_field(ui, "Cursor bg:", &mut modal.cursor_bg);
-                    color_picker_field(ui, "Selection fg:", &mut modal.selection_fg);
-                    color_picker_field(ui, "Selection bg:", &mut modal.selection_bg);
+                    let tc = &self.theme.terminal;
+                    let cc = &self.theme.chrome;
+                    let accent_default = [cc.accent.r(), cc.accent.g(), cc.accent.b()];
+                    let sidebar_default = [cc.sidebar_bg.r(), cc.sidebar_bg.g(), cc.sidebar_bg.b()];
+                    let ring_default = [
+                        cc.notification_ring.r(),
+                        cc.notification_ring.g(),
+                        cc.notification_ring.b(),
+                    ];
 
-                    ui.add_space(4.0);
-                    ui.label("Chrome");
-                    color_picker_field(ui, "Accent:", &mut modal.accent);
-                    color_picker_field(ui, "Sidebar bg:", &mut modal.sidebar_bg);
-                    color_picker_field(ui, "Notif ring:", &mut modal.notification_ring);
+                    egui::Grid::new("colors_grid")
+                        .num_columns(3)
+                        .spacing([8.0, 4.0])
+                        .show(ui, |ui| {
+                            color_picker_row(
+                                ui,
+                                "Foreground",
+                                &mut modal.foreground,
+                                tc.foreground,
+                            );
+                            color_picker_row(
+                                ui,
+                                "Background",
+                                &mut modal.background,
+                                tc.background,
+                            );
+                            color_picker_row(ui, "Cursor fg", &mut modal.cursor_fg, tc.cursor_fg);
+                            color_picker_row(ui, "Cursor bg", &mut modal.cursor_bg, tc.cursor_bg);
+                            color_picker_row(
+                                ui,
+                                "Selection fg",
+                                &mut modal.selection_fg,
+                                tc.selection_fg,
+                            );
+                            color_picker_row(
+                                ui,
+                                "Selection bg",
+                                &mut modal.selection_bg,
+                                tc.selection_bg,
+                            );
+                            // Chrome
+                            ui.separator();
+                            ui.separator();
+                            ui.separator();
+                            ui.end_row();
+                            color_picker_row(ui, "Accent", &mut modal.accent, accent_default);
+                            color_picker_row(
+                                ui,
+                                "Sidebar bg",
+                                &mut modal.sidebar_bg,
+                                sidebar_default,
+                            );
+                            color_picker_row(
+                                ui,
+                                "Notif ring",
+                                &mut modal.notification_ring,
+                                ring_default,
+                            );
+                        });
+
                     ui.horizontal(|ui| {
                         ui.label("Pane dim:");
                         ui.add(egui::Slider::new(&mut modal.pane_dim_alpha, 0..=255));
