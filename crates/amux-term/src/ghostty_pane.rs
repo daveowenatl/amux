@@ -476,10 +476,12 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
             .resize(cols, rows, 0, 0)
             .map_err(|e| TermError::ResizeFailed(anyhow::anyhow!("{e}")))?;
         // Bump seqno so the renderer takes a fresh snapshot at the new
-        // dimensions. Without this, the render state stays stale until
-        // new bytes arrive — causing garbled output after pane splits.
+        // dimensions on the next frame. Don't call refresh_render_cache()
+        // here — the Zig VT engine may not be in a consistent state for
+        // snapshotting immediately after resize (STATUS_BREAKPOINT crash
+        // on Windows). The renderer will snapshot on the next frame when
+        // it sees the bumped seqno.
         self.seqno += 1;
-        self.refresh_render_cache();
         Ok(())
     }
 
