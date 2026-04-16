@@ -28,11 +28,10 @@ fn apply_legacy_field(
 ) {
     match value {
         None => {}
-        Some(s) if s.is_empty() => {
-            if entries.remove(key).is_some() {
-                pending_removals.insert(key.to_string(), now);
-            }
+        Some(s) if s.is_empty() && entries.remove(key).is_some() => {
+            pending_removals.insert(key.to_string(), now);
         }
+        Some(s) if s.is_empty() => {}
         Some(s) => {
             entries.insert(
                 key.to_string(),
