@@ -6,6 +6,7 @@ impl AmuxApp {
     /// Check if any egui text field (omnibar, rename modal, find bar) has focus.
     pub(crate) fn has_focused_text_field(&self) -> bool {
         self.rename_modal.is_some()
+            || self.settings_modal.is_some()
             || self.find_state.is_some()
             || self.omnibar_state.values().any(|s| s.focused)
     }

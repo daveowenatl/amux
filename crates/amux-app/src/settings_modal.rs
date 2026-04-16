@@ -24,6 +24,18 @@ fn color_picker_row(
     ui.end_row();
 }
 
+/// If the given text-field response has focus and a pending paste is
+/// available, append the paste text to the field. Used to handle Cmd+V
+/// on macOS where muda's native menu bar consumes the keystroke before
+/// egui can dispatch Event::Paste.
+fn apply_paste_if_focused(response: &egui::Response, field: &mut String, paste: Option<&str>) {
+    if let Some(text) = paste {
+        if response.has_focus() {
+            field.push_str(text);
+        }
+    }
+}
+
 /// Build a ColorsConfig from the modal's current color state.
 fn colors_from_modal(modal: &SettingsModal) -> config::ColorsConfig {
     config::ColorsConfig {
@@ -116,6 +128,11 @@ impl AmuxApp {
         let mut save = false;
         let mut cancel = false;
 
+        // The macOS native menu bar consumes Cmd+V before egui sees it.
+        // workspace_ops stores the clipboard text in pending_text_field_paste;
+        // here we route it to whichever text field is currently focused.
+        let pending_paste = self.pending_text_field_paste.take();
+
         let palette = crate::popup_theme::MenuPalette::from_theme(&self.theme);
         crate::popup_theme::with_modal_palette(ctx, palette, || {
             egui::Window::new("Settings")
@@ -137,7 +154,12 @@ impl AmuxApp {
 
                     ui.horizontal(|ui| {
                         ui.label("Font family:");
-                        ui.text_edit_singleline(&mut modal.font_family);
+                        let r = ui.text_edit_singleline(&mut modal.font_family);
+                        apply_paste_if_focused(
+                            &r,
+                            &mut modal.font_family,
+                            pending_paste.as_deref(),
+                        );
                     });
 
                     ui.horizontal(|ui| {
@@ -160,7 +182,8 @@ impl AmuxApp {
 
                     ui.horizontal(|ui| {
                         ui.label("Shell:");
-                        ui.text_edit_singleline(&mut modal.shell);
+                        let r = ui.text_edit_singleline(&mut modal.shell);
+                        apply_paste_if_focused(&r, &mut modal.shell, pending_paste.as_deref());
                     });
 
                     ui.add_space(8.0);
