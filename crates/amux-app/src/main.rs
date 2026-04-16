@@ -634,6 +634,31 @@ impl AmuxApp {
                     None => {}
                 }
             }
+            // G22: persist non-reserved keyed entries (user-published via
+            // `amux set-status`, e.g. `git.branch` or a workspace
+            // description). Reserved `agent.*` slots and the live
+            // AgentState/progress describe process state that doesn't
+            // survive a restart, so they're intentionally dropped.
+            let workspace_status = self.notifications.workspace_status(ws.id).and_then(|s| {
+                let entries: Vec<amux_session::SavedStatusEntry> = s
+                    .entries
+                    .iter()
+                    .filter(|(k, _)| !k.starts_with(amux_notify::AGENT_KEY_PREFIX))
+                    .map(|(k, e)| amux_session::SavedStatusEntry {
+                        key: k.clone(),
+                        text: e.text.clone(),
+                        priority: e.priority,
+                        icon: e.icon.clone(),
+                        color: e.color,
+                    })
+                    .collect();
+                if entries.is_empty() {
+                    None
+                } else {
+                    Some(amux_session::SavedWorkspaceStatus { entries })
+                }
+            });
+
             saved_workspaces.push(amux_session::SavedWorkspace {
                 id: ws.id,
                 title: ws.title.clone(),
@@ -643,6 +668,7 @@ impl AmuxApp {
                 zoomed: ws.zoomed,
                 panes: saved_panes,
                 color: ws.color,
+                workspace_status,
             });
         }
 

@@ -80,6 +80,53 @@ pub struct SavedWorkspace {
     pub panes: HashMap<u64, SavedManagedPane>,
     #[serde(default)]
     pub color: Option<[u8; 4]>,
+    /// Non-reserved keyed status entries (user publications via
+    /// `amux set-status`, e.g. `git.branch` or a workspace description).
+    /// Reserved `agent.*` slots and the live `AgentState` / progress are
+    /// intentionally not persisted — those describe agent-process state
+    /// that doesn't survive a restart (see #260 G22 and the note in
+    /// `restore_session`). `None` when nothing worth saving is present,
+    /// so old session files without this field load unchanged.
+    ///
+    /// Named after the struct it carries, not after the `agent.*` keys —
+    /// those are exactly what this field *excludes*. An earlier revision
+    /// called this `agent_status`, which read as the inverse of the
+    /// intent; the rename happened before the PR landed, so there's no
+    /// on-disk compat burden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_status: Option<SavedWorkspaceStatus>,
+}
+
+/// Serializable projection of `amux_notify::WorkspaceStatus` — carries only
+/// what's safe to restore across a restart. See
+/// [`SavedWorkspace::workspace_status`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedWorkspaceStatus {
+    /// User-published keyed entries to restore on the next launch. The
+    /// save path filters reserved `agent.*` keys; the restore path also
+    /// filters defensively in case a hand-edited session file tries to
+    /// smuggle reserved keys through.
+    pub entries: Vec<SavedStatusEntry>,
+}
+
+/// Persistable form of `amux_notify::StatusEntry`. Timestamps (`updated_at`,
+/// `expires_at`) aren't carried: they're `Instant`-valued and have no
+/// cross-restart meaning, so restored entries come back sticky with a
+/// fresh `updated_at` at load time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedStatusEntry {
+    /// Namespaced entry key (e.g. `git.branch`, `workspace.description`).
+    pub key: String,
+    /// Rendered text for the entry — what appears in the sidebar row.
+    pub text: String,
+    /// Sort priority; higher wins. See `amux_notify::types::priority`.
+    pub priority: i32,
+    /// Optional icon (emoji or glyph) shown alongside `text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// Optional RGBA override for the text color.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[u8; 4]>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -301,6 +348,7 @@ mod tests {
                 zoomed: None,
                 panes,
                 color: None,
+                workspace_status: None,
             }],
             active_workspace_idx: 0,
             next_pane_id: 1,
@@ -430,6 +478,65 @@ mod tests {
         }"#;
         let surface: SavedSurface = serde_json::from_str(json).unwrap();
         assert!(surface.user_title.is_none());
+    }
+
+    #[test]
+    fn deserialize_without_workspace_status_defaults_to_none() {
+        // Older sessions predate G22's workspace_status field — the
+        // `#[serde(default)]` shim must let them load unchanged.
+        // Generate a valid SavedWorkspace via serde, strip the field,
+        // and confirm it still parses.
+        let ws = &minimal_session().workspaces[0];
+        let mut v = serde_json::to_value(ws).unwrap();
+        v.as_object_mut().unwrap().remove("workspace_status");
+        assert!(!v.as_object().unwrap().contains_key("workspace_status"));
+        let restored: SavedWorkspace = serde_json::from_value(v).unwrap();
+        assert!(restored.workspace_status.is_none());
+    }
+
+    #[test]
+    fn workspace_status_round_trips_keyed_entries() {
+        let mut session = minimal_session();
+        session.workspaces[0].workspace_status = Some(SavedWorkspaceStatus {
+            entries: vec![
+                SavedStatusEntry {
+                    key: "git.branch".to_string(),
+                    text: "main".to_string(),
+                    priority: 50,
+                    icon: Some("".to_string()),
+                    color: Some([255, 128, 0, 255]),
+                },
+                SavedStatusEntry {
+                    key: "workspace.description".to_string(),
+                    text: "parity sprint".to_string(),
+                    priority: 50,
+                    icon: None,
+                    color: None,
+                },
+            ],
+        });
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("workspace_status"));
+        let restored: SessionData = serde_json::from_str(&json).unwrap();
+        let entries = restored.workspaces[0]
+            .workspace_status
+            .as_ref()
+            .unwrap()
+            .entries
+            .as_slice();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].key, "git.branch");
+        assert_eq!(entries[0].color, Some([255, 128, 0, 255]));
+        assert_eq!(entries[1].key, "workspace.description");
+        assert!(entries[1].color.is_none());
+    }
+
+    #[test]
+    fn workspace_status_none_is_omitted_from_json() {
+        // skip_serializing_if on the Option keeps the common case terse.
+        let session = minimal_session();
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(!json.contains("workspace_status"));
     }
 
     #[test]

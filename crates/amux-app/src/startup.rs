@@ -794,13 +794,51 @@ pub(crate) fn restore_session(
         drag: None,
     };
 
-    // Don't restore notifications — they're from dead agent sessions
-    // that can't be reattached. Starting fresh avoids stale unread
-    // badges in the sidebar. See #244.
-    let store = NotificationStore::new();
-
-    // Don't restore workspace statuses — agent processes don't survive restart,
-    // so any Active/Waiting state would be stale. They start as Idle implicitly.
+    // Don't restore notifications (the pane-level unread ring) — they're
+    // from dead agent sessions that can't be reattached, and a stale
+    // unread badge would mislead the user. See #244.
+    //
+    // Don't restore workspace agent *state* (Active/Waiting) or progress
+    // either — agent processes don't survive restart, so any live state
+    // would be stale. They start as Idle implicitly.
+    //
+    // G22: we *do* restore non-reserved keyed entries (`git.branch`,
+    // user-set descriptions, etc.). Those are user publications via
+    // `amux set-status` and carry across restart; the save side filters
+    // out `agent.*` before writing them, so agent-owned slots don't
+    // resurrect after the agent died.
+    let mut store = NotificationStore::new();
+    // Only reseed for workspaces that actually restored. The earlier
+    // restore loop can drop a saved workspace (unsupported panel type,
+    // tree referencing missing panes, every surface failing to spawn)
+    // and we'd otherwise leave orphan `WorkspaceStatus` records keyed
+    // by IDs with no matching `Workspace` — state no UI path could ever
+    // clear.
+    let restored_ids: std::collections::HashSet<u64> = workspaces.iter().map(|w| w.id).collect();
+    for saved_ws in &session.workspaces {
+        if !restored_ids.contains(&saved_ws.id) {
+            continue;
+        }
+        let Some(saved_status) = saved_ws.workspace_status.as_ref() else {
+            continue;
+        };
+        for entry in &saved_status.entries {
+            if entry.key.starts_with(amux_notify::AGENT_KEY_PREFIX) {
+                // Defensive — a future-build or hand-edited session file
+                // shouldn't be able to shove `agent.*` through this path.
+                continue;
+            }
+            store.upsert_entry(
+                saved_ws.id,
+                entry.key.clone(),
+                entry.text.clone(),
+                entry.priority,
+                entry.icon.clone(),
+                entry.color,
+                None,
+            );
+        }
+    }
 
     let active_idx = session
         .active_workspace_idx
