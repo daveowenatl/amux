@@ -244,6 +244,7 @@ impl eframe::App for AmuxApp {
         if !shortcut_consumed
             && self.copy_mode.is_none()
             && self.rename_modal.is_none()
+            && self.settings_modal.is_none()
             && self.find_state.is_none()
         {
             sent_input = self.handle_input(ctx);

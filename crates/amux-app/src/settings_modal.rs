@@ -1,8 +1,13 @@
 //! Settings modal UI.
 //!
-//! Presents a centered window with configurable settings for appearance
-//! and notifications. Changes are applied immediately (live preview) and
-//! persisted to config.toml on Save.
+//! Presents a centered window with configurable settings for appearance,
+//! notifications, and colors. Font size and color changes are
+//! live-previewed (applied immediately to running panes); other fields
+//! (font family, theme source, shell, notification toggles, sound) take
+//! effect on Save. Cancel reverts live-previewed changes.
+//!
+//! Save persists the full settings state to `config.toml` via `toml_edit`
+//! so user comments and unknown fields are preserved.
 
 use crate::*;
 
@@ -149,7 +154,7 @@ impl AmuxApp {
 
                     ui.horizontal(|ui| {
                         ui.label("Font size:");
-                        ui.add(egui::Slider::new(&mut modal.font_size, 6.0..=48.0).step_by(1.0));
+                        ui.add(egui::Slider::new(&mut modal.font_size, 4.0..=96.0).step_by(1.0));
                     });
 
                     ui.horizontal(|ui| {
@@ -387,9 +392,19 @@ impl AmuxApp {
     fn apply_settings(&mut self) {
         let modal = self.settings_modal.as_ref().unwrap();
 
-        self.font_size = modal.font_size;
-        self.app_config.font_size = modal.font_size;
-        self.app_config.font_family = modal.font_family.clone();
+        // Normalize: clamp font size to validated range, trim font family
+        // and fall back to default when empty.
+        let validated_size = config::validate_font_size(modal.font_size);
+        let trimmed_family = modal.font_family.trim();
+        let normalized_family = if trimmed_family.is_empty() {
+            config::DEFAULT_FONT_FAMILY.to_string()
+        } else {
+            trimmed_family.to_string()
+        };
+
+        self.font_size = validated_size;
+        self.app_config.font_size = validated_size;
+        self.app_config.font_family = normalized_family;
         self.app_config.theme_source = modal.theme_source.clone();
         self.app_config.shell = if modal.shell.is_empty() {
             None
@@ -401,6 +416,11 @@ impl AmuxApp {
         self.app_config.notifications.auto_reorder_workspaces = modal.auto_reorder_workspaces;
         self.app_config.notifications.sound.sound = modal.sound.clone();
         self.app_config.notifications.sound.play_when_focused = modal.play_when_focused;
+        // Reconfigure the runtime sound player so the new sound mode takes
+        // effect immediately (without requiring a restart).
+        if let Some(player) = &mut self.sound_player {
+            player.configure(&modal.sound);
+        }
 
         // Colors
         self.app_config.colors.foreground = modal.foreground.map(rgb_to_hex);
@@ -424,18 +444,48 @@ impl AmuxApp {
     }
 
     fn save_config_to_disk(&self) {
-        let Some(path) = &self.config_file_path else {
-            tracing::warn!("No config file path — settings not saved to disk");
+        // Resolve path: prefer the loaded config path; otherwise fall back to
+        // ~/.amux/config.toml so Save still works when the user's existing
+        // config failed to parse at startup (load returned no path) or when
+        // there's no config file yet.
+        let path = self
+            .config_file_path
+            .clone()
+            .or_else(|| dirs::home_dir().map(|h| h.join(".amux").join("config.toml")));
+        let Some(path) = path else {
+            tracing::warn!("Could not resolve config path — settings not saved");
             return;
         };
 
+        // Ensure parent directory exists.
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!("Failed to create config dir {}: {e}", parent.display());
+            }
+        }
+
         // Read existing file content to preserve comments and unknown fields.
-        let existing = std::fs::read_to_string(path).unwrap_or_default();
-        let mut doc = match existing.parse::<toml_edit::DocumentMut>() {
-            Ok(d) => d,
+        // Distinguish "missing/empty file" from "read error". On read error,
+        // log it but proceed with an empty doc so Save still works.
+        let existing = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(e) => {
-                tracing::warn!("Failed to parse config for update: {e}");
-                return;
+                tracing::warn!("Failed to read existing config: {e} — starting fresh");
+                String::new()
+            }
+        };
+        let mut doc = if existing.trim().is_empty() {
+            toml_edit::DocumentMut::new()
+        } else {
+            match existing.parse::<toml_edit::DocumentMut>() {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse existing config ({e}) — overwriting with fresh doc"
+                    );
+                    toml_edit::DocumentMut::new()
+                }
             }
         };
 
@@ -501,8 +551,8 @@ impl AmuxApp {
             }
         }
 
-        if let Err(e) = std::fs::write(path, doc.to_string()) {
-            tracing::error!("Failed to write config: {e}");
+        if let Err(e) = std::fs::write(&path, doc.to_string()) {
+            tracing::error!("Failed to write config to {}: {e}", path.display());
         } else {
             tracing::info!("Settings saved to {}", path.display());
         }
