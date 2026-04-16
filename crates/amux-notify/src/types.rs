@@ -119,16 +119,43 @@ impl StatusEntry {
 /// dictionary of [`StatusEntry`] rows. Legacy label/task/message are now
 /// looked up through the reserved keys in [`priority`]; see
 /// [`Self::label`], [`Self::task`], [`Self::message`].
+///
+/// ## Two-layer state (G3)
+///
+/// The authoritative state is `entries`: every write (`upsert_entry`,
+/// `remove_entry`, `set_status`) updates it immediately. A parallel
+/// `displayed` dictionary is the debounced projection the sidebar renders
+/// from — it trails `entries` by
+/// [`super::NotificationStore::DEBOUNCE_WINDOW`] (40ms) so a burst of rapid
+/// tool-call writes doesn't flash through intermediate values the user
+/// can't read. `displayed` is refreshed explicitly via
+/// [`super::NotificationStore::commit_displayed_at`], typically once per
+/// frame.
+///
+/// `pending_removals` carries keys that were dropped from `entries` but
+/// haven't aged out of `displayed` yet. Once `now - removed_at >=
+/// DEBOUNCE_WINDOW`, the commit pass drops them from both.
 #[derive(Debug, Clone)]
 pub struct WorkspaceStatus {
     pub state: AgentState,
     pub updated_at: Instant,
     /// Optional progress value (0.0–1.0) for progress bar display.
     pub progress: Option<f32>,
-    /// Keyed status entries. Use [`Self::entries_by_priority`] for the
-    /// ordered render list; [`Self::label`] / [`Self::task`] /
-    /// [`Self::message`] for the three legacy sidebar slots.
+    /// Keyed status entries — authoritative, written immediately by
+    /// `upsert_entry` / `set_status` / `remove_entry`. Use
+    /// [`Self::entries_by_priority`] for the ordered render list;
+    /// [`Self::label`] / [`Self::task`] / [`Self::message`] for the three
+    /// legacy sidebar slots.
     pub entries: BTreeMap<String, StatusEntry>,
+    /// Debounced snapshot of `entries` for rendering. See the type-level
+    /// docs; read via [`Self::displayed_by_priority`] /
+    /// [`Self::displayed_label`] / [`Self::displayed_task`] /
+    /// [`Self::displayed_message`].
+    pub displayed: BTreeMap<String, StatusEntry>,
+    /// Keys removed from `entries` that still linger in `displayed`
+    /// awaiting the debounce window to drop them. Maps to the removal
+    /// instant. Empty for most workspaces most of the time.
+    pub pending_removals: BTreeMap<String, Instant>,
 }
 
 /// Reserved entry keys used by the legacy sidebar view. Named here rather
@@ -184,8 +211,48 @@ impl WorkspaceStatus {
     /// Same as [`Self::entries_by_priority`] but takes the current time
     /// explicitly — used by tests that need deterministic TTL behaviour.
     pub fn entries_by_priority_at(&self, now: Instant) -> Vec<(&str, &StatusEntry)> {
-        let mut v: Vec<(&str, &StatusEntry)> = self
-            .entries
+        Self::sorted_by_priority(&self.entries, now)
+    }
+
+    // ---- Debounced / displayed-snapshot accessors (G3) --------------------
+
+    /// Debounced label — the displayed projection of [`KEY_AGENT_LABEL`].
+    pub fn displayed_label(&self) -> Option<&str> {
+        self.displayed.get(KEY_AGENT_LABEL).map(|e| e.text.as_str())
+    }
+
+    /// Debounced task.
+    pub fn displayed_task(&self) -> Option<&str> {
+        self.displayed.get(KEY_AGENT_TASK).map(|e| e.text.as_str())
+    }
+
+    /// Debounced message. This is the field the sidebar currently renders
+    /// as the per-workspace subtitle; using the displayed projection here
+    /// is what actually eliminates tool-boundary flicker for the user.
+    pub fn displayed_message(&self) -> Option<&str> {
+        self.displayed
+            .get(KEY_AGENT_MESSAGE)
+            .map(|e| e.text.as_str())
+    }
+
+    /// Priority-sorted list of entries from the debounced `displayed`
+    /// snapshot. Expired entries (those with `expires_at` in the past) are
+    /// filtered out, same as [`Self::entries_by_priority`].
+    pub fn displayed_by_priority(&self) -> Vec<(&str, &StatusEntry)> {
+        self.displayed_by_priority_at(Instant::now())
+    }
+
+    /// Same as [`Self::displayed_by_priority`] but takes the current time
+    /// explicitly.
+    pub fn displayed_by_priority_at(&self, now: Instant) -> Vec<(&str, &StatusEntry)> {
+        Self::sorted_by_priority(&self.displayed, now)
+    }
+
+    fn sorted_by_priority(
+        src: &BTreeMap<String, StatusEntry>,
+        now: Instant,
+    ) -> Vec<(&str, &StatusEntry)> {
+        let mut v: Vec<(&str, &StatusEntry)> = src
             .iter()
             .filter(|(_, e)| !e.is_expired(now))
             .map(|(k, e)| (k.as_str(), e))

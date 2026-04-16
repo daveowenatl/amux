@@ -317,9 +317,11 @@ fn render_workspace_row(
     let has_progress = status.as_ref().and_then(|s| s.progress).is_some();
     // Filter empty-string entries: upsert_entry lets publishers write empty
     // text, and we shouldn't reserve a subtitle line for a blank message.
+    // G3: render from the debounced `displayed` projection so rapid bursts
+    // of hook writes don't flash intermediate values through the sidebar.
     let agent_message = status
         .as_ref()
-        .and_then(|s| s.message())
+        .and_then(|s| s.displayed_message())
         .filter(|m| !m.is_empty());
     let has_agent_message = agent_message.is_some();
     let latest_notif = notifications.latest_for_workspace(ws.id);
@@ -336,7 +338,7 @@ fn render_workspace_row(
     // overwritten by agent status or auto-detected titles.
     let display_title = if let Some(ref ut) = ws.user_title {
         ut.clone()
-    } else if let Some(task) = status.as_ref().and_then(|s| s.task()) {
+    } else if let Some(task) = status.as_ref().and_then(|s| s.displayed_task()) {
         format!("\u{2731} {task}")
     } else if let Some(st) = metadata.and_then(|m| m.surface_title.as_ref()) {
         st.clone()
@@ -597,7 +599,7 @@ fn render_workspace_row(
             amux_notify::AgentState::Waiting => ("\u{1F514}", "Needs input"), // 🔔
             amux_notify::AgentState::Idle => ("\u{23F8}", "Idle"), // ⏸ (no variation selector — FE0E renders as box on Windows)
         };
-        let label = status.label().unwrap_or(default_text);
+        let label = status.displayed_label().unwrap_or(default_text);
         content_bottom += 4.0;
         let status_x = rect.min.x + content_left;
         let max_w = avail_w - content_left - ROW_H_PAD;

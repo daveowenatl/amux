@@ -197,6 +197,23 @@ impl eframe::App for AmuxApp {
         // Drain notification events from all surfaces
         self.drain_notifications();
 
+        // G3: promote stable status writes into the debounced `displayed`
+        // snapshot the sidebar renders from. Runs every frame so that
+        // (a) writes older than DEBOUNCE_WINDOW surface on the next paint
+        // and (b) rapid bursts within the window collapse to just the
+        // last value. `next_commit_at` tells us when the next pending
+        // write becomes eligible, so we schedule a repaint for that
+        // moment instead of waking every frame for no reason.
+        let now = std::time::Instant::now();
+        self.notifications
+            .commit_displayed_at(now, amux_notify::NotificationStore::DEBOUNCE_WINDOW);
+        if let Some(wake) = self
+            .notifications
+            .next_commit_at(amux_notify::NotificationStore::DEBOUNCE_WINDOW)
+        {
+            ctx.request_repaint_after(wake.saturating_duration_since(now));
+        }
+
         // Hot-reload config file if it changed on disk. Runs before
         // the badge update so toggling dock_badge takes effect on
         // the same frame (otherwise a true→false flip leaves a stale
