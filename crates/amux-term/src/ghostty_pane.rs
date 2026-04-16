@@ -881,8 +881,13 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
 
     fn erase_scrollback(&mut self) {
         // Send CSI 3 J (Erase Scrollback) to clear scrollback without
-        // resetting the terminal. terminal.reset() would wipe screen too.
+        // touching the visible screen. terminal.reset() / RIS would wipe
+        // the screen too. There's no visible change after this — the
+        // scrollback is just gone if the user tries to scroll up.
         self.terminal.vt_write(b"\x1b[3J");
+        // Bump seqno so the renderer's dirty fingerprint detects the
+        // VT state change (scrollback row count dropped) and re-snapshots.
+        self.seqno += 1;
     }
 
     fn focus_changed(&mut self, focused: bool) {

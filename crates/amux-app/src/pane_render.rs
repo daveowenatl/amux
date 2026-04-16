@@ -1069,6 +1069,109 @@ impl AmuxApp {
                 }
             }
         }
+
+        // Right-click context menu over the terminal content area.
+        // Uses `Sense::click()` so right-click triggers context_menu;
+        // we attach the menu builder via `with_menu_palette` for theming.
+        // Selection / left-click handling continues in input.rs unaffected
+        // because Response.context_menu only consumes the right-click.
+        let menu_id = ui.id().with("pane_context_menu").with(pane_id);
+        let menu_response = ui.interact(content_rect, menu_id, egui::Sense::click());
+
+        // Right-click also focuses the pane (matches cmux + most editors).
+        if menu_response.secondary_clicked() && self.focused_pane_id() != pane_id {
+            self.set_focus(pane_id);
+        }
+
+        let palette = crate::popup_theme::MenuPalette::from_theme(&self.theme);
+        let has_selection = self
+            .panes
+            .get(&pane_id)
+            .and_then(|e| e.as_terminal())
+            .and_then(|m| m.selection.as_ref())
+            .is_some();
+
+        let mut want_copy = false;
+        let mut want_paste = false;
+        let mut want_split_h = false;
+        let mut want_split_v = false;
+        let mut want_reset = false;
+
+        crate::popup_theme::with_menu_palette(ui.ctx(), palette, || {
+            menu_response.context_menu(|ui| {
+                // Copy is only meaningful when there's a selection.
+                if has_selection
+                    && ui
+                        .add(egui::Button::new("Copy").shortcut_text(copy_shortcut()))
+                        .clicked()
+                {
+                    want_copy = true;
+                    ui.close_menu();
+                }
+                if ui
+                    .add(egui::Button::new("Paste").shortcut_text(paste_shortcut()))
+                    .clicked()
+                {
+                    want_paste = true;
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui
+                    .add(egui::Button::new("Split Right").shortcut_text(split_right_shortcut()))
+                    .clicked()
+                {
+                    want_split_h = true;
+                    ui.close_menu();
+                }
+                if ui
+                    .add(egui::Button::new("Split Down").shortcut_text(split_down_shortcut()))
+                    .clicked()
+                {
+                    want_split_v = true;
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("Reset Terminal").clicked() {
+                    want_reset = true;
+                    ui.close_menu();
+                }
+            });
+        });
+
+        // Apply actions outside the menu closure to avoid borrow conflicts.
+        if want_copy {
+            self.set_focus(pane_id);
+            self.copy_selection();
+        }
+        if want_paste {
+            self.set_focus(pane_id);
+            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                if let Ok(text) = clipboard.get_text() {
+                    if !text.is_empty() {
+                        self.do_paste(&text);
+                    }
+                }
+            }
+        }
+        if want_split_h {
+            self.set_focus(pane_id);
+            self.do_split(SplitDirection::Horizontal);
+        }
+        if want_split_v {
+            self.set_focus(pane_id);
+            self.do_split(SplitDirection::Vertical);
+        }
+        if want_reset {
+            // Send RIS (ESC c) directly into the VT engine — resets terminal
+            // state (modes, attributes, screen) without disturbing the child
+            // process. Uses feed_bytes (not write_bytes) because RIS is for
+            // the emulator, not the application.
+            if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
+                if let Some(s) = m.active_surface_mut() {
+                    s.pane.feed_bytes(b"\x1bc");
+                }
+            }
+        }
     }
 
     /// Render browser content: omnibar (back/forward/reload + URL input) + webview bounds update.
@@ -1484,4 +1587,47 @@ impl AmuxApp {
             ui.memory_mut(|m| m.request_focus(text_id));
         }
     }
+}
+
+// --- Context menu shortcut text helpers ---
+//
+// Hardcoded to the platform defaults so the menu hint matches what most
+// users see. If a user has remapped an action via `[keybindings]` in
+// config.toml the displayed shortcut may be wrong, but the menu still
+// works correctly because the menu items dispatch by action, not by key.
+
+#[cfg(target_os = "macos")]
+fn copy_shortcut() -> &'static str {
+    "⌘C"
+}
+#[cfg(not(target_os = "macos"))]
+fn copy_shortcut() -> &'static str {
+    "Ctrl+Shift+C"
+}
+
+#[cfg(target_os = "macos")]
+fn paste_shortcut() -> &'static str {
+    "⌘V"
+}
+#[cfg(not(target_os = "macos"))]
+fn paste_shortcut() -> &'static str {
+    "Ctrl+Shift+V"
+}
+
+#[cfg(target_os = "macos")]
+fn split_right_shortcut() -> &'static str {
+    "⌘D"
+}
+#[cfg(not(target_os = "macos"))]
+fn split_right_shortcut() -> &'static str {
+    "Ctrl+Shift+E"
+}
+
+#[cfg(target_os = "macos")]
+fn split_down_shortcut() -> &'static str {
+    "⇧⌘D"
+}
+#[cfg(not(target_os = "macos"))]
+fn split_down_shortcut() -> &'static str {
+    "Ctrl+Shift+D"
 }
