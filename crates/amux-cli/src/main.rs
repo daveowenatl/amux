@@ -771,20 +771,38 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::RemoveEntry { key, workspace } => {
+            if key.starts_with("agent.") {
+                anyhow::bail!(
+                    "keys starting with 'agent.' are reserved for set-status (got '{key}')"
+                );
+            }
             let ws_id = workspace
                 .or_else(|| std::env::var("AMUX_WORKSPACE_ID").ok())
                 .unwrap_or_else(|| "0".to_string());
             let params = serde_json::json!({
                 "workspace_id": ws_id,
-                "key": key,
+                "key": &key,
             });
             let resp = client.call("status.remove_entry", params).await?;
             if cli.json {
                 print_response(&resp, true);
-            } else if resp.ok {
-                println!("Entry removed");
-            } else {
+            } else if !resp.ok {
                 print_response(&resp, false);
+            } else {
+                // The server reports `removed: true` when the key existed,
+                // `false` when it didn't. Print distinct messages and exit
+                // non-zero on the no-op so scripts can tell them apart.
+                let removed = resp
+                    .result
+                    .as_ref()
+                    .and_then(|v| v.get("removed"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if removed {
+                    println!("Entry removed");
+                } else {
+                    anyhow::bail!("no entry to remove for key '{key}'");
+                }
             }
         }
         Command::Notify {

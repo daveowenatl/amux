@@ -291,10 +291,10 @@ pub(crate) enum Command {
     /// Publish or replace a keyed status entry.
     ///
     /// Each call writes under its own key (e.g. "claude.tool",
-    /// "git.branch"). Re-using a key replaces the prior entry; pass
-    /// --remove (or use `remove-entry`) to expire it. Keys starting
-    /// with "agent." are reserved for the legacy sidebar slots owned
-    /// by `set-status` and will be rejected.
+    /// "git.branch"). Re-using a key replaces the prior entry; use
+    /// `remove-entry` to expire it. Keys starting with "agent." are
+    /// reserved for the legacy sidebar slots owned by `set-status`
+    /// and will be rejected.
     #[command(name = "set-entry")]
     SetEntry {
         /// Entry key (e.g. "claude.tool", "git.branch"). Must not
