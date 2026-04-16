@@ -64,6 +64,7 @@ pub(crate) enum MenuAction {
     Copy,
     Paste,
     SelectAll,
+    Settings,
 }
 
 // ---------------------------------------------------------------------
@@ -187,6 +188,12 @@ pub(crate) const MENU_MODEL: &[SubmenuDef] = &[
                 shortcut: Some(shortcuts::SELECT_ALL),
                 action: MenuAction::SelectAll,
             },
+            MenuItemDef::Separator,
+            MenuItemDef::Action {
+                label: "Settings",
+                shortcut: None,
+                action: MenuAction::Settings,
+            },
         ],
     },
     SubmenuDef {
@@ -267,6 +274,7 @@ struct MacMenuItems {
     copy: muda::MenuId,
     paste: muda::MenuId,
     select_all: muda::MenuId,
+    settings: muda::MenuId,
 }
 
 #[cfg(target_os = "macos")]
@@ -307,6 +315,7 @@ pub(crate) fn build() -> Menu {
     let copy = MenuItem::new("Copy", true, accel(CMD, Code::KeyC));
     let paste = MenuItem::new("Paste", true, accel(CMD, Code::KeyV));
     let select_all = MenuItem::new("Select All", true, accel(CMD, Code::KeyA));
+    let settings = MenuItem::new("Settings…", true, accel(CMD, Code::Comma));
 
     // Stash IDs for event matching before the items get moved into
     // their submenus — muda's MenuId is cheap to clone but we need to
@@ -326,6 +335,7 @@ pub(crate) fn build() -> Menu {
             copy: copy.id().clone(),
             paste: paste.id().clone(),
             select_all: select_all.id().clone(),
+            settings: settings.id().clone(),
         })
         .is_err()
     {
@@ -344,6 +354,8 @@ pub(crate) fn build() -> Menu {
                 ..Default::default()
             }),
         ),
+        &PredefinedMenuItem::separator(),
+        &settings,
         &PredefinedMenuItem::separator(),
         &PredefinedMenuItem::services(None),
         &PredefinedMenuItem::separator(),
@@ -440,6 +452,8 @@ fn drain_muda_events() {
             Some(MenuAction::Paste)
         } else if *id == items.select_all {
             Some(MenuAction::SelectAll)
+        } else if *id == items.settings {
+            Some(MenuAction::Settings)
         } else {
             // Predefined OS item or unknown — no local handler.
             None

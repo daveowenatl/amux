@@ -6,6 +6,7 @@ impl AmuxApp {
     /// Check if any egui text field (omnibar, rename modal, find bar) has focus.
     pub(crate) fn has_focused_text_field(&self) -> bool {
         self.rename_modal.is_some()
+            || self.settings_modal.is_some()
             || self.find_state.is_some()
             || self.omnibar_state.values().any(|s| s.focused)
     }
@@ -291,6 +292,12 @@ impl AmuxApp {
                         self.pending_text_field_select_all = true;
                     } else {
                         self.select_all_visible();
+                    }
+                }
+                menu_bar::MenuAction::Settings => {
+                    if self.settings_modal.is_none() {
+                        self.settings_modal =
+                            Some(settings_modal::SettingsModal::from_config(&self.app_config));
                     }
                 }
             }

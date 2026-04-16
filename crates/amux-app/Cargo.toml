@@ -31,6 +31,7 @@ chrono = { workspace = true }
 dirs = { workspace = true }
 open = { workspace = true }
 toml = { workspace = true }
+toml_edit = { workspace = true }
 notify-rust = { workspace = true }
 rodio = { workspace = true }
 winit = { workspace = true }

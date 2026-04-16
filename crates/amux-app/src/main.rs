@@ -23,6 +23,7 @@ mod popup_theme;
 mod rename_modal;
 mod render;
 mod selection;
+mod settings_modal;
 mod sidebar;
 mod startup;
 mod system_notify;
@@ -186,6 +187,8 @@ struct AmuxApp {
     tab_drag: Option<TabDragState>,
     /// Rename modal state for workspaces and tabs.
     rename_modal: Option<RenameModal>,
+    /// Settings modal state.
+    settings_modal: Option<settings_modal::SettingsModal>,
     /// Whether the app window currently has OS-level focus.
     app_focused: bool,
     /// Persisted application configuration.

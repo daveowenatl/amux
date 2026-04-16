@@ -523,6 +523,7 @@ pub(crate) fn run() -> anyhow::Result<()> {
                 selection_changed: false,
                 tab_drag: None,
                 rename_modal: None,
+                settings_modal: None,
                 app_focused: true,
                 app_config,
                 keybindings,

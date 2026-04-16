@@ -53,6 +53,7 @@ pub(crate) fn render_pane(
             seqno,
             find_highlights.to_vec(),
             current_highlight,
+            pane_dim_alpha,
         );
 
         // Apply cursor blink: hide cursor during "off" phase for blinking shapes.
