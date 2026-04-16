@@ -766,7 +766,15 @@ async fn main() -> anyhow::Result<()> {
                 if !secs.is_finite() || secs <= 0.0 {
                     anyhow::bail!("--ttl must be a positive number of seconds (got {secs})");
                 }
-                let ttl_ms = (secs * 1000.0).round() as u64;
+                // ceil (not round) so that a tiny positive --ttl can never
+                // become 0ms and fire an immediate expiry.
+                let ttl_ms_f64 = (secs * 1000.0).ceil();
+                if ttl_ms_f64 > u64::MAX as f64 {
+                    anyhow::bail!(
+                        "--ttl is too large to represent in milliseconds (got {secs} seconds)"
+                    );
+                }
+                let ttl_ms = ttl_ms_f64 as u64;
                 params["ttl_ms"] = serde_json::json!(ttl_ms);
             }
             let resp = client.call("status.upsert_entry", params).await?;

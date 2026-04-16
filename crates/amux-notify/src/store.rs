@@ -467,10 +467,16 @@ impl NotificationStore {
     /// [`WorkspaceStatus::entries_by_priority`] at render time, so the only
     /// cost of *not* pruning is the memory footprint of a dangling entry.
     pub fn prune_expired_entries(&mut self, workspace_id: u64) -> usize {
+        self.prune_expired_entries_at(workspace_id, Instant::now())
+    }
+
+    /// Same as [`Self::prune_expired_entries`] but takes the current time
+    /// explicitly — used by tests that need deterministic TTL behaviour
+    /// without `std::thread::sleep`.
+    pub fn prune_expired_entries_at(&mut self, workspace_id: u64, now: Instant) -> usize {
         let Some(status) = self.workspace_statuses.get_mut(&workspace_id) else {
             return 0;
         };
-        let now = Instant::now();
         let before = status.entries.len();
         status.entries.retain(|_, e| !e.is_expired(now));
         let removed = before - status.entries.len();
@@ -1026,15 +1032,16 @@ mod tests {
         assert!(status.entries.contains_key("claude.tool"));
 
         // Prune reclaims the expired slot. Sticky entry is left alone.
-        std::thread::sleep(Duration::from_millis(60));
-        let removed = store.prune_expired_entries(1);
+        // Uses the `_at` variant so the test is deterministic rather than
+        // racing a real sleep.
+        let removed = store.prune_expired_entries_at(1, after);
         assert_eq!(removed, 1);
         let status = store.workspace_status(1).unwrap();
         assert!(!status.entries.contains_key("claude.tool"));
         assert!(status.entries.contains_key("git.branch"));
 
         // Prune on an unknown workspace is a no-op.
-        assert_eq!(store.prune_expired_entries(999), 0);
+        assert_eq!(store.prune_expired_entries_at(999, after), 0);
     }
 
     #[test]

@@ -101,8 +101,13 @@ impl StatusEntry {
 
     /// Convert a duration into an absolute `expires_at` anchored at `now`.
     /// Helper for callers composing their own `StatusEntry` values.
+    ///
+    /// Uses `checked_add` so that a pathologically large `ttl` (e.g. a
+    /// malicious IPC client sending `ttl_ms = u64::MAX`) collapses to
+    /// `None` — semantically equivalent to "sticky, no expiry" — instead
+    /// of panicking on `Instant` overflow.
     pub fn ttl_to_expires_at(now: Instant, ttl: Option<Duration>) -> Option<Instant> {
-        ttl.map(|d| now + d)
+        ttl.and_then(|d| now.checked_add(d))
     }
 }
 
