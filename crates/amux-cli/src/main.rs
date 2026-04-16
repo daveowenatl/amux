@@ -728,6 +728,65 @@ async fn main() -> anyhow::Result<()> {
                 print_response(&resp, false);
             }
         }
+        Command::SetEntry {
+            key,
+            text,
+            priority,
+            icon,
+            color,
+            workspace,
+        } => {
+            if key.starts_with("agent.") {
+                anyhow::bail!(
+                    "keys starting with 'agent.' are reserved for set-status (got '{key}')"
+                );
+            }
+            let ws_id = workspace
+                .or_else(|| std::env::var("AMUX_WORKSPACE_ID").ok())
+                .unwrap_or_else(|| "0".to_string());
+            let mut params = serde_json::json!({
+                "workspace_id": ws_id,
+                "key": key,
+                "text": text,
+            });
+            if let Some(p) = priority {
+                params["priority"] = serde_json::json!(p);
+            }
+            if let Some(i) = icon {
+                params["icon"] = serde_json::json!(i);
+            }
+            if let Some(c) = color {
+                let rgba = parse_hex_rgba(&c).ok_or_else(|| {
+                    anyhow::anyhow!("invalid color '{c}' (expected #RRGGBB or #RRGGBBAA)")
+                })?;
+                params["color"] = serde_json::json!(rgba);
+            }
+            let resp = client.call("status.upsert_entry", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("Entry set");
+            } else {
+                print_response(&resp, false);
+            }
+        }
+        Command::RemoveEntry { key, workspace } => {
+            let ws_id = workspace
+                .or_else(|| std::env::var("AMUX_WORKSPACE_ID").ok())
+                .unwrap_or_else(|| "0".to_string());
+            let params = serde_json::json!({
+                "workspace_id": ws_id,
+                "key": key,
+            });
+            let resp = client.call("status.remove_entry", params).await?;
+            if cli.json {
+                print_response(&resp, true);
+            } else if resp.ok {
+                println!("Entry removed");
+            } else {
+                print_response(&resp, false);
+            }
+        }
         Command::Notify {
             body,
             title,
@@ -907,6 +966,46 @@ async fn poll_eval_result(
         }
     }
     Ok(last)
+}
+
+/// Parse `#RRGGBB` or `#RRGGBBAA` hex into RGBA bytes.
+///
+/// The leading `#` is optional. RGB form defaults alpha to 255.
+fn parse_hex_rgba(s: &str) -> Option<[u8; 4]> {
+    let hex = s.strip_prefix('#').unwrap_or(s);
+    let (rgb, a) = match hex.len() {
+        6 => (hex, 0xFF),
+        8 => (&hex[..6], u8::from_str_radix(&hex[6..8], 16).ok()?),
+        _ => return None,
+    };
+    let r = u8::from_str_radix(&rgb[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&rgb[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&rgb[4..6], 16).ok()?;
+    Some([r, g, b, a])
+}
+
+#[cfg(test)]
+mod parse_hex_rgba_tests {
+    use super::parse_hex_rgba;
+
+    #[test]
+    fn accepts_rgb_form_with_full_alpha() {
+        assert_eq!(parse_hex_rgba("#ff8800"), Some([0xFF, 0x88, 0x00, 0xFF]));
+        assert_eq!(parse_hex_rgba("FF8800"), Some([0xFF, 0x88, 0x00, 0xFF]));
+    }
+
+    #[test]
+    fn accepts_rgba_form() {
+        assert_eq!(parse_hex_rgba("#ff880080"), Some([0xFF, 0x88, 0x00, 0x80]));
+    }
+
+    #[test]
+    fn rejects_bad_lengths_and_nonhex() {
+        assert_eq!(parse_hex_rgba("#fff"), None);
+        assert_eq!(parse_hex_rgba("#ff88000"), None);
+        assert_eq!(parse_hex_rgba("#gghhii"), None);
+        assert_eq!(parse_hex_rgba(""), None);
+    }
 }
 
 fn resolve_addr(cli: &Cli) -> anyhow::Result<IpcAddr> {

@@ -23,6 +23,8 @@ pub const METHODS: &[&str] = &[
     "pane.focus",
     "pane.list",
     "status.set",
+    "status.upsert_entry",
+    "status.remove_entry",
     "notify.send",
     "notify.list",
     "notify.clear",
@@ -122,6 +124,34 @@ pub struct StatusSetParams {
     pub task: Option<String>,
     #[serde(default)]
     pub message: Option<String>,
+}
+
+/// Parameters for `status.upsert_entry`: publish / replace a keyed status
+/// entry under a user-defined key. Must not begin with `agent.` — those
+/// slots are owned by `status.set`.
+#[derive(Debug, Deserialize)]
+pub struct UpsertEntryParams {
+    pub workspace_id: String,
+    pub key: String,
+    pub text: String,
+    /// Render priority. Higher sorts first. Defaults to
+    /// [`amux_notify::priority::USER_GENERIC`] server-side if omitted.
+    #[serde(default)]
+    pub priority: Option<i32>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// RGBA tuple. Wire format is a 4-element array of bytes.
+    #[serde(default)]
+    pub color: Option<[u8; 4]>,
+}
+
+/// Parameters for `status.remove_entry`: expire a previously-published
+/// keyed entry. Returns `{ "removed": bool }` so callers can tell whether
+/// the key actually existed.
+#[derive(Debug, Deserialize)]
+pub struct RemoveEntryParams {
+    pub workspace_id: String,
+    pub key: String,
 }
 
 #[derive(Debug, Deserialize)]
