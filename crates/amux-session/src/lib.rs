@@ -80,6 +80,37 @@ pub struct SavedWorkspace {
     pub panes: HashMap<u64, SavedManagedPane>,
     #[serde(default)]
     pub color: Option<[u8; 4]>,
+    /// Non-reserved keyed status entries (user publications via
+    /// `amux set-status`, e.g. `git.branch` or a workspace description).
+    /// Reserved `agent.*` slots and the live `AgentState` / progress are
+    /// intentionally not persisted — those describe agent-process state
+    /// that doesn't survive a restart (see #260 G22 and the note in
+    /// `restore_session`). `None` when nothing worth saving is present,
+    /// so old session files without this field load unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_status: Option<SavedWorkspaceStatus>,
+}
+
+/// Serializable projection of `amux_notify::WorkspaceStatus` — carries only
+/// what's safe to restore across a restart. See [`SavedWorkspace::agent_status`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedWorkspaceStatus {
+    pub entries: Vec<SavedStatusEntry>,
+}
+
+/// Persistable form of `amux_notify::StatusEntry`. Timestamps (`updated_at`,
+/// `expires_at`) aren't carried: they're `Instant`-valued and have no
+/// cross-restart meaning, so restored entries come back sticky with a
+/// fresh `updated_at` at load time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedStatusEntry {
+    pub key: String,
+    pub text: String,
+    pub priority: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[u8; 4]>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -301,6 +332,7 @@ mod tests {
                 zoomed: None,
                 panes,
                 color: None,
+                agent_status: None,
             }],
             active_workspace_idx: 0,
             next_pane_id: 1,
@@ -430,6 +462,65 @@ mod tests {
         }"#;
         let surface: SavedSurface = serde_json::from_str(json).unwrap();
         assert!(surface.user_title.is_none());
+    }
+
+    #[test]
+    fn deserialize_without_agent_status_defaults_to_none() {
+        // Older sessions predate G22's agent_status field — the
+        // `#[serde(default)]` shim must let them load unchanged.
+        // Generate a valid SavedWorkspace via serde, strip agent_status,
+        // and confirm it still parses.
+        let ws = &minimal_session().workspaces[0];
+        let mut v = serde_json::to_value(ws).unwrap();
+        v.as_object_mut().unwrap().remove("agent_status");
+        assert!(!v.as_object().unwrap().contains_key("agent_status"));
+        let restored: SavedWorkspace = serde_json::from_value(v).unwrap();
+        assert!(restored.agent_status.is_none());
+    }
+
+    #[test]
+    fn agent_status_round_trips_keyed_entries() {
+        let mut session = minimal_session();
+        session.workspaces[0].agent_status = Some(SavedWorkspaceStatus {
+            entries: vec![
+                SavedStatusEntry {
+                    key: "git.branch".to_string(),
+                    text: "main".to_string(),
+                    priority: 50,
+                    icon: Some("".to_string()),
+                    color: Some([255, 128, 0, 255]),
+                },
+                SavedStatusEntry {
+                    key: "workspace.description".to_string(),
+                    text: "parity sprint".to_string(),
+                    priority: 50,
+                    icon: None,
+                    color: None,
+                },
+            ],
+        });
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("agent_status"));
+        let restored: SessionData = serde_json::from_str(&json).unwrap();
+        let entries = restored.workspaces[0]
+            .agent_status
+            .as_ref()
+            .unwrap()
+            .entries
+            .as_slice();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].key, "git.branch");
+        assert_eq!(entries[0].color, Some([255, 128, 0, 255]));
+        assert_eq!(entries[1].key, "workspace.description");
+        assert!(entries[1].color.is_none());
+    }
+
+    #[test]
+    fn agent_status_none_is_omitted_from_json() {
+        // skip_serializing_if on the Option keeps the common case terse.
+        let session = minimal_session();
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(!json.contains("agent_status"));
     }
 
     #[test]
