@@ -619,6 +619,7 @@ pub(crate) fn fresh_startup(
         dragging_divider: None,
         last_pane_sizes: HashMap::new(),
         color: None,
+        pinned: false,
     };
 
     Ok(StartupState {
@@ -769,6 +770,7 @@ pub(crate) fn restore_session(
             dragging_divider: None,
             last_pane_sizes: HashMap::new(),
             color: saved_ws.color,
+            pinned: saved_ws.pinned,
         });
     }
 

@@ -120,6 +120,7 @@ impl AmuxApp {
                     dragging_divider: None,
                     last_pane_sizes: HashMap::new(),
                     color: None,
+                    pinned: false,
                 };
 
                 self.workspaces.push(workspace);

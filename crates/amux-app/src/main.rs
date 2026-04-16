@@ -668,6 +668,7 @@ impl AmuxApp {
                 zoomed: ws.zoomed,
                 panes: saved_panes,
                 color: ws.color,
+                pinned: ws.pinned,
                 workspace_status,
             });
         }

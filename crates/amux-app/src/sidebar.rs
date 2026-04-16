@@ -67,6 +67,7 @@ pub(crate) enum SidebarAction {
     MarkWorkspaceRead(usize),
     ReorderWorkspace(usize, usize),
     SetWorkspaceColor(usize, Option<[u8; 4]>),
+    TogglePinWorkspace(usize),
 }
 
 // ---------------------------------------------------------------------------
@@ -342,7 +343,7 @@ fn render_workspace_row(
     // title > default workspace name. A user who explicitly renamed
     // the workspace via the rename modal should not have their choice
     // overwritten by agent status or auto-detected titles.
-    let display_title = if let Some(ref ut) = ws.user_title {
+    let base_title = if let Some(ref ut) = ws.user_title {
         ut.clone()
     } else if let Some(task) = status.as_ref().and_then(|s| s.displayed_task()) {
         format!("\u{2731} {task}")
@@ -350,6 +351,14 @@ fn render_workspace_row(
         st.clone()
     } else {
         ws.title.clone()
+    };
+    // Prepend a pin glyph for pinned workspaces. Included in the
+    // measured `display_title` so wrap / ellipsis calculations below
+    // reserve room for it.
+    let display_title = if ws.pinned {
+        format!("\u{1F4CC} {base_title}")
+    } else {
+        base_title
     };
     let content_left_est = if has_color {
         ROW_H_PAD + COLOR_CAPSULE_WIDTH + 4.0
@@ -445,6 +454,15 @@ fn render_workspace_row(
                 ui.close_menu();
             }
             ui.separator();
+            let pin_label = if ws.pinned {
+                "Unpin Workspace"
+            } else {
+                "Pin Workspace"
+            };
+            if ui.button(pin_label).clicked() {
+                actions.push(SidebarAction::TogglePinWorkspace(idx));
+                ui.close_menu();
+            }
             if ui.button("Mark All Read").clicked() {
                 actions.push(SidebarAction::MarkWorkspaceRead(idx));
                 ui.close_menu();
