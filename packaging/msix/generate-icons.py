@@ -8,7 +8,7 @@ Requires: pip install Pillow
 
 Output:
   Assets/icon-1024.png           — main window / dock / taskbar icon
-  Assets/Square44x44Logo*.png    — MSIX small tile (4 variants)
+  Assets/Square44x44Logo*.png    — MSIX small tile (3 variants)
   Assets/Square150x150Logo*.png  — MSIX medium tile (2 variants)
   Assets/Wide310x150Logo*.png    — MSIX wide tile (2 variants)
   Assets/StoreLogo.scale-100.png — MSIX store icon
@@ -17,17 +17,15 @@ Output:
 
 from __future__ import annotations
 from pathlib import Path
-from typing import Optional
 
 try:
     from PIL import Image, ImageDraw, ImageFont
-except ImportError:
+except ImportError as err:
     print("Pillow not installed. Install with: pip install Pillow")
-    raise SystemExit(1)
+    raise SystemExit(1) from err
 
 HERE = Path(__file__).parent
 ASSETS_DIR = HERE / "Assets"
-ASSETS_DIR.mkdir(exist_ok=True)
 
 # Bundled font (same file used for terminal rendering).
 FONT_PATH = HERE.parent.parent / "crates/amux-term/fonts/JetBrainsMono-Bold.ttf"
@@ -45,7 +43,7 @@ GLYPH_INK_FRACTION = 0.55
 CORNER_FRACTION = 0.18
 
 
-def render_icon(size: int, *, rounded: bool, wide_width: Optional[int] = None) -> Image.Image:
+def render_icon(size: int, *, wide_width: "int | None" = None) -> Image.Image:
     """Render a square or wide icon with a centered 'a' glyph.
 
     If `wide_width` is given, the icon is `wide_width x size` and the glyph
@@ -124,6 +122,7 @@ ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
 
 
 def main() -> None:
+    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
     if not FONT_PATH.exists():
         raise SystemExit(f"Font not found: {FONT_PATH}")
 
@@ -134,19 +133,19 @@ def main() -> None:
     print()
 
     # Main 1024 app icon (used for window, dock, taskbar via load_app_icon).
-    save_png(render_icon(1024, rounded=True), "icon-1024.png")
+    save_png(render_icon(1024), "icon-1024.png")
 
     # MSIX square tiles.
     for name, size in MSIX_SQUARE_SIZES:
-        save_png(render_icon(size, rounded=True), name)
+        save_png(render_icon(size), name)
 
     # MSIX wide tiles.
     for name, width, height in MSIX_WIDE_SIZES:
-        save_png(render_icon(height, rounded=True, wide_width=width), name)
+        save_png(render_icon(height, wide_width=width), name)
 
     # Windows .ico — multi-size.
     ico_path = ASSETS_DIR / "amux.ico"
-    ico_images = [render_icon(s, rounded=True) for s in ICO_SIZES]
+    ico_images = [render_icon(s) for s in ICO_SIZES]
     ico_images[0].save(
         ico_path,
         format="ICO",
