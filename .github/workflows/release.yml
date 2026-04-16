@@ -58,6 +58,12 @@ jobs:
             libsoup-3.0-dev
 
       - uses: mlugg/setup-zig@v2
+        with:
+          # See ci.yml for the full rationale. TL;DR: pinned to match
+          # Ghostty's `minimum_zig_version` from
+          # https://github.com/ghostty-org/ghostty/blob/main/build.zig.zon
+          # so release builds don't fail when a new Zig drops.
+          version: 0.15.2
 
       - uses: dtolnay/rust-toolchain@stable
         with:
