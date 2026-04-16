@@ -74,10 +74,11 @@ impl BrowserHistory {
             });
         }
 
-        // Cap at 5000 entries — remove oldest by last_visited_ms
+        // Cap at 5000 entries — remove oldest by last_visited_ms.
+        // sort_by_key + Reverse is clippy-preferred over manual b.cmp(a).
         if self.entries.len() > 5000 {
             self.entries
-                .sort_by(|a, b| b.last_visited_ms.cmp(&a.last_visited_ms));
+                .sort_by_key(|e| std::cmp::Reverse(e.last_visited_ms));
             self.entries.truncate(5000);
         }
 

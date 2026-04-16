@@ -22,9 +22,13 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          # Pinned to match ghostty's minimum_zig_version in build.zig.zon.
-          # Bumping Zig without checking ghostty's requirement will break
-          # libghostty-vt-sys builds (refs amux <zig-pin-issue>).
+          # Pinned to match Ghostty's `minimum_zig_version` (currently
+          # "0.15.2") declared at:
+          #   https://github.com/ghostty-org/ghostty/blob/main/build.zig.zon
+          # Ghostty hasn't migrated to Zig 0.16 yet; bumping here without
+          # verifying upstream will break libghostty-vt-sys's zig build.
+          # When upstream bumps, bump libghostty-vt patch rev in Cargo.toml
+          # and this pin together.
           version: 0.15.2
 
       - uses: dtolnay/rust-toolchain@stable
@@ -59,9 +63,13 @@ jobs:
 
       - uses: mlugg/setup-zig@v2
         with:
-          # Pinned to match ghostty's minimum_zig_version in build.zig.zon.
-          # Bumping Zig without checking ghostty's requirement will break
-          # libghostty-vt-sys builds (refs amux <zig-pin-issue>).
+          # Pinned to match Ghostty's `minimum_zig_version` (currently
+          # "0.15.2") declared at:
+          #   https://github.com/ghostty-org/ghostty/blob/main/build.zig.zon
+          # Ghostty hasn't migrated to Zig 0.16 yet; bumping here without
+          # verifying upstream will break libghostty-vt-sys's zig build.
+          # When upstream bumps, bump libghostty-vt patch rev in Cargo.toml
+          # and this pin together.
           version: 0.15.2
 
       - uses: dtolnay/rust-toolchain@stable
