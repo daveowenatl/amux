@@ -26,7 +26,7 @@
 //! tool call overwrites it, which is what actually fixes the flicker on the
 //! current sidebar.
 
-use amux_ipc::IpcClient;
+use amux_ipc::{IpcClient, Response};
 use serde_json::{json, Value};
 
 /// What a hook handler wants done on the server.
@@ -66,11 +66,15 @@ impl HookAction {
     }
 }
 
-/// Dispatch a list of actions over the IPC client. `UpsertEntry` /
-/// `RemoveEntry` calls are best-effort: if the server is running an older
-/// amux build that doesn't know about `status.upsert_entry`, we still
-/// want `status.set` calls to go through. Errors on those two methods are
-/// therefore swallowed.
+/// Dispatch a list of actions over the IPC client.
+///
+/// `UpsertEntry` / `RemoveEntry` are the back-compat path for older amux
+/// servers that don't implement the new JSON-RPC methods. On those servers
+/// the call still completes successfully at the transport layer — the
+/// response just comes back with `ok=false` and `error.code="method_not_found"`
+/// (see `ipc_dispatch.rs` fallthrough arm). Swallowing that one RPC error
+/// is what preserves back-compat. Transport errors (connection closed,
+/// malformed response) are still propagated so real failures aren't hidden.
 pub(crate) async fn dispatch_actions(
     client: &mut IpcClient,
     ws_id: &str,
@@ -86,7 +90,7 @@ pub(crate) async fn dispatch_actions(
                 text,
                 priority,
             } => {
-                let _ = client
+                let resp = client
                     .call(
                         "status.upsert_entry",
                         json!({
@@ -96,10 +100,11 @@ pub(crate) async fn dispatch_actions(
                             "priority": priority,
                         }),
                     )
-                    .await;
+                    .await?;
+                ignore_method_not_found(&resp, "status.upsert_entry")?;
             }
             HookAction::RemoveEntry { key } => {
-                let _ = client
+                let resp = client
                     .call(
                         "status.remove_entry",
                         json!({
@@ -107,11 +112,30 @@ pub(crate) async fn dispatch_actions(
                             "key": key,
                         }),
                     )
-                    .await;
+                    .await?;
+                ignore_method_not_found(&resp, "status.remove_entry")?;
             }
         }
     }
     Ok(())
+}
+
+/// Treat `method_not_found` on `resp` as success (back-compat with older
+/// amux servers that don't implement the keyed-entry methods). Any other
+/// `ok=false` response surfaces as an error so real bugs aren't hidden.
+fn ignore_method_not_found(resp: &Response, method: &str) -> anyhow::Result<()> {
+    if resp.ok {
+        return Ok(());
+    }
+    match &resp.error {
+        Some(err) if err.code == "method_not_found" => Ok(()),
+        Some(err) => Err(anyhow::anyhow!(
+            "{method} failed: {} ({})",
+            err.message,
+            err.code
+        )),
+        None => Err(anyhow::anyhow!("{method} returned ok=false with no error")),
+    }
 }
 
 // ---------------------------------------------------------------------------

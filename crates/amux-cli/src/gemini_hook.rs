@@ -66,16 +66,18 @@ pub(crate) fn hook_actions(event: &str, data: &Value, ws_id: &str) -> Vec<HookAc
         }
         "Notification" => {
             // Gemini's Notification hook payload often carries the text
-            // under a `message` field, mirroring Claude's shape. If the
-            // field is absent we still drive state=waiting; the keyed
-            // entry becomes an empty string so the sidebar has something
-            // to display when the legacy slot is stale.
+            // under a `message` field, mirroring Claude's shape. Surface it
+            // into the legacy `agent.message` slot too — otherwise today's
+            // sidebar (which still reads `agent.message` directly, pre-G20)
+            // would keep showing the last tool label ("Running cargo
+            // test") while the state has already flipped to "waiting".
             let message = data.get("message").and_then(|v| v.as_str()).unwrap_or("");
             vec![
                 HookAction::SetStatus(json!({
                     "workspace_id": ws_id,
                     "state": "waiting",
                     "label": "Needs input",
+                    "message": message,
                 })),
                 HookAction::upsert(KEY_NOTIFICATION, message, NOTIFICATION_PRIORITY),
             ]
@@ -375,6 +377,9 @@ mod tests {
         let params = set_status_params(&actions);
         assert_eq!(params["state"], "waiting");
         assert_eq!(params["label"], "Needs input");
+        // Dual-write into the legacy message slot so today's sidebar
+        // (pre-G20) doesn't keep rendering the previous tool label.
+        assert_eq!(params["message"], "Need approval");
         assert_eq!(
             upserts(&actions),
             vec![(
@@ -382,6 +387,24 @@ mod tests {
                 "Need approval",
                 NOTIFICATION_PRIORITY
             )]
+        );
+    }
+
+    /// Regression: Notification without a payload `message` must still send
+    /// `message: ""` so `status.set` clears any stale per-tool message from
+    /// the preceding BeforeTool. Omitting it would preserve the previous
+    /// message and leave the UI showing "Running cargo test" while the
+    /// state has already flipped to "waiting".
+    #[test]
+    fn notification_without_message_sends_empty_string_to_clear() {
+        let payload = json!({});
+        let actions = hook_actions("Notification", &payload, "1");
+        let params = set_status_params(&actions);
+        assert_eq!(params["state"], "waiting");
+        assert_eq!(params["label"], "Needs input");
+        assert_eq!(
+            params["message"], "",
+            "message must be explicit empty string, not absent, so status.set clears"
         );
     }
 
