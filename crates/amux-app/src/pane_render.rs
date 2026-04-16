@@ -1162,15 +1162,13 @@ impl AmuxApp {
             self.do_split(SplitDirection::Vertical);
         }
         if want_reset {
-            // Send RIS (ESC c) directly into the VT engine — resets terminal
-            // state (modes, attributes, screen) without disturbing the child
-            // process. Uses feed_bytes (not write_bytes) because RIS is for
-            // the emulator, not the application.
-            if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
-                if let Some(s) = m.active_surface_mut() {
-                    s.pane.feed_bytes(b"\x1bc");
-                }
-            }
+            // Reuse do_clear_scrollback: clears visible screen + scrollback,
+            // then sends Ctrl+L to the shell so it redraws its prompt
+            // immediately (instead of leaving the user staring at a blank
+            // pane until they press Enter). Matches the behavior bound to
+            // the Ctrl+Shift+K keyboard shortcut.
+            self.set_focus(pane_id);
+            self.do_clear_scrollback();
         }
     }
 
