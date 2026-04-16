@@ -639,7 +639,7 @@ impl AmuxApp {
             // description). Reserved `agent.*` slots and the live
             // AgentState/progress describe process state that doesn't
             // survive a restart, so they're intentionally dropped.
-            let agent_status = self.notifications.workspace_status(ws.id).and_then(|s| {
+            let workspace_status = self.notifications.workspace_status(ws.id).and_then(|s| {
                 let entries: Vec<amux_session::SavedStatusEntry> = s
                     .entries
                     .iter()
@@ -668,7 +668,7 @@ impl AmuxApp {
                 zoomed: ws.zoomed,
                 panes: saved_panes,
                 color: ws.color,
-                agent_status,
+                workspace_status,
             });
         }
 

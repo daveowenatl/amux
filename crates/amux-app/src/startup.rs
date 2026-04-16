@@ -808,8 +808,18 @@ pub(crate) fn restore_session(
     // out `agent.*` before writing them, so agent-owned slots don't
     // resurrect after the agent died.
     let mut store = NotificationStore::new();
+    // Only reseed for workspaces that actually restored. The earlier
+    // restore loop can drop a saved workspace (unsupported panel type,
+    // tree referencing missing panes, every surface failing to spawn)
+    // and we'd otherwise leave orphan `WorkspaceStatus` records keyed
+    // by IDs with no matching `Workspace` — state no UI path could ever
+    // clear.
+    let restored_ids: std::collections::HashSet<u64> = workspaces.iter().map(|w| w.id).collect();
     for saved_ws in &session.workspaces {
-        let Some(saved_status) = saved_ws.agent_status.as_ref() else {
+        if !restored_ids.contains(&saved_ws.id) {
+            continue;
+        }
+        let Some(saved_status) = saved_ws.workspace_status.as_ref() else {
             continue;
         };
         for entry in &saved_status.entries {
