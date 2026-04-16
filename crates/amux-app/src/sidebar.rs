@@ -315,7 +315,13 @@ fn render_workspace_row(
     let status = notifications.workspace_status(ws.id);
     let has_status = status.is_some();
     let has_progress = status.as_ref().and_then(|s| s.progress).is_some();
-    let has_agent_message = status.as_ref().and_then(|s| s.message.as_ref()).is_some();
+    // Filter empty-string entries: upsert_entry lets publishers write empty
+    // text, and we shouldn't reserve a subtitle line for a blank message.
+    let agent_message = status
+        .as_ref()
+        .and_then(|s| s.message())
+        .filter(|m| !m.is_empty());
+    let has_agent_message = agent_message.is_some();
     let latest_notif = notifications.latest_for_workspace(ws.id);
     let has_notif_text = !has_agent_message && latest_notif.is_some_and(|n| !n.body.is_empty());
     let has_color = ws.color.is_some();
@@ -330,7 +336,7 @@ fn render_workspace_row(
     // overwritten by agent status or auto-detected titles.
     let display_title = if let Some(ref ut) = ws.user_title {
         ut.clone()
-    } else if let Some(task) = status.as_ref().and_then(|s| s.task.as_ref()) {
+    } else if let Some(task) = status.as_ref().and_then(|s| s.task()) {
         format!("\u{2731} {task}")
     } else if let Some(st) = metadata.and_then(|m| m.surface_title.as_ref()) {
         st.clone()
@@ -591,7 +597,7 @@ fn render_workspace_row(
             amux_notify::AgentState::Waiting => ("\u{1F514}", "Needs input"), // 🔔
             amux_notify::AgentState::Idle => ("\u{23F8}", "Idle"), // ⏸ (no variation selector — FE0E renders as box on Windows)
         };
-        let label = status.label.as_deref().unwrap_or(default_text);
+        let label = status.label().unwrap_or(default_text);
         content_bottom += 4.0;
         let status_x = rect.min.x + content_left;
         let max_w = avail_w - content_left - ROW_H_PAD;
@@ -609,7 +615,7 @@ fn render_workspace_row(
     }
 
     // --- Agent message (subtitle) ---
-    if let Some(message) = status.as_ref().and_then(|s| s.message.as_ref()) {
+    if let Some(message) = agent_message {
         let msg_color = meta_color;
         content_bottom += 2.0;
         let msg_x = rect.min.x + content_left;
@@ -617,7 +623,7 @@ fn render_workspace_row(
         let msg_font = egui::FontId::proportional(METADATA_FONT_SIZE);
         let galley = ui
             .painter()
-            .layout(message.clone(), msg_font, msg_color, max_w);
+            .layout(message.to_string(), msg_font, msg_color, max_w);
         let clip_rect = egui::Rect::from_min_size(
             egui::pos2(msg_x, content_bottom),
             egui::vec2(max_w, METADATA_LINE_HEIGHT),
