@@ -293,6 +293,12 @@ impl AmuxApp {
                         self.select_all_visible();
                     }
                 }
+                menu_bar::MenuAction::Settings => {
+                    if self.settings_modal.is_none() {
+                        self.settings_modal =
+                            Some(settings_modal::SettingsModal::from_config(&self.app_config));
+                    }
+                }
             }
         }
     }

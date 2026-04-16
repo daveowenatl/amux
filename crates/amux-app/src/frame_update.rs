@@ -508,6 +508,11 @@ impl eframe::App for AmuxApp {
             self.render_rename_modal(ctx);
         }
 
+        // Settings modal
+        if self.settings_modal.is_some() {
+            self.render_settings_modal(ctx);
+        }
+
         // Hyperlink hover detection + Cmd+click handling
         self.handle_hyperlinks(ctx);
 
