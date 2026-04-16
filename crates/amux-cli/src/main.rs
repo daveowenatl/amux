@@ -2,6 +2,7 @@ mod claude_hook;
 mod cli;
 mod codex_hook;
 mod gemini_hook;
+mod hook_action;
 mod install;
 mod print;
 
