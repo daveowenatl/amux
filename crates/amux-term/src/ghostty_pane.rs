@@ -891,6 +891,17 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
     }
 
     fn focus_changed(&mut self, focused: bool) {
+        // Focus reporting (DECSET 1004) is opt-in: only send the event when
+        // the application has enabled it. The encoded bytes are CSI I /
+        // CSI O, which the application reads from stdin via the PTY.
+        //
+        // Critical: write to PTY (write_bytes), NOT vt_write. CSI I as
+        // *output* to the VT engine is interpreted as CHT (Cursor Horizontal
+        // Tab — advance one tab stop), so vt_write here would creep the
+        // cursor forward each time focus changed.
+        if !self.terminal.mode(Mode::FOCUS_EVENT).unwrap_or(false) {
+            return;
+        }
         let event = if focused {
             libghostty_vt::focus::Event::Gained
         } else {
@@ -898,7 +909,8 @@ impl TerminalBackend for GhosttyPane<'_, '_> {
         };
         let mut buf = [0u8; 8];
         if let Ok(n) = event.encode(&mut buf) {
-            self.terminal.vt_write(&buf[..n]);
+            let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = writer.write_all(&buf[..n]);
         }
     }
 
