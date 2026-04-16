@@ -288,6 +288,42 @@ pub(crate) enum Command {
         #[arg(long)]
         workspace: Option<String>,
     },
+    /// Publish or replace a keyed status entry.
+    ///
+    /// Each call writes under its own key (e.g. "claude.tool",
+    /// "git.branch"). Re-using a key replaces the prior entry; use
+    /// `remove-entry` to expire it. Keys starting with "agent." are
+    /// reserved for the legacy sidebar slots owned by `set-status`
+    /// and will be rejected.
+    #[command(name = "set-entry")]
+    SetEntry {
+        /// Entry key (e.g. "claude.tool", "git.branch"). Must not
+        /// start with "agent." — that namespace is reserved.
+        key: String,
+        /// Display text
+        text: String,
+        /// Render priority. Higher sorts first (default 50).
+        #[arg(long)]
+        priority: Option<i32>,
+        /// Optional icon name / emoji (renderer-defined)
+        #[arg(long)]
+        icon: Option<String>,
+        /// Optional RGB/RGBA color, e.g. "#ff8800" or "#ff8800aa"
+        #[arg(long)]
+        color: Option<String>,
+        /// Target workspace ID (defaults to AMUX_WORKSPACE_ID)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Remove a previously-published keyed status entry.
+    #[command(name = "remove-entry")]
+    RemoveEntry {
+        /// Entry key to remove
+        key: String,
+        /// Target workspace ID (defaults to AMUX_WORKSPACE_ID)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
     /// Send a notification
     Notify {
         /// Notification body

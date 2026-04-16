@@ -938,6 +938,56 @@ impl AmuxApp {
                     Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
                 }
             }
+            "status.upsert_entry" => {
+                match serde_json::from_value::<amux_ipc::methods::UpsertEntryParams>(
+                    req.params.clone(),
+                ) {
+                    Ok(params) => {
+                        if params.key.starts_with(amux_notify::AGENT_KEY_PREFIX) {
+                            Response::err(
+                                req.id.clone(),
+                                "invalid_params",
+                                "keys starting with 'agent.' are reserved for status.set",
+                            )
+                        } else {
+                            let ws_id = params.workspace_id.parse::<u64>().unwrap_or(0);
+                            let priority = params
+                                .priority
+                                .unwrap_or(amux_notify::priority::USER_GENERIC);
+                            self.notifications.upsert_entry(
+                                ws_id,
+                                params.key,
+                                params.text,
+                                priority,
+                                params.icon,
+                                params.color,
+                            );
+                            Response::ok(req.id.clone(), serde_json::json!({}))
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
+            "status.remove_entry" => {
+                match serde_json::from_value::<amux_ipc::methods::RemoveEntryParams>(
+                    req.params.clone(),
+                ) {
+                    Ok(params) => {
+                        if params.key.starts_with(amux_notify::AGENT_KEY_PREFIX) {
+                            Response::err(
+                                req.id.clone(),
+                                "invalid_params",
+                                "keys starting with 'agent.' are reserved for status.set",
+                            )
+                        } else {
+                            let ws_id = params.workspace_id.parse::<u64>().unwrap_or(0);
+                            let removed = self.notifications.remove_entry(ws_id, &params.key);
+                            Response::ok(req.id.clone(), serde_json::json!({ "removed": removed }))
+                        }
+                    }
+                    Err(e) => Response::err(req.id.clone(), "invalid_params", &e.to_string()),
+                }
+            }
             "notify.send" => {
                 match serde_json::from_value::<amux_ipc::methods::NotifySendParams>(
                     req.params.clone(),
