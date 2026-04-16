@@ -870,6 +870,19 @@ impl AmuxApp {
             return false;
         }
 
+        // Don't start a new selection (or extend an existing one with a fresh
+        // press) when an egui overlay (modal, popup, context menu) is over the
+        // pointer. The terminal pane sits in the Background layer; clicks on
+        // egui Windows above it would otherwise bleed through and start a
+        // text selection in the terminal behind the modal.
+        //
+        // We only block the *press*. An ongoing drag (`primary_down` without
+        // `primary_pressed`) keeps working so a selection started on the
+        // terminal can extend even if the mouse passes under an overlay.
+        if primary_pressed && ui.ctx().is_pointer_over_area() {
+            return false;
+        }
+
         // Skip selection when the pointer is in the scrollbar hit zone
         // (rightmost 16px of the content area) so the scrollbar drag
         // interaction takes priority over text selection.
@@ -913,46 +926,88 @@ impl AmuxApp {
                 self.last_click_time = now;
                 self.last_click_pos = pos;
 
-                let (anchor, end, mode) = match self.click_count {
+                // Single-click cell selection: defer creating the selection
+                // state until the user actually drags past this cell. Painting
+                // a 1×1 selection on every click produces a flicker square on
+                // the terminal that's visually noisy (and any leftover from
+                // event coalescing wouldn't be cleared by the release path).
+                // Word/line selections (double/triple click) paint immediately
+                // — those are explicit "select this" gestures.
+                let selection = match self.click_count {
                     2 => {
                         // Word selection
-                        // `surface` borrow ends at the match guard so this borrow is safe
                         let Some(surface) = managed.active_surface() else {
                             return false;
                         };
                         let text = selection::line_text_string(&surface.pane, stable_row, cols);
                         let (wstart, wend) = selection::word_bounds_in_line(&text, col);
-                        (
-                            (wstart, stable_row),
-                            (wend, stable_row),
-                            SelectionMode::Word,
-                        )
+                        Some(SelectionState {
+                            anchor: (wstart, stable_row),
+                            end: (wend, stable_row),
+                            mode: SelectionMode::Word,
+                            active: true,
+                        })
                     }
                     3 => {
                         // Line selection
-                        (
-                            (0, stable_row),
-                            (cols.saturating_sub(1), stable_row),
-                            SelectionMode::Line,
-                        )
+                        Some(SelectionState {
+                            anchor: (0, stable_row),
+                            end: (cols.saturating_sub(1), stable_row),
+                            mode: SelectionMode::Line,
+                            active: true,
+                        })
                     }
                     _ => {
-                        // Cell selection
-                        ((col, stable_row), (col, stable_row), SelectionMode::Cell)
+                        // Defer cell selection until drag. Stash the press
+                        // location; the down branch promotes it once the
+                        // mouse moves.
+                        self.pending_selection_start = Some((pane_id, col, stable_row));
+                        None
                     }
                 };
 
+                // Apply the new selection (word/line) or clear the existing
+                // one (single click — matches standard terminal behavior of
+                // any-click-clears-selection).
                 if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
-                    m.selection = Some(SelectionState {
-                        anchor,
-                        end,
-                        mode,
-                        active: true,
-                    });
+                    m.selection = selection;
                 }
                 return true;
             }
         } else if primary_down {
+            // If we have a deferred press waiting to become a real selection,
+            // check whether the mouse has moved to a different cell. If so,
+            // promote it now (anchor=press cell, end=current cell) and let
+            // the normal drag-update path take over from here.
+            if let Some((pending_pane, anchor_col, anchor_row)) = self.pending_selection_start {
+                if pending_pane == pane_id {
+                    if let Some(pos) = pointer_pos {
+                        let (col, stable_row) = selection::pointer_to_cell(
+                            pos,
+                            content_rect,
+                            cell_width,
+                            cell_height,
+                            scroll_offset,
+                            total_rows,
+                            visible_rows,
+                        );
+                        let col = col.min(cols.saturating_sub(1));
+                        if (col, stable_row) != (anchor_col, anchor_row) {
+                            if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
+                                m.selection = Some(SelectionState {
+                                    anchor: (anchor_col, anchor_row),
+                                    end: (col, stable_row),
+                                    mode: SelectionMode::Cell,
+                                    active: true,
+                                });
+                            }
+                            self.pending_selection_start = None;
+                            return true;
+                        }
+                    }
+                }
+            }
+
             // Drag — update selection end
             let has_active_selection = self
                 .panes
@@ -1129,11 +1184,21 @@ impl AmuxApp {
                     return true;
                 }
             }
-        } else if primary_released {
+        }
+
+        // Release is handled independently of press/down so a fast click
+        // (where egui can deliver press + release in the same frame) still
+        // discards the deferred press. Without this it'd be an `else if`
+        // and the press branch would shadow the release.
+        if primary_released {
+            // Click without drag: discard the deferred press, no selection
+            // ever painted.
+            self.pending_selection_start = None;
             if let Some(PaneEntry::Terminal(m)) = self.panes.get_mut(&pane_id) {
                 if let Some(ref mut sel) = m.selection {
                     sel.active = false;
-                    // If no actual drag (anchor == end), clear selection
+                    // Defensive: if a selection somehow ended up at anchor==end
+                    // (e.g., legacy state, future code path), clear it.
                     if sel.anchor == sel.end && sel.mode == SelectionMode::Cell {
                         m.selection = None;
                     }
