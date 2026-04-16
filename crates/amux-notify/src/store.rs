@@ -6,7 +6,7 @@
 //! and per-pane notification state.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::types::*;
 
@@ -36,6 +36,10 @@ fn apply_legacy_field(
                     icon: None,
                     color: None,
                     updated_at: now,
+                    // Legacy sidebar slots are sticky: they live until the
+                    // next set_status overwrites or clears them. TTL is only
+                    // ever attached by upsert_entry callers.
+                    expires_at: None,
                 },
             );
         }
@@ -406,6 +410,10 @@ impl NotificationStore {
     /// Keys beginning with [`AGENT_KEY_PREFIX`] (`"agent."`) are reserved for
     /// the legacy sidebar slots written by [`Self::set_status`] and are
     /// rejected here with a warning log; use `set_status` to write those.
+    // TODO(parity/followup): collapse (icon, color, ttl) into a small
+    // `EntryOptions { .. }` builder struct to tame the arg count. Kept as
+    // positional for now so G1→G2 stays a minimal additive change.
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_entry(
         &mut self,
         workspace_id: u64,
@@ -414,6 +422,7 @@ impl NotificationStore {
         priority: i32,
         icon: Option<String>,
         color: Option<[u8; 4]>,
+        ttl: Option<Duration>,
     ) {
         let key = key.into();
         if key.starts_with(AGENT_KEY_PREFIX) {
@@ -424,6 +433,7 @@ impl NotificationStore {
         }
         let text = text.into();
         let now = Instant::now();
+        let expires_at = StatusEntry::ttl_to_expires_at(now, ttl);
         let status = self
             .workspace_statuses
             .entry(workspace_id)
@@ -442,8 +452,38 @@ impl NotificationStore {
                 icon,
                 color,
                 updated_at: now,
+                expires_at,
             },
         );
+    }
+
+    /// Drop expired entries from a workspace's status. Returns the number of
+    /// entries removed — callers can use this to decide whether a redraw is
+    /// warranted.
+    ///
+    /// Safe to call on any interval; does nothing if the workspace has no
+    /// expired entries (or doesn't exist). A cheap opportunistic sweep is
+    /// enough — expired entries are already filtered out of
+    /// [`WorkspaceStatus::entries_by_priority`] at render time, so the only
+    /// cost of *not* pruning is the memory footprint of a dangling entry.
+    pub fn prune_expired_entries(&mut self, workspace_id: u64) -> usize {
+        self.prune_expired_entries_at(workspace_id, Instant::now())
+    }
+
+    /// Same as [`Self::prune_expired_entries`] but takes the current time
+    /// explicitly — used by tests that need deterministic TTL behaviour
+    /// without `std::thread::sleep`.
+    pub fn prune_expired_entries_at(&mut self, workspace_id: u64, now: Instant) -> usize {
+        let Some(status) = self.workspace_statuses.get_mut(&workspace_id) else {
+            return 0;
+        };
+        let before = status.entries.len();
+        status.entries.retain(|_, e| !e.is_expired(now));
+        let removed = before - status.entries.len();
+        if removed > 0 {
+            status.updated_at = now;
+        }
+        removed
     }
 
     /// Remove a keyed status entry. Returns `true` if an entry was removed.
@@ -818,6 +858,7 @@ mod tests {
             priority::MESSAGE,
             Some("\u{1F4C4}".into()),
             None,
+            None,
         );
         let status = store.workspace_status(1).unwrap();
         let entry = status.entry("claude.tool").unwrap();
@@ -833,6 +874,7 @@ mod tests {
             priority::MESSAGE,
             None,
             None,
+            None,
         );
         assert_eq!(
             store
@@ -845,7 +887,15 @@ mod tests {
         );
 
         // Remove expires the key and leaves others alone.
-        store.upsert_entry(1, "git.branch", "main", priority::USER_GENERIC, None, None);
+        store.upsert_entry(
+            1,
+            "git.branch",
+            "main",
+            priority::USER_GENERIC,
+            None,
+            None,
+            None,
+        );
         assert!(store.remove_entry(1, "claude.tool"));
         let status = store.workspace_status(1).unwrap();
         assert!(status.entry("claude.tool").is_none());
@@ -866,6 +916,7 @@ mod tests {
             priority::USER_GENERIC,
             None,
             None,
+            None,
         );
         let status = store.workspace_status(1).unwrap();
         assert_eq!(status.state, AgentState::Idle);
@@ -875,11 +926,11 @@ mod tests {
     #[test]
     fn entries_by_priority_sorts_descending() {
         let mut store = NotificationStore::new();
-        store.upsert_entry(1, "a.low", "low", 10, None, None);
-        store.upsert_entry(1, "b.high", "high", 100, None, None);
-        store.upsert_entry(1, "c.mid", "mid", 50, None, None);
+        store.upsert_entry(1, "a.low", "low", 10, None, None, None);
+        store.upsert_entry(1, "b.high", "high", 100, None, None, None);
+        store.upsert_entry(1, "c.mid", "mid", 50, None, None, None);
         // Ties break by key ascending: insert two at priority 50.
-        store.upsert_entry(1, "a.tie", "tie", 50, None, None);
+        store.upsert_entry(1, "a.tie", "tie", 50, None, None, None);
         let status = store.workspace_status(1).unwrap();
         let ordered: Vec<&str> = status
             .entries_by_priority()
@@ -899,6 +950,7 @@ mod tests {
             KEY_AGENT_MESSAGE,
             "should not appear",
             priority::MESSAGE,
+            None,
             None,
             None,
         );
@@ -922,11 +974,99 @@ mod tests {
             priority::MESSAGE,
             None,
             None,
+            None,
         );
         assert_eq!(
             store.workspace_status(2).unwrap().message(),
             Some("real message")
         );
+    }
+
+    #[test]
+    fn upsert_entry_with_ttl_filters_and_prunes() {
+        let mut store = NotificationStore::new();
+        store.upsert_entry(
+            1,
+            "claude.tool",
+            "Running tool",
+            priority::MESSAGE,
+            None,
+            None,
+            Some(Duration::from_millis(50)),
+        );
+        store.upsert_entry(
+            1,
+            "git.branch",
+            "main",
+            priority::USER_GENERIC,
+            None,
+            None,
+            None,
+        );
+
+        let status = store.workspace_status(1).unwrap();
+        let entry = status.entry("claude.tool").unwrap();
+        let entry_expires_at = entry
+            .expires_at
+            .expect("TTL should be translated to expires_at");
+
+        // Before the deadline both entries are visible.
+        let before = entry_expires_at - Duration::from_millis(10);
+        let ordered: Vec<&str> = status
+            .entries_by_priority_at(before)
+            .iter()
+            .map(|(k, _)| *k)
+            .collect();
+        assert_eq!(ordered, vec!["claude.tool", "git.branch"]);
+
+        // After the deadline the TTL-bound entry is filtered from the render
+        // list, but the sticky one stays. The raw map is untouched until
+        // prune runs.
+        let after = entry_expires_at + Duration::from_millis(10);
+        let ordered_after: Vec<&str> = status
+            .entries_by_priority_at(after)
+            .iter()
+            .map(|(k, _)| *k)
+            .collect();
+        assert_eq!(ordered_after, vec!["git.branch"]);
+        assert!(status.entries.contains_key("claude.tool"));
+
+        // Prune reclaims the expired slot. Sticky entry is left alone.
+        // Uses the `_at` variant so the test is deterministic rather than
+        // racing a real sleep.
+        let removed = store.prune_expired_entries_at(1, after);
+        assert_eq!(removed, 1);
+        let status = store.workspace_status(1).unwrap();
+        assert!(!status.entries.contains_key("claude.tool"));
+        assert!(status.entries.contains_key("git.branch"));
+
+        // Prune on an unknown workspace is a no-op.
+        assert_eq!(store.prune_expired_entries_at(999, after), 0);
+    }
+
+    #[test]
+    fn legacy_slots_are_sticky_not_ttl() {
+        // set_status never attaches a TTL — the legacy sidebar slots must
+        // live until overwritten.
+        let mut store = NotificationStore::new();
+        store.set_status(
+            1,
+            AgentState::Active,
+            Some("Running".into()),
+            None,
+            Some("latest message".into()),
+        );
+        let status = store.workspace_status(1).unwrap();
+        assert!(status
+            .entry(KEY_AGENT_LABEL)
+            .expect("label entry")
+            .expires_at
+            .is_none());
+        assert!(status
+            .entry(KEY_AGENT_MESSAGE)
+            .expect("message entry")
+            .expires_at
+            .is_none());
     }
 
     #[test]

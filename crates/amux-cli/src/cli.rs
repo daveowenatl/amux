@@ -311,6 +311,13 @@ pub(crate) enum Command {
         /// Optional RGB/RGBA color, e.g. "#ff8800" or "#ff8800aa"
         #[arg(long)]
         color: Option<String>,
+        /// Auto-expire the entry after this many seconds. Useful as a
+        /// safety net for scripts that may not get a chance to run
+        /// `remove-entry` on exit. Fractional values are rounded up to
+        /// the next millisecond (a sub-ms `--ttl` becomes 1ms, so the
+        /// entry never expires instantly).
+        #[arg(long)]
+        ttl: Option<f64>,
         /// Target workspace ID (defaults to AMUX_WORKSPACE_ID)
         #[arg(long)]
         workspace: Option<String>,

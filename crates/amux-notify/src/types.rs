@@ -5,7 +5,7 @@
 //! notification payload, and per-pane notification state.
 
 use std::collections::BTreeMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +81,36 @@ pub struct StatusEntry {
     pub icon: Option<String>,
     pub color: Option<[u8; 4]>,
     pub updated_at: Instant,
+    /// Absolute deadline after which the entry is considered expired and is
+    /// filtered out of the render list. `None` means there is no automatic
+    /// expiry — the entry persists until removed via
+    /// [`super::NotificationStore::remove_entry`] or overwritten by a later
+    /// [`super::NotificationStore::upsert_entry`] call for the same key.
+    ///
+    /// TTL acts as a safety net for integrations that publish a transient
+    /// entry (e.g. "running tool X") but might not survive to clean it up
+    /// (crashed hook, killed subprocess). Set to `None` for legacy sidebar
+    /// slots — those are owned by `set_status` and live until overwritten.
+    pub expires_at: Option<Instant>,
+}
+
+impl StatusEntry {
+    /// True if this entry's TTL has passed at `now`. Sticky (no-TTL)
+    /// entries always return false.
+    pub fn is_expired(&self, now: Instant) -> bool {
+        self.expires_at.is_some_and(|t| now >= t)
+    }
+
+    /// Convert a duration into an absolute `expires_at` anchored at `now`.
+    /// Helper for callers composing their own `StatusEntry` values.
+    ///
+    /// Uses `checked_add` so that a pathologically large `ttl` (e.g. a
+    /// malicious IPC client sending `ttl_ms = u64::MAX`) collapses to
+    /// `None` — semantically equivalent to "sticky, no expiry" — instead
+    /// of panicking on `Instant` overflow.
+    pub fn ttl_to_expires_at(now: Instant, ttl: Option<Duration>) -> Option<Instant> {
+        ttl.and_then(|d| now.checked_add(d))
+    }
 }
 
 /// Per-workspace agent status displayed as a pill in the sidebar.
@@ -143,11 +173,23 @@ impl WorkspaceStatus {
         self.entries.get(KEY_AGENT_MESSAGE).map(|e| e.text.as_str())
     }
 
-    /// All entries sorted by descending priority, then by key for stable
-    /// output on ties. The sidebar will iterate this once G20 lands.
+    /// Non-expired entries sorted by descending priority, then by key for
+    /// stable output on ties. Expired entries are filtered out silently —
+    /// call [`super::NotificationStore::prune_expired_entries`] periodically
+    /// to reclaim their memory. The sidebar will iterate this once G20 lands.
     pub fn entries_by_priority(&self) -> Vec<(&str, &StatusEntry)> {
-        let mut v: Vec<(&str, &StatusEntry)> =
-            self.entries.iter().map(|(k, e)| (k.as_str(), e)).collect();
+        self.entries_by_priority_at(Instant::now())
+    }
+
+    /// Same as [`Self::entries_by_priority`] but takes the current time
+    /// explicitly — used by tests that need deterministic TTL behaviour.
+    pub fn entries_by_priority_at(&self, now: Instant) -> Vec<(&str, &StatusEntry)> {
+        let mut v: Vec<(&str, &StatusEntry)> = self
+            .entries
+            .iter()
+            .filter(|(_, e)| !e.is_expired(now))
+            .map(|(k, e)| (k.as_str(), e))
+            .collect();
         v.sort_by(|a, b| b.1.priority.cmp(&a.1.priority).then_with(|| a.0.cmp(b.0)));
         v
     }

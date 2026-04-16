@@ -954,6 +954,7 @@ impl AmuxApp {
                             let priority = params
                                 .priority
                                 .unwrap_or(amux_notify::priority::USER_GENERIC);
+                            let ttl = params.ttl_ms.map(std::time::Duration::from_millis);
                             self.notifications.upsert_entry(
                                 ws_id,
                                 params.key,
@@ -961,6 +962,7 @@ impl AmuxApp {
                                 priority,
                                 params.icon,
                                 params.color,
+                                ttl,
                             );
                             Response::ok(req.id.clone(), serde_json::json!({}))
                         }
