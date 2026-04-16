@@ -8,23 +8,35 @@
 //! input" transitions, so unlike Claude Code and Gemini CLI this integration
 //! never emits `state: "waiting"` / `label: "Needs input"`. Revisit once
 //! Codex adds a hook for approval requests.
+//!
+//! Per parity plan gap G23, tool-use events publish to a `codex.tool` key
+//! in addition to the legacy `agent.message` dual-write. PostToolUse
+//! removes the keyed entry without blanking the legacy message, which is
+//! what closes the flicker between consecutive tool calls.
 
+use crate::hook_action::{dispatch_actions, HookAction, TOOL_PRIORITY};
 use amux_ipc::IpcClient;
 use serde_json::{json, Value};
 use std::io::Read as _;
 
-/// Pure helper: map a Codex hook event + payload to the status.set params
-/// the IPC layer expects. Returns None when the event should be observed
-/// but produces no status change.
-pub(crate) fn status_update_for(event: &str, data: &Value, ws_id: &str) -> Option<Value> {
+/// Publisher-owned key for Codex per-tool entries.
+pub(crate) const KEY_TOOL: &str = "codex.tool";
+
+/// Pure helper: map a Codex hook event + payload to a list of
+/// [`HookAction`]s. Returns an empty Vec when the event is observed but
+/// produces no status change.
+pub(crate) fn hook_actions(event: &str, data: &Value, ws_id: &str) -> Vec<HookAction> {
     match event {
-        "SessionStart" => Some(json!({
-            "workspace_id": ws_id,
-            "state": "idle",
-            "label": "Idle",
-            "task": "",
-            "message": "",
-        })),
+        "SessionStart" => vec![
+            HookAction::SetStatus(json!({
+                "workspace_id": ws_id,
+                "state": "idle",
+                "label": "Idle",
+                "task": "",
+                "message": "",
+            })),
+            HookAction::remove(KEY_TOOL),
+        ],
         "UserPromptSubmit" => {
             let prompt = data.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
             let task = truncate(prompt, 80);
@@ -37,33 +49,39 @@ pub(crate) fn status_update_for(event: &str, data: &Value, ws_id: &str) -> Optio
             if !task.is_empty() {
                 params["task"] = json!(task);
             }
-            Some(params)
+            vec![HookAction::SetStatus(params), HookAction::remove(KEY_TOOL)]
         }
         "PreToolUse" => {
             let tool_name = data.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
             let description = describe_tool_use(tool_name, data.get("tool_input"));
-            Some(json!({
-                "workspace_id": ws_id,
-                "state": "active",
-                "label": "Running",
-                "message": description,
-            }))
+            vec![
+                HookAction::SetStatus(json!({
+                    "workspace_id": ws_id,
+                    "state": "active",
+                    "label": "Running",
+                    "message": description,
+                })),
+                HookAction::upsert(KEY_TOOL, description, TOOL_PRIORITY),
+            ]
         }
-        "PostToolUse" => Some(json!({
-            "workspace_id": ws_id,
-            "state": "active",
-            "label": "Running",
-            "message": "",
-        })),
-        "Stop" => Some(json!({
-            "workspace_id": ws_id,
-            "state": "idle",
-            "label": "Idle",
-            "task": "",
-            "message": "",
-        })),
+        "PostToolUse" => {
+            // G23 flicker fix: only remove the keyed entry. Legacy
+            // message persists so the sidebar doesn't blank between
+            // consecutive tool calls in the same turn.
+            vec![HookAction::remove(KEY_TOOL)]
+        }
+        "Stop" => vec![
+            HookAction::SetStatus(json!({
+                "workspace_id": ws_id,
+                "state": "idle",
+                "label": "Idle",
+                "task": "",
+                "message": "",
+            })),
+            HookAction::remove(KEY_TOOL),
+        ],
         // Codex may add more events in the future; observe but don't react.
-        _ => None,
+        _ => Vec::new(),
     }
 }
 
@@ -104,9 +122,8 @@ pub async fn handle_codex_hook(client: &mut IpcClient, event: &str) -> anyhow::R
     let data: Value = serde_json::from_str(&input).unwrap_or_default();
     let ws_id = std::env::var("AMUX_WORKSPACE_ID").unwrap_or_else(|_| "0".to_string());
 
-    if let Some(params) = status_update_for(event, &data, &ws_id) {
-        client.call("status.set", params).await?;
-    }
+    let actions = hook_actions(event, &data, &ws_id);
+    dispatch_actions(client, &ws_id, actions).await?;
     Ok(())
 }
 
@@ -115,15 +132,50 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn set_status_params(actions: &[HookAction]) -> &Value {
+        for a in actions {
+            if let HookAction::SetStatus(v) = a {
+                return v;
+            }
+        }
+        panic!("no SetStatus action in {actions:?}");
+    }
+
+    fn upserts(actions: &[HookAction]) -> Vec<(&str, &str, i32)> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                HookAction::UpsertEntry {
+                    key,
+                    text,
+                    priority,
+                } => Some((key.as_str(), text.as_str(), *priority)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn removes(actions: &[HookAction]) -> Vec<&str> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                HookAction::RemoveEntry { key } => Some(key.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn session_start_sets_idle() {
+    fn session_start_sets_idle_and_clears_key() {
         let payload = json!({ "hook_event_name": "SessionStart", "cwd": "/p" });
-        let params = status_update_for("SessionStart", &payload, "42").expect("emit");
+        let actions = hook_actions("SessionStart", &payload, "42");
+        let params = set_status_params(&actions);
         assert_eq!(params["workspace_id"], "42");
         assert_eq!(params["state"], "idle");
         assert_eq!(params["label"], "Idle");
         assert_eq!(params["task"], "");
         assert_eq!(params["message"], "");
+        assert_eq!(removes(&actions), vec!["codex.tool"]);
     }
 
     #[test]
@@ -132,16 +184,19 @@ mod tests {
             "hook_event_name": "UserPromptSubmit",
             "prompt": "refactor auth",
         });
-        let params = status_update_for("UserPromptSubmit", &payload, "1").unwrap();
+        let actions = hook_actions("UserPromptSubmit", &payload, "1");
+        let params = set_status_params(&actions);
         assert_eq!(params["state"], "active");
         assert_eq!(params["label"], "Running");
         assert_eq!(params["task"], "refactor auth");
+        assert_eq!(removes(&actions), vec!["codex.tool"]);
     }
 
     #[test]
     fn user_prompt_submit_without_prompt_emits_running_no_task() {
         let payload = json!({ "hook_event_name": "UserPromptSubmit" });
-        let params = status_update_for("UserPromptSubmit", &payload, "1").unwrap();
+        let actions = hook_actions("UserPromptSubmit", &payload, "1");
+        let params = set_status_params(&actions);
         assert_eq!(params["state"], "active");
         assert!(params.get("task").is_none() || params["task"] == "");
     }
@@ -150,23 +205,29 @@ mod tests {
     fn user_prompt_submit_truncates_long_prompts_to_80_chars() {
         let long = "a".repeat(200);
         let payload = json!({ "prompt": long });
-        let params = status_update_for("UserPromptSubmit", &payload, "1").unwrap();
+        let actions = hook_actions("UserPromptSubmit", &payload, "1");
+        let params = set_status_params(&actions);
         let task = params["task"].as_str().unwrap();
         assert_eq!(task.chars().count(), 80);
         assert!(task.ends_with("..."));
     }
 
     #[test]
-    fn pre_tool_use_bash_shows_command() {
+    fn pre_tool_use_bash_writes_legacy_and_keyed_entry() {
         // Codex PreToolUse currently only intercepts Bash per the docs.
         let payload = json!({
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
             "tool_input": { "command": "cargo test" }
         });
-        let params = status_update_for("PreToolUse", &payload, "1").unwrap();
+        let actions = hook_actions("PreToolUse", &payload, "1");
+        let params = set_status_params(&actions);
         assert_eq!(params["state"], "active");
         assert_eq!(params["message"], "Running cargo test");
+        assert_eq!(
+            upserts(&actions),
+            vec![("codex.tool", "Running cargo test", TOOL_PRIORITY)]
+        );
     }
 
     #[test]
@@ -175,7 +236,8 @@ mod tests {
             "tool_name": "Bash",
             "tool_input": { "command": "a".repeat(200) }
         });
-        let params = status_update_for("PreToolUse", &payload, "1").unwrap();
+        let actions = hook_actions("PreToolUse", &payload, "1");
+        let params = set_status_params(&actions);
         let msg = params["message"].as_str().unwrap();
         assert!(msg.starts_with("Running "));
         assert!(msg.ends_with("..."));
@@ -184,34 +246,41 @@ mod tests {
     #[test]
     fn pre_tool_use_missing_command_falls_back_to_generic_label() {
         let payload = json!({ "tool_name": "Bash", "tool_input": {} });
-        let params = status_update_for("PreToolUse", &payload, "1").unwrap();
+        let actions = hook_actions("PreToolUse", &payload, "1");
+        let params = set_status_params(&actions);
         assert_eq!(params["message"], "Running command");
     }
 
+    /// G23 flicker fix: PostToolUse must NOT emit a `status.set` that
+    /// blanks the legacy message. It only expires the keyed entry.
     #[test]
-    fn post_tool_use_clears_message_keeps_active_state() {
-        // After a tool call finishes, go back to "Running" with no specific
-        // message so a later tool call overwrites cleanly.
+    fn post_tool_use_only_removes_keyed_entry() {
         let payload = json!({ "hook_event_name": "PostToolUse" });
-        let params = status_update_for("PostToolUse", &payload, "1").unwrap();
-        assert_eq!(params["state"], "active");
-        assert_eq!(params["label"], "Running");
-        assert_eq!(params["message"], "");
+        let actions = hook_actions("PostToolUse", &payload, "1");
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, HookAction::SetStatus(_))),
+            "PostToolUse must not emit status.set"
+        );
+        assert_eq!(removes(&actions), vec!["codex.tool"]);
     }
 
     #[test]
     fn stop_goes_idle_and_clears() {
         let payload = json!({});
-        let params = status_update_for("Stop", &payload, "9").unwrap();
+        let actions = hook_actions("Stop", &payload, "9");
+        let params = set_status_params(&actions);
         assert_eq!(params["state"], "idle");
         assert_eq!(params["label"], "Idle");
         assert_eq!(params["task"], "");
         assert_eq!(params["message"], "");
+        assert_eq!(removes(&actions), vec!["codex.tool"]);
     }
 
     #[test]
-    fn unknown_event_does_not_emit_status_change() {
+    fn unknown_event_does_not_emit_any_action() {
         let payload = json!({});
-        assert!(status_update_for("Notification", &payload, "1").is_none());
+        assert!(hook_actions("Notification", &payload, "1").is_empty());
     }
 }
