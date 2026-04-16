@@ -322,6 +322,32 @@ pub(crate) enum Command {
         #[arg(long)]
         workspace: Option<String>,
     },
+    /// Set or clear the workspace progress bar (decoration on the
+    /// sidebar row).
+    ///
+    /// `VALUE` is a fraction in `[0.0, 1.0]` — pass `--clear` instead
+    /// to drop the bar entirely. Exactly one of `VALUE` or `--clear`
+    /// is required. `--label` attaches a short caption
+    /// ("compiling 34/120"); it renders above the bar and only while
+    /// a value is present, so it can't be combined with `--clear`.
+    #[command(name = "set-progress")]
+    SetProgress {
+        /// Progress value between 0.0 and 1.0. Required unless
+        /// `--clear` is set; conflicts with `--clear`.
+        #[arg(conflicts_with = "clear")]
+        value: Option<f32>,
+        /// Optional short caption rendered above the bar. Only
+        /// meaningful while a value is present, so it can't be
+        /// combined with `--clear`.
+        #[arg(long, conflicts_with = "clear")]
+        label: Option<String>,
+        /// Clear the progress bar (and its label).
+        #[arg(long)]
+        clear: bool,
+        /// Target workspace ID (defaults to AMUX_WORKSPACE_ID)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
     /// Remove a previously-published keyed status entry.
     #[command(name = "remove-entry")]
     RemoveEntry {

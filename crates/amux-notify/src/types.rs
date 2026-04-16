@@ -141,6 +141,10 @@ pub struct WorkspaceStatus {
     pub updated_at: Instant,
     /// Optional progress value (0.0–1.0) for progress bar display.
     pub progress: Option<f32>,
+    /// Optional short label rendered alongside the progress bar (e.g.
+    /// `"compiling 34/120"`). Only meaningful when [`Self::progress`] is
+    /// `Some` — cleared together with it whenever the bar clears.
+    pub progress_label: Option<String>,
     /// Keyed status entries — authoritative, written immediately by
     /// `upsert_entry` / `set_status` / `remove_entry`. Use
     /// [`Self::entries_by_priority`] for the ordered render list;

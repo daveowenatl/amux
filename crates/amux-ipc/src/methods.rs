@@ -160,6 +160,23 @@ pub struct RemoveEntryParams {
     pub key: String,
 }
 
+/// Parameters for `status.progress`: set or clear the per-workspace
+/// progress bar and its optional label.
+///
+/// `value` is clamped to the `[0.0, 1.0]` range server-side so a caller
+/// passing e.g. `34.0 / 120.0 * 100.0` instead of the fraction doesn't
+/// paint a garbage-width bar. Omit `value` (or send `null`) to clear —
+/// the server drops the label in that case since a bare label has no
+/// bar to attach to.
+#[derive(Debug, Deserialize)]
+pub struct StatusProgressParams {
+    pub workspace_id: String,
+    #[serde(default)]
+    pub value: Option<f32>,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SetCwdParams {
     pub surface_id: String,

@@ -461,6 +461,7 @@ impl NotificationStore {
                 state,
                 updated_at: now,
                 progress: None,
+                progress_label: None,
                 entries: BTreeMap::new(),
                 displayed: BTreeMap::new(),
                 pending_removals: BTreeMap::new(),
@@ -469,6 +470,7 @@ impl NotificationStore {
         entry.updated_at = now;
         // set_status is a "coarse" update: clears any existing progress.
         entry.progress = None;
+        entry.progress_label = None;
 
         apply_legacy_field(
             &mut entry.entries,
@@ -564,6 +566,7 @@ impl NotificationStore {
                 state: AgentState::Idle,
                 updated_at: now,
                 progress: None,
+                progress_label: None,
                 entries: BTreeMap::new(),
                 displayed: BTreeMap::new(),
                 pending_removals: BTreeMap::new(),
@@ -648,10 +651,24 @@ impl NotificationStore {
         }
     }
 
-    /// Set workspace progress (0.0–1.0). Pass `None` to clear.
-    pub fn set_progress(&mut self, workspace_id: u64, progress: Option<f32>) {
+    /// Set workspace progress (0.0–1.0) with an optional short label
+    /// (e.g. `"compiling 34/120"`). Pass `progress = None` to clear the
+    /// bar entirely; the label is cleared alongside in that case since a
+    /// lingering label without a bar has no place to render.
+    ///
+    /// This is a no-op for workspaces the store has never seen — the
+    /// progress bar is a decoration on top of an existing workspace row,
+    /// not a reason to allocate one. Call [`Self::set_status`] first if
+    /// you need to create the row.
+    pub fn set_progress(
+        &mut self,
+        workspace_id: u64,
+        progress: Option<f32>,
+        label: Option<String>,
+    ) {
         if let Some(status) = self.workspace_statuses.get_mut(&workspace_id) {
             status.progress = progress;
+            status.progress_label = if progress.is_some() { label } else { None };
             status.updated_at = Instant::now();
         }
     }
@@ -1444,14 +1461,40 @@ mod tests {
         // set_status creates entry with no progress
         store.set_status(1, AgentState::Active, Some("Building".into()), None, None);
         assert!(store.workspace_status(1).unwrap().progress.is_none());
+        assert!(store.workspace_status(1).unwrap().progress_label.is_none());
 
         // set_progress adds progress
-        store.set_progress(1, Some(0.5));
+        store.set_progress(1, Some(0.5), None);
         assert_eq!(store.workspace_status(1).unwrap().progress, Some(0.5));
 
-        // set_status clears progress
+        // set_progress with a label stores both
+        store.set_progress(1, Some(0.75), Some("compiling 75/100".into()));
+        assert_eq!(store.workspace_status(1).unwrap().progress, Some(0.75));
+        assert_eq!(
+            store.workspace_status(1).unwrap().progress_label.as_deref(),
+            Some("compiling 75/100")
+        );
+
+        // Clearing progress also drops the label — an orphan label with
+        // no bar has nowhere to render.
+        store.set_progress(1, None, Some("stale".into()));
+        assert!(store.workspace_status(1).unwrap().progress.is_none());
+        assert!(store.workspace_status(1).unwrap().progress_label.is_none());
+
+        // Restore a bar+label, then verify set_status clears both.
+        store.set_progress(1, Some(0.25), Some("step 1".into()));
         store.set_status(1, AgentState::Idle, None, None, None);
         assert!(store.workspace_status(1).unwrap().progress.is_none());
+        assert!(store.workspace_status(1).unwrap().progress_label.is_none());
+    }
+
+    #[test]
+    fn set_progress_on_missing_workspace_is_noop() {
+        // `set_progress` is a decoration on top of an existing row; it
+        // shouldn't lazily allocate one just to stash a value.
+        let mut store = NotificationStore::new();
+        store.set_progress(99, Some(0.5), Some("ignored".into()));
+        assert!(store.workspace_status(99).is_none());
     }
 
     #[test]
