@@ -67,15 +67,31 @@ pub struct DragState {
 // Surface metadata
 // ---------------------------------------------------------------------------
 
+/// A PR associated with a surface. Sidebar renders one row per summary
+/// (G13). Agents / IPC callers can attach multiple — a feature branch PR
+/// plus a dependent PR is the motivating case — which all render stacked
+/// under the git/cwd line.
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
+pub struct PrSummary {
+    pub number: u32,
+    pub title: Option<String>,
+    /// "open", "merged", "closed". Free-form string so we don't have to
+    /// enumerate every forge's vocabulary (Bitbucket/GitLab differ).
+    pub state: Option<String>,
+}
+
 /// Per-surface metadata reported by shell integration, agent hooks, or OSC sequences.
 #[derive(Default, Clone)]
 pub struct SurfaceMetadata {
     pub cwd: Option<String>,
     pub git_branch: Option<String>,
     pub git_dirty: bool,
-    pub pr_number: Option<u32>,
-    pub pr_title: Option<String>,
-    pub pr_state: Option<String>, // "open", "merged", "closed"
+    /// PRs attached to this surface. Empty means no PR info set.
+    /// IPC `surface.set_pr` upserts by number (or clears when no number
+    /// supplied) so integrations can publish one PR at a time without
+    /// coordinating — a second call with a different number adds a
+    /// second row rather than replacing the first.
+    pub prs: Vec<PrSummary>,
     /// Surface title from OSC 0/2 (window title set by shell/agent).
     pub surface_title: Option<String>,
 }

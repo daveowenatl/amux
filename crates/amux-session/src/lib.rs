@@ -206,14 +206,30 @@ pub struct SavedSurface {
     pub git_branch: Option<String>,
     #[serde(default)]
     pub git_dirty: bool,
+    /// Legacy single-PR fields (pre-G13). Retained for backwards
+    /// compatibility so old session files still deserialize; migrated into
+    /// [`Self::prs`] on load when the new field is empty. New saves write
+    /// `prs` and leave these three as `None`.
     #[serde(default)]
     pub pr_number: Option<u32>,
     #[serde(default)]
     pub pr_title: Option<String>,
     #[serde(default)]
     pub pr_state: Option<String>,
+    /// Multiple PRs attached to the surface. G13 (sidebar-parity).
+    #[serde(default)]
+    pub prs: Vec<SavedPrSummary>,
     #[serde(default)]
     pub user_title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedPrSummary {
+    pub number: u32,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -332,6 +348,7 @@ mod tests {
                     pr_number: None,
                     pr_title: None,
                     pr_state: None,
+                    prs: Vec::new(),
                     user_title: None,
                     scrollback_vt: None,
                 }],
@@ -484,6 +501,22 @@ mod tests {
         }"#;
         let surface: SavedSurface = serde_json::from_str(json).unwrap();
         assert!(surface.user_title.is_none());
+    }
+
+    #[test]
+    fn deserialize_without_prs_field_defaults_to_empty() {
+        // Pre-G13 session files don't carry the `prs` array. The
+        // `#[serde(default)]` shim must load them without error so the
+        // startup migration path can promote `pr_number`/`pr_title`/
+        // `pr_state` into the new vec at restore time.
+        let json = r#"{
+            "id": 0, "title": "zsh", "working_dir": "/tmp", "scrollback": "",
+            "cols": 80, "rows": 24, "git_branch": null, "git_dirty": false,
+            "pr_number": 42, "pr_title": "Old PR", "pr_state": "open"
+        }"#;
+        let surface: SavedSurface = serde_json::from_str(json).unwrap();
+        assert!(surface.prs.is_empty());
+        assert_eq!(surface.pr_number, Some(42));
     }
 
     #[test]

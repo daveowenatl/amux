@@ -252,7 +252,13 @@ pub(crate) enum Command {
         #[arg(long)]
         surface: Option<String>,
     },
-    /// Set PR info for a surface
+    /// Set PR info for a surface.
+    ///
+    /// By default, this upserts by `--number` into the surface's existing
+    /// PR list — so two agents publishing a feature branch PR plus a
+    /// dependent PR can each call `set-pr` with their own number and get
+    /// two rows in the sidebar. Pass `--replace` to swap the whole list
+    /// for a single entry, or `--clear` to drop everything.
     #[command(name = "set-pr")]
     SetPr {
         /// PR number
@@ -264,7 +270,11 @@ pub(crate) enum Command {
         /// PR state: open, merged, closed
         #[arg(long, conflicts_with = "clear")]
         state: Option<String>,
-        /// Clear PR info
+        /// Replace the surface's entire PR list with this one entry
+        /// instead of upserting by number
+        #[arg(long, conflicts_with = "clear")]
+        replace: bool,
+        /// Clear all PRs on the surface
         #[arg(long)]
         clear: bool,
         /// Target surface ID (defaults to AMUX_SURFACE_ID)

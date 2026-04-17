@@ -669,6 +669,7 @@ async fn main() -> anyhow::Result<()> {
             number,
             title,
             state,
+            replace,
             clear,
             surface,
         } => {
@@ -676,8 +677,13 @@ async fn main() -> anyhow::Result<()> {
                 .or_else(|| std::env::var("AMUX_SURFACE_ID").ok())
                 .unwrap_or_else(|| "default".to_string());
             let params = if clear {
+                // `replace: true` with no `number` is server-side shorthand
+                // for "clear the PR list". Using the explicit wire contract
+                // here means the CLI doesn't silently depend on the server's
+                // legacy "empty body is a no-op" branch.
                 serde_json::json!({
                     "surface_id": surface_id,
+                    "replace": true,
                 })
             } else {
                 serde_json::json!({
@@ -685,6 +691,7 @@ async fn main() -> anyhow::Result<()> {
                     "number": number,
                     "title": title,
                     "state": state,
+                    "replace": replace,
                 })
             };
             let resp = client.call("surface.set_pr", params).await?;

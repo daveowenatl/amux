@@ -695,9 +695,27 @@ pub(crate) fn restore_session(
                         // Restore git/PR metadata from session
                         surface.metadata.git_branch = saved_sf.git_branch.clone();
                         surface.metadata.git_dirty = saved_sf.git_dirty;
-                        surface.metadata.pr_number = saved_sf.pr_number;
-                        surface.metadata.pr_title = saved_sf.pr_title.clone();
-                        surface.metadata.pr_state = saved_sf.pr_state.clone();
+                        surface.metadata.prs = if !saved_sf.prs.is_empty() {
+                            saved_sf
+                                .prs
+                                .iter()
+                                .map(|p| amux_core::model::PrSummary {
+                                    number: p.number,
+                                    title: p.title.clone(),
+                                    state: p.state.clone(),
+                                })
+                                .collect()
+                        } else if let Some(number) = saved_sf.pr_number {
+                            // Back-compat: migrate legacy single-PR fields
+                            // from pre-G13 session files.
+                            vec![amux_core::model::PrSummary {
+                                number,
+                                title: saved_sf.pr_title.clone(),
+                                state: saved_sf.pr_state.clone(),
+                            }]
+                        } else {
+                            Vec::new()
+                        };
                         surface.user_title = saved_sf.user_title.clone();
                         surfaces.push(surface);
                     }

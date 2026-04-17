@@ -595,9 +595,19 @@ impl AmuxApp {
                                     rows: rows as u16,
                                     git_branch: sf.metadata.git_branch.clone(),
                                     git_dirty: sf.metadata.git_dirty,
-                                    pr_number: sf.metadata.pr_number,
-                                    pr_title: sf.metadata.pr_title.clone(),
-                                    pr_state: sf.metadata.pr_state.clone(),
+                                    pr_number: None,
+                                    pr_title: None,
+                                    pr_state: None,
+                                    prs: sf
+                                        .metadata
+                                        .prs
+                                        .iter()
+                                        .map(|p| amux_session::SavedPrSummary {
+                                            number: p.number,
+                                            title: p.title.clone(),
+                                            state: p.state.clone(),
+                                        })
+                                        .collect(),
                                     user_title: sf.user_title.clone(),
                                 }
                             })

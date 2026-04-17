@@ -108,9 +108,7 @@ impl AmuxApp {
                         let surface = self.resolve_surface_mut(&params.surface_id);
                         match surface {
                             Some(sf) => {
-                                sf.metadata.pr_number = params.number;
-                                sf.metadata.pr_title = params.title;
-                                sf.metadata.pr_state = params.state;
+                                apply_set_pr(&mut sf.metadata.prs, &params);
                                 Response::ok(req.id.clone(), serde_json::json!({}))
                             }
                             None => Response::err(req.id.clone(), "not_found", "surface not found"),
@@ -1258,5 +1256,149 @@ impl AmuxApp {
         } else {
             None
         }
+    }
+}
+
+/// Apply a `surface.set_pr` IPC request to the surface's PR list.
+///
+/// G13 semantics:
+/// - `replace = true` → clobber the list. If `number` is set, the list
+///   becomes a single-entry list with that PR; otherwise the list is
+///   cleared. This is the path for "clear all" and for callers that
+///   want the old single-PR behaviour.
+/// - `replace = false` (default) → upsert by `number`. An existing PR
+///   with the same number is updated in place; otherwise the new PR
+///   is appended.
+/// - `replace = false` with `number = None` is a no-op (nothing to
+///   upsert). Legacy callers that sent an empty body are preserved —
+///   they used to overwrite a single optional PR to `None`, which had
+///   no visible effect when nothing was set, and now matches that
+///   no-op outcome for the list case.
+pub(crate) fn apply_set_pr(
+    prs: &mut Vec<amux_core::model::PrSummary>,
+    params: &amux_ipc::methods::SetPrParams,
+) {
+    if params.replace {
+        prs.clear();
+        if let Some(number) = params.number {
+            prs.push(amux_core::model::PrSummary {
+                number,
+                title: params.title.clone(),
+                state: params.state.clone(),
+            });
+        }
+        return;
+    }
+    let Some(number) = params.number else {
+        return;
+    };
+    if let Some(existing) = prs.iter_mut().find(|p| p.number == number) {
+        existing.title = params.title.clone();
+        existing.state = params.state.clone();
+    } else {
+        prs.push(amux_core::model::PrSummary {
+            number,
+            title: params.title.clone(),
+            state: params.state.clone(),
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_set_pr;
+    use amux_core::model::PrSummary;
+    use amux_ipc::methods::SetPrParams;
+
+    fn params(number: Option<u32>, replace: bool) -> SetPrParams {
+        SetPrParams {
+            surface_id: "s".to_string(),
+            number,
+            title: number.map(|n| format!("PR #{n}")),
+            state: Some("open".to_string()),
+            replace,
+        }
+    }
+
+    #[test]
+    fn replace_with_number_overwrites_list() {
+        let mut prs = vec![
+            PrSummary {
+                number: 1,
+                title: None,
+                state: None,
+            },
+            PrSummary {
+                number: 2,
+                title: None,
+                state: None,
+            },
+        ];
+        apply_set_pr(&mut prs, &params(Some(3), true));
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].number, 3);
+    }
+
+    #[test]
+    fn replace_without_number_clears_list() {
+        let mut prs = vec![PrSummary {
+            number: 1,
+            title: None,
+            state: None,
+        }];
+        apply_set_pr(&mut prs, &params(None, true));
+        assert!(prs.is_empty());
+    }
+
+    #[test]
+    fn upsert_appends_new_pr() {
+        let mut prs = vec![PrSummary {
+            number: 1,
+            title: None,
+            state: None,
+        }];
+        apply_set_pr(&mut prs, &params(Some(2), false));
+        assert_eq!(prs.len(), 2);
+        assert_eq!(prs[0].number, 1);
+        assert_eq!(prs[1].number, 2);
+    }
+
+    #[test]
+    fn upsert_updates_matching_number_in_place() {
+        let mut prs = vec![
+            PrSummary {
+                number: 1,
+                title: Some("old".into()),
+                state: Some("open".into()),
+            },
+            PrSummary {
+                number: 2,
+                title: None,
+                state: None,
+            },
+        ];
+        let p = SetPrParams {
+            surface_id: "s".into(),
+            number: Some(1),
+            title: Some("new".into()),
+            state: Some("merged".into()),
+            replace: false,
+        };
+        apply_set_pr(&mut prs, &p);
+        assert_eq!(prs.len(), 2);
+        assert_eq!(prs[0].title.as_deref(), Some("new"));
+        assert_eq!(prs[0].state.as_deref(), Some("merged"));
+    }
+
+    #[test]
+    fn upsert_without_number_is_no_op() {
+        let mut prs = vec![PrSummary {
+            number: 1,
+            title: None,
+            state: None,
+        }];
+        let before = prs.clone();
+        apply_set_pr(&mut prs, &params(None, false));
+        assert_eq!(prs, before);
     }
 }

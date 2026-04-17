@@ -202,6 +202,18 @@ pub struct SetPrParams {
     pub title: Option<String>,
     #[serde(default)]
     pub state: Option<String>,
+    /// If `true`, replace the surface's entire PR list with this one
+    /// entry. When `false` (default), upsert by [`Self::number`] into
+    /// the existing list — callers with two PRs (feature branch +
+    /// dependent) can publish each one with a single IPC call rather
+    /// than having to assemble the full list client-side.
+    ///
+    /// `number = None` + `replace = false` is treated as a no-op so
+    /// legacy callers sending an empty body don't accidentally wipe
+    /// the list. Use an explicit `surface.clear_pr` (or
+    /// `replace = true` with `number = None`) to clear.
+    #[serde(default)]
+    pub replace: bool,
 }
 
 #[derive(Debug, Deserialize)]

@@ -50,6 +50,11 @@ const PROGRESS_BAR_HEIGHT: f32 = 3.0;
 const DROP_INDICATOR_HEIGHT: f32 = 2.0;
 const METADATA_FONT_SIZE: f32 = 10.0;
 const METADATA_LINE_HEIGHT: f32 = 16.0;
+/// G13: cap on the number of PR rows rendered beneath a workspace.
+/// More than this would start to dominate the sidebar for a workspace
+/// that publishes a PR per tiny feature branch; we fall back to
+/// "#N, #M, ... +K more" on the final visible row once this cap is hit.
+const MAX_PR_ROWS: usize = 3;
 /// G6: row-height animation duration. When a status entry appears or
 /// expires, the row interpolates toward the new target height over
 /// this window instead of popping instantly. egui's animation manager
@@ -455,7 +460,7 @@ fn render_workspace_row(
     let has_notif_text = !has_status_rows && latest_notif.is_some_and(|n| !n.body.is_empty());
     let has_color = ws.color.is_some();
     let has_git_or_cwd = metadata.is_some_and(|m| m.git_branch.is_some() || m.cwd.is_some());
-    let has_pr = metadata.is_some_and(|m| m.pr_number.is_some());
+    let pr_row_count = metadata.map(|m| m.prs.len().min(MAX_PR_ROWS)).unwrap_or(0);
 
     // Compute title text early so we can measure if it needs two lines.
     let title_font = crate::fonts::bold_font(TITLE_FONT_SIZE);
@@ -510,9 +515,7 @@ fn render_workspace_row(
     if has_git_or_cwd {
         row_h_live += METADATA_LINE_HEIGHT + 2.0;
     }
-    if has_pr {
-        row_h_live += METADATA_LINE_HEIGHT + 2.0;
-    }
+    row_h_live += pr_row_count as f32 * (METADATA_LINE_HEIGHT + 2.0);
     if has_notif_text {
         row_h_live += NOTIF_PREVIEW_HEIGHT + 2.0;
     }
@@ -874,15 +877,29 @@ fn render_workspace_row(
             content_bottom += METADATA_LINE_HEIGHT;
         }
 
-        // --- PR badge ---
-        if let Some(pr_num) = meta.pr_number {
-            let pr_state = meta.pr_state.as_deref().unwrap_or("open");
+        // --- PR rows ---
+        // G13: one row per attached PR, capped at `MAX_PR_ROWS`. Surplus
+        // PRs are collapsed into a `+N more` suffix on the final visible
+        // row rather than silently dropped, so a workspace with many
+        // dependent branches doesn't look like only a few are tracked.
+        let total_prs = meta.prs.len();
+        let visible_prs = total_prs.min(MAX_PR_ROWS);
+        let overflow = total_prs.saturating_sub(visible_prs);
+        for (i, pr) in meta.prs.iter().take(visible_prs).enumerate() {
+            let pr_state = pr.state.as_deref().unwrap_or("open");
             let pr_color = meta_color;
             content_bottom += 2.0;
             let pr_x = rect.min.x + content_left;
             let max_w = avail_w - content_left - ROW_H_PAD;
             let pr_font = egui::FontId::proportional(METADATA_FONT_SIZE);
-            let pr_text = format!("\u{1F517} PR #{pr_num} {pr_state}");
+            let base = format!("\u{1F517} PR #{} {}", pr.number, pr_state);
+            let pr_text = if i + 1 == visible_prs && overflow > 0 {
+                format!("{base}  +{overflow} more")
+            } else if let Some(title) = pr.title.as_deref().filter(|t| !t.is_empty()) {
+                format!("{base}  {title}")
+            } else {
+                base
+            };
             let truncated = truncate_text(ui, &pr_text, &pr_font, max_w);
             row_painter.text(
                 egui::pos2(pr_x, content_bottom),
