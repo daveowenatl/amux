@@ -343,6 +343,14 @@ fn render_workspace_row(
     let mut actions = Vec::new();
     let pane_ids: Vec<u64> = ws.tree.iter_panes();
     let unread = notifications.workspace_unread_count(&pane_ids);
+    // Measured once per row and reused by the title-width-reserve pass
+    // and the badge render pass, so we don't re-layout the pill label
+    // twice per frame per workspace.
+    let badge_pill_w = if unread > 0 {
+        badge_pill_width(ui, unread)
+    } else {
+        0.0
+    };
     let status = notifications.workspace_status(ws.id);
     let has_status = status.is_some();
     let has_progress = status.as_ref().and_then(|s| s.progress).is_some();
@@ -396,7 +404,7 @@ fn render_workspace_row(
         ROW_H_PAD
     };
     let right_reserve_est = if unread > 0 {
-        badge_pill_width(ui, unread) + 4.0
+        badge_pill_w + 4.0
     } else {
         BADGE_HEIGHT + 4.0
     };
@@ -563,15 +571,15 @@ fn render_workspace_row(
 
     let close_btn_reserve = CLOSE_BTN_SIZE + 4.0;
     let badge_reserve = if unread > 0 {
-        badge_pill_width(ui, unread) + 4.0
+        badge_pill_w + 4.0
     } else {
         BADGE_HEIGHT + 4.0
     };
-    let right_reserve = if hovered {
-        close_btn_reserve
-    } else {
-        badge_reserve
-    };
+    // Take the max of both states so wrap/ellipsis width is stable
+    // across hover — otherwise a wide unread pill can cause the title
+    // to reflow (different line break, visible jitter) the instant
+    // the user hovers the row.
+    let right_reserve = badge_reserve.max(close_btn_reserve);
     let max_title_w = avail_w - content_left - ROW_H_PAD - right_reserve;
 
     {
@@ -630,13 +638,12 @@ fn render_workspace_row(
         }
     } else if unread > 0 {
         let label = badge_label(unread);
-        let pill_w = badge_pill_width(ui, unread);
         let pill_rect = egui::Rect::from_min_size(
             egui::pos2(
-                rect.right() - ROW_H_PAD - pill_w,
+                rect.right() - ROW_H_PAD - badge_pill_w,
                 badge_center_y - BADGE_HEIGHT / 2.0,
             ),
-            egui::vec2(pill_w, BADGE_HEIGHT),
+            egui::vec2(badge_pill_w, BADGE_HEIGHT),
         );
         let badge_color = if is_active {
             BADGE_ACTIVE_BG
