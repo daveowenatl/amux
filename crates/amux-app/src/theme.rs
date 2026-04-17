@@ -162,7 +162,7 @@ impl ChromeColors {
         let [br, bg_g, bb] = bg;
         Self {
             sidebar_bg: darken_rgb(br, bg_g, bb, 0.15),
-            sidebar_hover_bg: Color32::from_rgba_premultiplied(255, 255, 255, 20),
+            sidebar_hover_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 20),
             sidebar_active_bg: accent,
             sidebar_active_hover_bg: lighten_color(accent, 0.12),
             tab_bar_bg: None,
@@ -290,6 +290,9 @@ impl Default for Theme {
     /// blue (`#3d7dff`) so the active workspace/tab highlight is
     /// visually distinct from the Monokai orange.
     fn default() -> Self {
+        // amux blue — one source of truth for `accent`,
+        // `sidebar_active_bg`, and the derived `sidebar_active_hover_bg`.
+        let accent = Color32::from_rgb(0x3d, 0x7d, 0xff);
         Self {
             terminal: TerminalColors {
                 // Monokai Classic (cmux default)
@@ -324,19 +327,19 @@ impl Default for Theme {
                 // the sidebar reads as a distinct panel rather than
                 // blending into the terminal.
                 sidebar_bg: Color32::from_rgb(0x1d, 0x1f, 0x25),
-                sidebar_hover_bg: Color32::from_rgba_premultiplied(255, 255, 255, 20),
+                sidebar_hover_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 20),
                 // Accent: amux blue — kept distinct from the Monokai
                 // terminal palette so the active workspace/tab
                 // highlight doesn't blend into the orange ANSI cells.
-                sidebar_active_bg: Color32::from_rgb(0x3d, 0x7d, 0xff),
-                sidebar_active_hover_bg: Color32::from_rgb(0x5a, 0x93, 0xff),
+                sidebar_active_bg: accent,
+                sidebar_active_hover_bg: lighten_color(accent, 0.12),
                 tab_bar_bg: None,  // falls back to terminal background
                 titlebar_bg: None, // falls back to tab bar background
                 tab_active_bg: Color32::from_rgb(0x25, 0x28, 0x30), // match terminal bg
                 tab_bar_border: Color32::from_rgb(0x3a, 0x3c, 0x43),
                 tab_border: Color32::from_rgb(0x3a, 0x3c, 0x43),
                 divider: Color32::from_rgb(0x3a, 0x3c, 0x43),
-                accent: Color32::from_rgb(0x3d, 0x7d, 0xff),
+                accent,
                 notification_ring: Color32::from_rgb(40, 120, 255),
                 pane_dim_alpha: 100,
             },
