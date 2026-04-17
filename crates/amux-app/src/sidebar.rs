@@ -50,6 +50,12 @@ const PROGRESS_BAR_HEIGHT: f32 = 3.0;
 const DROP_INDICATOR_HEIGHT: f32 = 2.0;
 const METADATA_FONT_SIZE: f32 = 10.0;
 const METADATA_LINE_HEIGHT: f32 = 16.0;
+/// G6: row-height animation duration. When a status entry appears or
+/// expires, the row interpolates toward the new target height over
+/// this window instead of popping instantly. egui's animation manager
+/// eases internally and snaps once the delta is below its epsilon,
+/// so the row stops requesting repaints at steady state.
+const ROW_HEIGHT_ANIM_SECS: f32 = 0.2;
 // `TRAFFIC_LIGHT_SPACER` was removed — the sidebar's top padding is
 // now computed by the caller as `AmuxApp::top_pad()` and passed in,
 // so macOS traffic lights, the Windows/Linux titlebar strip, and
@@ -519,15 +525,26 @@ fn render_workspace_row(
 
     // G4: if this row is mid-interaction (drag in progress or context
     // menu open, set via the freeze-update block below on a prior frame),
-    // allocate the frozen height instead of the live one so the row
-    // can't shift under the pointer when a status entry arrives or
-    // expires mid-interaction. Geometry-only freeze: text content still
-    // reflects live state, just within a pinned rect.
-    let row_h = state
+    // the target height is the frozen value rather than the live one so
+    // the row can't shift under the pointer when a status entry arrives
+    // or expires mid-interaction. Geometry-only freeze: text content
+    // still reflects live state, just within a pinned rect.
+    let row_h_target = state
         .frozen_row_heights
         .get(&ws.id)
         .copied()
         .unwrap_or(row_h_live);
+
+    // G6: animate toward the target. When a status row appears or
+    // expires the height lerps over `ROW_HEIGHT_ANIM_SECS` instead of
+    // popping. The animation manager snaps once the delta is below its
+    // epsilon, so steady-state rows stop requesting repaints. Interaction
+    // freeze still wins: `row_h_target` is already pinned, so the animation
+    // is a no-op unless the frozen height itself changed or interaction ended.
+    let anim_id = egui::Id::new(("sidebar_row_h", ws.id));
+    let row_h = ui
+        .ctx()
+        .animate_value_with_time(anim_id, row_h_target, ROW_HEIGHT_ANIM_SECS);
 
     let avail_w = ui.available_width();
     let (rect, response) =
@@ -541,6 +558,16 @@ fn render_workspace_row(
     }
 
     let hovered = response.hovered();
+
+    // G6: clip row painting to `rect` so content doesn't spill into
+    // neighboring rows while the height is mid-animation. Individual
+    // block painters position themselves relative to the live content
+    // layout, which exceeds the animated rect when the row is shrinking
+    // (and the bottom padding is inside the animating rect when
+    // growing). The clip keeps the row visually self-contained. Used
+    // for every `row_painter` call below; the context-menu popup uses
+    // its own closure-scoped `ui`, so it stays unclipped.
+    let row_painter = ui.painter_at(rect);
 
     // --- Drag initiation ---
     if response.drag_started() && state.drag.is_none() {
@@ -627,7 +654,7 @@ fn render_workspace_row(
     let visuals = RowVisuals::resolve(is_active, hovered);
     let opacity = if is_being_dragged { 0.6 } else { 1.0 };
     let bg = with_opacity(visuals.bg(&theme.chrome), opacity);
-    ui.painter().rect_filled(rect, ROW_CORNER_RADIUS, bg);
+    row_painter.rect_filled(rect, ROW_CORNER_RADIUS, bg);
 
     // --- Workspace color capsule (leading edge) ---
     let content_left = if has_color {
@@ -637,8 +664,7 @@ fn render_workspace_row(
                 egui::vec2(COLOR_CAPSULE_WIDTH, row_h - ROW_V_PAD * 2.0),
             );
             let color = Color32::from_rgba_premultiplied(c[0], c[1], c[2], c[3]);
-            ui.painter()
-                .rect_filled(capsule_rect, COLOR_CAPSULE_WIDTH / 2.0, color);
+            row_painter.rect_filled(capsule_rect, COLOR_CAPSULE_WIDTH / 2.0, color);
         }
         ROW_H_PAD + COLOR_CAPSULE_WIDTH + 4.0
     } else {
@@ -689,9 +715,9 @@ fn render_workspace_row(
                 overflow_character: Some('\u{2026}'),
             };
             let galley = ui.fonts(|f| f.layout_job(job));
-            ui.painter().galley(title_pos, galley, title_color);
+            row_painter.galley(title_pos, galley, title_color);
         } else {
-            ui.painter().text(
+            row_painter.text(
                 title_pos,
                 egui::Align2::LEFT_TOP,
                 &display_title,
@@ -719,7 +745,7 @@ fn render_workspace_row(
         } else {
             CLOSE_BTN_COLOR
         };
-        paint_close_x(ui.painter(), btn_center, 6.0, btn_color);
+        paint_close_x(&row_painter, btn_center, 6.0, btn_color);
         if response.clicked() && pointer_over_btn {
             actions.push(SidebarAction::CloseWorkspace(idx));
             return (actions, rect);
@@ -741,9 +767,8 @@ fn render_workspace_row(
         // Capsule: corner radius = height / 2 makes the short sides
         // full semicircles. For the minimum-width case (single digit)
         // this degenerates to a circle.
-        ui.painter()
-            .rect_filled(pill_rect, BADGE_HEIGHT / 2.0, badge_color);
-        ui.painter().text(
+        row_painter.rect_filled(pill_rect, BADGE_HEIGHT / 2.0, badge_color);
+        row_painter.text(
             pill_rect.center(),
             egui::Align2::CENTER_CENTER,
             label,
@@ -777,7 +802,7 @@ fn render_workspace_row(
         let status_font = egui::FontId::proportional(METADATA_FONT_SIZE);
         let status_text = format!("{icon} {label}");
         let truncated = truncate_text(ui, &status_text, &status_font, max_w);
-        ui.painter().text(
+        row_painter.text(
             egui::pos2(status_x, content_bottom),
             egui::Align2::LEFT_TOP,
             &truncated,
@@ -809,7 +834,7 @@ fn render_workspace_row(
             meta_color
         };
         let truncated = truncate_text(ui, text, &font, max_w);
-        ui.painter().text(
+        row_painter.text(
             egui::pos2(row_x, content_bottom),
             egui::Align2::LEFT_TOP,
             &truncated,
@@ -839,7 +864,7 @@ fn render_workspace_row(
             let text = parts.join(" \u{2022} "); // bullet separator
 
             let truncated = truncate_text(ui, &text, &line_font, max_w);
-            ui.painter().text(
+            row_painter.text(
                 egui::pos2(line_x, content_bottom),
                 egui::Align2::LEFT_TOP,
                 &truncated,
@@ -859,7 +884,7 @@ fn render_workspace_row(
             let pr_font = egui::FontId::proportional(METADATA_FONT_SIZE);
             let pr_text = format!("\u{1F517} PR #{pr_num} {pr_state}");
             let truncated = truncate_text(ui, &pr_text, &pr_font, max_w);
-            ui.painter().text(
+            row_painter.text(
                 egui::pos2(pr_x, content_bottom),
                 egui::Align2::LEFT_TOP,
                 &truncated,
@@ -888,7 +913,7 @@ fn render_workspace_row(
             egui::pos2(notif_x, content_bottom),
             egui::vec2(max_w, NOTIF_PREVIEW_HEIGHT),
         );
-        ui.painter().with_clip_rect(clip_rect).galley(
+        row_painter.with_clip_rect(clip_rect).galley(
             egui::pos2(notif_x, content_bottom),
             galley,
             notif_color,
@@ -907,7 +932,7 @@ fn render_workspace_row(
             let max_w = avail_w - content_left - ROW_H_PAD;
             let label_font = egui::FontId::proportional(METADATA_FONT_SIZE);
             let truncated = truncate_text(ui, label, &label_font, max_w);
-            ui.painter().text(
+            row_painter.text(
                 egui::pos2(label_x, content_bottom),
                 egui::Align2::LEFT_TOP,
                 &truncated,
@@ -923,16 +948,14 @@ fn render_workspace_row(
             egui::pos2(bar_x, content_bottom),
             egui::vec2(bar_w, PROGRESS_BAR_HEIGHT),
         );
-        ui.painter()
-            .rect_filled(track_rect, PROGRESS_BAR_HEIGHT / 2.0, PROGRESS_TRACK);
+        row_painter.rect_filled(track_rect, PROGRESS_BAR_HEIGHT / 2.0, PROGRESS_TRACK);
         let fill_w = bar_w * progress.clamp(0.0, 1.0);
         if fill_w > 0.0 {
             let fill_rect = egui::Rect::from_min_size(
                 egui::pos2(bar_x, content_bottom),
                 egui::vec2(fill_w, PROGRESS_BAR_HEIGHT),
             );
-            ui.painter()
-                .rect_filled(fill_rect, PROGRESS_BAR_HEIGHT / 2.0, theme.chrome.accent);
+            row_painter.rect_filled(fill_rect, PROGRESS_BAR_HEIGHT / 2.0, theme.chrome.accent);
         }
     }
 
@@ -946,16 +969,22 @@ fn render_workspace_row(
     }
 
     // G4: update the geometry freeze. While the context menu is open or
-    // this row is being dragged, pin `row_h` to the value captured on
-    // the first frame of interaction. Clear on the first frame the
+    // this row is being dragged, pin the row height to the value captured
+    // on the first frame of interaction. Clear on the first frame the
     // interaction ends. The freeze takes effect on the frame *after*
     // interaction starts, since we need `response` to detect it — this
     // is fine in practice because any status change mid-interaction
     // arrives on a later frame.
+    //
+    // We capture the *animated* `row_h` (what's on screen this frame)
+    // rather than `row_h_live` (the target). If interaction starts while
+    // a G6 height animation is in-flight, this pins the freeze to the
+    // currently-displayed height so the row can't continue growing or
+    // shrinking under the pointer.
     let interaction_active =
         response.context_menu_opened() || state.drag.as_ref().is_some_and(|d| d.source_idx == idx);
     if interaction_active {
-        state.frozen_row_heights.entry(ws.id).or_insert(row_h_live);
+        state.frozen_row_heights.entry(ws.id).or_insert(row_h);
     } else {
         state.frozen_row_heights.remove(&ws.id);
     }
