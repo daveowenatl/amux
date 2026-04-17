@@ -453,26 +453,38 @@ fn render_workspace_row(
     // Dynamic row height
     let title_line_h = TITLE_FONT_SIZE + 2.0;
     let title_lines = if title_needs_wrap { 2.0 } else { 1.0 };
-    let mut row_h = ROW_V_PAD * 2.0 + title_line_h * title_lines;
+    let mut row_h_live = ROW_V_PAD * 2.0 + title_line_h * title_lines;
     if has_status {
-        row_h += METADATA_LINE_HEIGHT + 4.0;
+        row_h_live += METADATA_LINE_HEIGHT + 4.0;
     }
-    row_h += status_rows.len() as f32 * (METADATA_LINE_HEIGHT + 2.0);
+    row_h_live += status_rows.len() as f32 * (METADATA_LINE_HEIGHT + 2.0);
     if has_git_or_cwd {
-        row_h += METADATA_LINE_HEIGHT + 2.0;
+        row_h_live += METADATA_LINE_HEIGHT + 2.0;
     }
     if has_pr {
-        row_h += METADATA_LINE_HEIGHT + 2.0;
+        row_h_live += METADATA_LINE_HEIGHT + 2.0;
     }
     if has_notif_text {
-        row_h += NOTIF_PREVIEW_HEIGHT + 2.0;
+        row_h_live += NOTIF_PREVIEW_HEIGHT + 2.0;
     }
     if has_progress {
-        row_h += PROGRESS_BAR_HEIGHT + 4.0;
+        row_h_live += PROGRESS_BAR_HEIGHT + 4.0;
     }
     if has_progress_label {
-        row_h += METADATA_LINE_HEIGHT + 2.0;
+        row_h_live += METADATA_LINE_HEIGHT + 2.0;
     }
+
+    // G4: if this row is mid-interaction (drag in progress or context
+    // menu open, set via the freeze-update block below on a prior frame),
+    // allocate the frozen height instead of the live one so the row
+    // can't shift under the pointer when a status entry arrives or
+    // expires mid-interaction. Geometry-only freeze: text content still
+    // reflects live state, just within a pinned rect.
+    let row_h = state
+        .frozen_row_heights
+        .get(&ws.id)
+        .copied()
+        .unwrap_or(row_h_live);
 
     let avail_w = ui.available_width();
     let (rect, response) =
@@ -888,6 +900,21 @@ fn render_workspace_row(
         } else {
             actions.push(SidebarAction::SwitchWorkspace(idx));
         }
+    }
+
+    // G4: update the geometry freeze. While the context menu is open or
+    // this row is being dragged, pin `row_h` to the value captured on
+    // the first frame of interaction. Clear on the first frame the
+    // interaction ends. The freeze takes effect on the frame *after*
+    // interaction starts, since we need `response` to detect it — this
+    // is fine in practice because any status change mid-interaction
+    // arrives on a later frame.
+    let interaction_active =
+        response.context_menu_opened() || state.drag.as_ref().is_some_and(|d| d.source_idx == idx);
+    if interaction_active {
+        state.frozen_row_heights.entry(ws.id).or_insert(row_h_live);
+    } else {
+        state.frozen_row_heights.remove(&ws.id);
     }
 
     (actions, rect)

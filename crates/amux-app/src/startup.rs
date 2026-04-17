@@ -633,6 +633,7 @@ pub(crate) fn fresh_startup(
             visible: true,
             width: DEFAULT_SIDEBAR_WIDTH,
             drag: None,
+            frozen_row_heights: HashMap::new(),
         },
         notifications: NotificationStore::new(),
         pending_browser_restores: Vec::new(),
@@ -794,6 +795,7 @@ pub(crate) fn restore_session(
         visible: session.sidebar.visible,
         width: session.sidebar.width,
         drag: None,
+        frozen_row_heights: HashMap::new(),
     };
 
     // Don't restore notifications (the pane-level unread ring) — they're

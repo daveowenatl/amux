@@ -39,6 +39,12 @@ pub struct SidebarState {
     pub width: f32,
     /// Drag reorder state.
     pub drag: Option<SidebarDragState>,
+    /// G4: per-workspace geometry freeze. While a row is being interacted
+    /// with (context menu open, drag in progress), its `row_h` is pinned
+    /// to the value captured at interaction start so the row can't shift
+    /// under the pointer when a status entry arrives or expires mid-
+    /// interaction. Cleared on the first frame the interaction ends.
+    pub frozen_row_heights: HashMap<u64, f32>,
 }
 
 pub struct SidebarDragState {
