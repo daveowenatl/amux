@@ -722,8 +722,7 @@ fn render_workspace_row(
         let task_x = rect.min.x + content_left;
         let max_w = avail_w - content_left - ROW_H_PAD;
         let task_font = egui::FontId::proportional(METADATA_FONT_SIZE);
-        let task_text = format!("\u{2731} {task}");
-        let truncated = truncate_text(ui, &task_text, &task_font, max_w);
+        let truncated = truncate_text(ui, task, &task_font, max_w);
         ui.painter().text(
             egui::pos2(task_x, content_bottom),
             egui::Align2::LEFT_TOP,
