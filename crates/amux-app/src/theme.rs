@@ -26,9 +26,6 @@ pub(crate) struct TerminalColors {
 #[derive(Debug, Clone)]
 pub(crate) struct ChromeColors {
     pub sidebar_bg: Color32,
-    /// Sidebar row background when the row is hovered but not the active
-    /// workspace. Subtle white overlay applied on top of `sidebar_bg`.
-    pub sidebar_hover_bg: Color32,
     /// Active/selected row background in the sidebar (derived from accent).
     pub sidebar_active_bg: Color32,
     /// Sidebar row background when the row is active AND hovered. Derived
@@ -162,7 +159,6 @@ impl ChromeColors {
         let [br, bg_g, bb] = bg;
         Self {
             sidebar_bg: darken_rgb(br, bg_g, bb, 0.15),
-            sidebar_hover_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 20),
             sidebar_active_bg: accent,
             sidebar_active_hover_bg: lighten_color(accent, 0.12),
             tab_bar_bg: None,
@@ -327,7 +323,6 @@ impl Default for Theme {
                 // the sidebar reads as a distinct panel rather than
                 // blending into the terminal.
                 sidebar_bg: Color32::from_rgb(0x1d, 0x1f, 0x25),
-                sidebar_hover_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 20),
                 // Accent: amux blue — kept distinct from the Monokai
                 // terminal palette so the active workspace/tab
                 // highlight doesn't blend into the orange ANSI cells.

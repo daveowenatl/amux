@@ -184,6 +184,11 @@ pub(crate) struct PaneSurface {
     pub(crate) user_title: Option<String>,
     /// Set when the PTY process exits.
     pub(crate) exited: Option<ExitInfo>,
+    /// G11: most recent non-empty line from the viewport. Refreshed by
+    /// [`PaneSurface::refresh_latest_output_line`] after PTY bytes are
+    /// fed, so the sidebar can render a one-line log preview without
+    /// re-reading the viewport for every row on every frame.
+    pub(crate) latest_output_line: Option<String>,
 }
 
 impl PaneSurface {
@@ -197,6 +202,37 @@ impl PaneSurface {
             self.pane.scroll_to_bottom();
         }
     }
+
+    /// G11: re-sample the viewport and cache the last non-empty visible
+    /// line so the sidebar can render a log preview under the agent
+    /// status. Called after a batch of PTY bytes is fed in the drain
+    /// loop; cheap enough at that cadence because it only runs for
+    /// surfaces that actually produced output this frame.
+    ///
+    /// The returned line is trimmed to [`Self::LATEST_LINE_MAX_CHARS`]
+    /// characters so a multi-kilobyte single-line write (e.g. a long
+    /// JSON blob with no newlines) can't blow up the sidebar draw or
+    /// the session snapshot.
+    pub(crate) fn refresh_latest_output_line(&mut self) {
+        let text = self.pane.read_screen_text();
+        let line = text.lines().rev().find_map(|l| {
+            let trimmed = l.trim_end();
+            (!trimmed.trim().is_empty()).then(|| trimmed.to_string())
+        });
+        self.latest_output_line = line.map(|l| {
+            if l.chars().count() > Self::LATEST_LINE_MAX_CHARS {
+                l.chars().take(Self::LATEST_LINE_MAX_CHARS).collect()
+            } else {
+                l
+            }
+        });
+    }
+
+    /// Cap on [`Self::latest_output_line`] length. The sidebar truncates
+    /// by measured width anyway, but a hard character cap keeps the
+    /// cached string from pinning pathological amounts of memory when
+    /// an agent writes one unbroken megabyte to stdout.
+    pub(crate) const LATEST_LINE_MAX_CHARS: usize = 512;
 }
 
 /// A leaf in the split tree. Each pane has its own tab bar with

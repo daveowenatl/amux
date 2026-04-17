@@ -252,6 +252,10 @@ impl AmuxApp {
                 if !sanitized.is_empty() && sanitized.as_ref() != "?" {
                     meta.surface_title = Some(sanitized.into_owned());
                 }
+                // G11: surface the cached latest-output line to the sidebar.
+                // Refreshed in the PTY drain path so the read here is just
+                // a clone of the cached string.
+                meta.latest_output_line = sf.latest_output_line.clone();
                 meta
             })
             .unwrap_or_default()

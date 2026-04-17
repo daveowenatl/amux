@@ -50,6 +50,15 @@ const PROGRESS_BAR_HEIGHT: f32 = 3.0;
 const DROP_INDICATOR_HEIGHT: f32 = 2.0;
 const METADATA_FONT_SIZE: f32 = 10.0;
 const METADATA_LINE_HEIGHT: f32 = 16.0;
+/// G11: dedicated font size for the latest-output-line preview. Matches
+/// the other metadata rows so the preview doesn't stand out, just adds
+/// context under the keyed status rows.
+const LOG_PREVIEW_FONT_SIZE: f32 = 10.0;
+/// G11: dimmer than `meta_color` (gray 190) so the log preview reads as
+/// background context rather than a structured status row. The keyed
+/// status rows (claude.tool, agent.message) use `meta_color` at gray
+/// 190; the preview uses gray 140 to sit visually beneath them.
+const LOG_PREVIEW_COLOR: Color32 = Color32::from_gray(140);
 /// G6: row-height animation duration. When a status entry appears or
 /// expires, the row interpolates toward the new target height over
 /// this window instead of popping instantly. egui's animation manager
@@ -396,7 +405,9 @@ impl RowVisuals {
     fn bg(self, chrome: &crate::theme::ChromeColors) -> Color32 {
         match self {
             RowVisuals::Idle => Color32::TRANSPARENT,
-            RowVisuals::Hovered => chrome.sidebar_hover_bg,
+            // Idle rows don't change on hover — the close-button X fade
+            // already gives enough feedback that the row is interactive.
+            RowVisuals::Hovered => Color32::TRANSPARENT,
             RowVisuals::Active => chrome.sidebar_active_bg,
             RowVisuals::ActiveHovered => chrome.sidebar_active_hover_bg,
         }
@@ -456,6 +467,17 @@ fn render_workspace_row(
     let has_color = ws.color.is_some();
     let has_git_or_cwd = metadata.is_some_and(|m| m.git_branch.is_some() || m.cwd.is_some());
     let has_pr = metadata.is_some_and(|m| m.pr_number.is_some());
+    // G11: latest output line (dim preview beneath the keyed status rows).
+    // Hidden when the most-recent visible line duplicates what a status
+    // row already shows, so we don't double-render e.g. `claude.tool =
+    // "Running tests"` on one line and the terminal echo of the same
+    // string on the next.
+    let latest_log_line = metadata
+        .and_then(|m| m.latest_output_line.as_deref())
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .filter(|l| !status_rows.iter().any(|(text, _)| text.trim() == *l));
+    let has_log_line = latest_log_line.is_some();
 
     // Compute title text early so we can measure if it needs two lines.
     let title_font = crate::fonts::bold_font(TITLE_FONT_SIZE);
@@ -507,6 +529,9 @@ fn render_workspace_row(
         row_h_live += METADATA_LINE_HEIGHT + 4.0;
     }
     row_h_live += status_rows.len() as f32 * (METADATA_LINE_HEIGHT + 2.0);
+    if has_log_line {
+        row_h_live += METADATA_LINE_HEIGHT + 2.0;
+    }
     if has_git_or_cwd {
         row_h_live += METADATA_LINE_HEIGHT + 2.0;
     }
@@ -780,8 +805,25 @@ fn render_workspace_row(
     // --- Status indicator (icon + text, matching cmux) ---
     let mut content_bottom = rect.min.y + ROW_V_PAD + title_line_h * title_lines;
 
-    // Metadata text color: light grey
-    let meta_color = Color32::from_gray(190);
+    // Text colour for metadata rows (git/cwd, PR, notif preview, low-
+    // priority status entries). On the active row everything reads as
+    // white — the grey shades used for idle rows would be near-
+    // illegible against the saturated accent fill. Font weight (bold
+    // title vs. regular meta) carries the hierarchy instead. Idle rows
+    // use a light grey so the title still dominates.
+    let meta_color = if is_active {
+        Color32::WHITE
+    } else {
+        Color32::from_gray(190)
+    };
+    // Same treatment for the G11 log preview, but a touch dimmer than
+    // `meta_color` on idle rows so it sits below the status entries in
+    // the visual hierarchy without creating a second grey stripe.
+    let log_color = if is_active {
+        Color32::WHITE
+    } else {
+        LOG_PREVIEW_COLOR
+    };
     // Status indicator color: blue when unselected, white when selected
     let status_color = if is_active {
         Color32::WHITE
@@ -840,6 +882,30 @@ fn render_workspace_row(
             &truncated,
             font,
             color,
+        );
+        content_bottom += METADATA_LINE_HEIGHT;
+    }
+
+    // --- Latest output line preview (G11) ---
+    //
+    // Dim monospace line under the keyed status rows showing the
+    // viewport's last non-empty row. Populated by
+    // `PaneSurface::refresh_latest_output_line` after each batch of PTY
+    // bytes so the read here is just a cached clone. Deduped against
+    // `status_rows` upstream so a structured status and its terminal
+    // echo don't render as two identical lines.
+    if let Some(line) = latest_log_line {
+        content_bottom += 2.0;
+        let line_x = rect.min.x + content_left;
+        let max_w = avail_w - content_left - ROW_H_PAD;
+        let line_font = egui::FontId::monospace(LOG_PREVIEW_FONT_SIZE);
+        let truncated = truncate_text(ui, line, &line_font, max_w);
+        row_painter.text(
+            egui::pos2(line_x, content_bottom),
+            egui::Align2::LEFT_TOP,
+            &truncated,
+            line_font,
+            log_color,
         );
         content_bottom += METADATA_LINE_HEIGHT;
     }
@@ -1083,6 +1149,19 @@ mod tests {
         assert!(RowVisuals::ActiveHovered.is_active());
         assert!(!RowVisuals::Hovered.is_active());
         assert!(!RowVisuals::Idle.is_active());
+    }
+
+    #[test]
+    fn idle_hover_matches_idle_background() {
+        // Idle rows must not change background on hover — the close-X
+        // fade already signals that the row is interactive, and adding
+        // a second hover treatment made the sidebar visually noisy
+        // during pointer travel.
+        let chrome = crate::theme::Theme::default().chrome;
+        assert_eq!(
+            RowVisuals::Hovered.bg(&chrome),
+            RowVisuals::Idle.bg(&chrome),
+        );
     }
 
     #[test]
