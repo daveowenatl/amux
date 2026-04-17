@@ -347,6 +347,13 @@ impl eframe::App for AmuxApp {
                             {
                                 self.active_workspace_idx += 1;
                             }
+                            // Reassert the pinned-first invariant: a drag
+                            // that crossed the pin boundary snaps back so
+                            // pinned workspaces always group at the top.
+                            workspace_ops::enforce_pinned_first(
+                                &mut self.workspaces,
+                                &mut self.active_workspace_idx,
+                            );
                         }
                     }
                     sidebar::SidebarAction::SetWorkspaceColor(idx, color) => {
@@ -357,20 +364,10 @@ impl eframe::App for AmuxApp {
                     sidebar::SidebarAction::TogglePinWorkspace(idx) => {
                         if idx < self.workspaces.len() {
                             self.workspaces[idx].pinned = !self.workspaces[idx].pinned;
-                            // Resort so pinned workspaces float to the top,
-                            // preserving relative order within each group.
-                            // `active_workspace_idx` is tracked by workspace id
-                            // across the reshuffle because indices would change.
-                            let active_id =
-                                self.workspaces.get(self.active_workspace_idx).map(|w| w.id);
-                            self.workspaces.sort_by_key(|w| !w.pinned);
-                            if let Some(id) = active_id {
-                                if let Some(new_idx) =
-                                    self.workspaces.iter().position(|w| w.id == id)
-                                {
-                                    self.active_workspace_idx = new_idx;
-                                }
-                            }
+                            workspace_ops::enforce_pinned_first(
+                                &mut self.workspaces,
+                                &mut self.active_workspace_idx,
+                            );
                         }
                     }
                 }

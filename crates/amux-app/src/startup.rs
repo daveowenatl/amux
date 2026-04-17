@@ -842,9 +842,15 @@ pub(crate) fn restore_session(
         }
     }
 
-    let active_idx = session
+    let mut active_idx = session
         .active_workspace_idx
         .min(workspaces.len().saturating_sub(1));
+
+    // Session files written before G8 — or any manually-reordered save —
+    // can ship pinned workspaces interleaved with unpinned ones. Enforce
+    // the pinned-first invariant on load so what the user sees matches
+    // what the toggle and drag-reorder paths produce.
+    workspace_ops::enforce_pinned_first(&mut workspaces, &mut active_idx);
 
     StartupState {
         workspaces,
