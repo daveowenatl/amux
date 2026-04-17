@@ -377,14 +377,22 @@ fn render_workspace_row(
 
     // Compute title text early so we can measure if it needs two lines.
     let title_font = crate::fonts::bold_font(TITLE_FONT_SIZE);
-    // Title priority: user-set name (sticky) > agent task > surface
-    // title > default workspace name. A user who explicitly renamed
-    // the workspace via the rename modal should not have their choice
-    // overwritten by agent status or auto-detected titles.
+    // Task is rendered as its own row (G18), not baked into the title.
+    let agent_task = status
+        .as_ref()
+        .and_then(|s| s.displayed_task())
+        .filter(|t| !t.is_empty());
+    let has_agent_task = agent_task.is_some();
+
+    // Title priority: user-set name (sticky) > surface title > default
+    // workspace name. A user who explicitly renamed the workspace via
+    // the rename modal should not have their choice overwritten by
+    // auto-detected titles. The agent task previously lived here as a
+    // `✱ task` prefix (G18); it now has its own row below the status
+    // indicator so long task strings don't crowd the title and the
+    // title reflects *workspace identity* rather than *agent activity*.
     let base_title = if let Some(ref ut) = ws.user_title {
         ut.clone()
-    } else if let Some(task) = status.as_ref().and_then(|s| s.displayed_task()) {
-        format!("\u{2731} {task}")
     } else if let Some(st) = metadata.and_then(|m| m.surface_title.as_ref()) {
         st.clone()
     } else {
@@ -424,6 +432,9 @@ fn render_workspace_row(
     }
     if has_status {
         row_h += METADATA_LINE_HEIGHT + 4.0;
+    }
+    if has_agent_task {
+        row_h += METADATA_LINE_HEIGHT + 2.0;
     }
     if has_git_or_cwd {
         row_h += METADATA_LINE_HEIGHT + 2.0;
@@ -694,6 +705,29 @@ fn render_workspace_row(
             egui::Align2::LEFT_TOP,
             &truncated,
             status_font,
+            status_color,
+        );
+        content_bottom += METADATA_LINE_HEIGHT;
+    }
+
+    // --- Agent task (distinct row, G18) ---
+    //
+    // Previously jammed into the title as `✱ {task}`; now lives as its
+    // own row so (a) the title reflects workspace identity and (b) long
+    // task strings don't force title wrap/truncation. Uses the same
+    // `status_color` as the indicator above to associate it visually
+    // with the agent's activity.
+    if let Some(task) = agent_task {
+        content_bottom += 2.0;
+        let task_x = rect.min.x + content_left;
+        let max_w = avail_w - content_left - ROW_H_PAD;
+        let task_font = egui::FontId::proportional(METADATA_FONT_SIZE);
+        let truncated = truncate_text(ui, task, &task_font, max_w);
+        ui.painter().text(
+            egui::pos2(task_x, content_bottom),
+            egui::Align2::LEFT_TOP,
+            &truncated,
+            task_font,
             status_color,
         );
         content_bottom += METADATA_LINE_HEIGHT;
