@@ -110,15 +110,19 @@ pub(crate) fn paint_close_x(
 
 /// Build the priority-sorted list of keyed status rows to render for a
 /// workspace. See the call site in `render_workspace_row` for the full
-/// rationale (G20). Returned tuples are `(text, priority)`; priority is
-/// used by the render loop to pick row color.
-fn build_status_rows(status: &amux_notify::WorkspaceStatus) -> Vec<(String, i32)> {
-    let agent_texts: std::collections::HashSet<&str> = status
-        .displayed
-        .iter()
-        .filter(|(k, _)| k.starts_with(amux_notify::AGENT_KEY_PREFIX))
-        .map(|(_, e)| e.text.as_str())
-        .collect();
+/// rationale (G20). Returned tuples are `(text, priority)` borrowing
+/// from `status`; priority drives per-row color selection.
+fn build_status_rows(status: &amux_notify::WorkspaceStatus) -> Vec<(&str, i32)> {
+    // Only dedup against the legacy subtitle slots written by the
+    // dual-write pattern (`agent.task` / `agent.message`). `agent.label`
+    // is intentionally excluded: its text (e.g. "Running", "Needs input")
+    // can legitimately collide with a user-published entry and must not
+    // cause the user entry to vanish.
+    let agent_texts: std::collections::HashSet<&str> =
+        [amux_notify::KEY_AGENT_TASK, amux_notify::KEY_AGENT_MESSAGE]
+            .iter()
+            .filter_map(|k| status.displayed.get(*k).map(|e| e.text.as_str()))
+            .collect();
     status
         .displayed_by_priority()
         .into_iter()
@@ -127,7 +131,7 @@ fn build_status_rows(status: &amux_notify::WorkspaceStatus) -> Vec<(String, i32)
         .filter(|(k, e)| {
             k.starts_with(amux_notify::AGENT_KEY_PREFIX) || !agent_texts.contains(e.text.as_str())
         })
-        .map(|(_, e)| (e.text.clone(), e.priority))
+        .map(|(_, e)| (e.text.as_str(), e.priority))
         .collect()
 }
 
@@ -975,7 +979,7 @@ mod tests {
     fn commit(store: &mut amux_notify::NotificationStore) {
         store.commit_displayed_at(
             std::time::Instant::now() + std::time::Duration::from_secs(1),
-            std::time::Duration::from_millis(40),
+            amux_notify::NotificationStore::DEBOUNCE_WINDOW,
         );
     }
 
@@ -1036,6 +1040,37 @@ mod tests {
         // Dedup keeps the agent.* copy and drops claude.tool.
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].0, "Reading file.rs");
+    }
+
+    #[test]
+    fn build_status_rows_does_not_dedup_against_agent_label_text() {
+        // Regression test: dedup must NOT strip a user entry whose text
+        // coincides with `agent.label` ("Running", "Needs input", "Idle").
+        // Only the agent.task / agent.message slots participate in dedup
+        // because only they have the legacy dual-write problem.
+        let mut store = amux_notify::NotificationStore::new();
+        store.set_status(
+            1,
+            amux_notify::AgentState::Active,
+            Some("Running".into()),
+            None,
+            None,
+        );
+        store.upsert_entry(
+            1,
+            "user.note",
+            "Running",
+            amux_notify::priority::USER_GENERIC,
+            None,
+            None,
+            None,
+        );
+        commit(&mut store);
+        let status = store.workspace_status(1).unwrap();
+        let rows = build_status_rows(status);
+        // user.note survives even though its text matches agent.label.
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "Running");
     }
 
     #[test]
