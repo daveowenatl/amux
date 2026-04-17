@@ -50,6 +50,12 @@ const PROGRESS_BAR_HEIGHT: f32 = 3.0;
 const DROP_INDICATOR_HEIGHT: f32 = 2.0;
 const METADATA_FONT_SIZE: f32 = 10.0;
 const METADATA_LINE_HEIGHT: f32 = 16.0;
+/// G6: row-height animation duration. When a status entry appears or
+/// expires, the row interpolates toward the new target height over
+/// this window instead of popping instantly. egui's animation manager
+/// eases internally and snaps once the delta is below its epsilon,
+/// so the row stops requesting repaints at steady state.
+const ROW_HEIGHT_ANIM_SECS: f32 = 0.2;
 // `TRAFFIC_LIGHT_SPACER` was removed — the sidebar's top padding is
 // now computed by the caller as `AmuxApp::top_pad()` and passed in,
 // so macOS traffic lights, the Windows/Linux titlebar strip, and
@@ -519,15 +525,26 @@ fn render_workspace_row(
 
     // G4: if this row is mid-interaction (drag in progress or context
     // menu open, set via the freeze-update block below on a prior frame),
-    // allocate the frozen height instead of the live one so the row
-    // can't shift under the pointer when a status entry arrives or
-    // expires mid-interaction. Geometry-only freeze: text content still
-    // reflects live state, just within a pinned rect.
-    let row_h = state
+    // the target height is the frozen value rather than the live one so
+    // the row can't shift under the pointer when a status entry arrives
+    // or expires mid-interaction. Geometry-only freeze: text content
+    // still reflects live state, just within a pinned rect.
+    let row_h_target = state
         .frozen_row_heights
         .get(&ws.id)
         .copied()
         .unwrap_or(row_h_live);
+
+    // G6: animate toward the target. When a status row appears or
+    // expires the height lerps over `ROW_HEIGHT_ANIM_SECS` instead of
+    // popping. The animation manager snaps once the delta is below its
+    // epsilon, so steady-state rows stop requesting repaints. Interaction
+    // freeze still wins: `row_h_target` is already pinned, so the animation
+    // is a no-op unless the frozen height itself changed or interaction ended.
+    let anim_id = egui::Id::new(("sidebar_row_h", ws.id));
+    let row_h = ui
+        .ctx()
+        .animate_value_with_time(anim_id, row_h_target, ROW_HEIGHT_ANIM_SECS);
 
     let avail_w = ui.available_width();
     let (rect, response) =
