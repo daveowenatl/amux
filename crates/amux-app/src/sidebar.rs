@@ -28,8 +28,16 @@ const ROW_OUTER_H_PAD: f32 = 6.0;
 const ROW_SPACING: f32 = 2.0;
 const ROW_CORNER_RADIUS: f32 = 6.0;
 const TITLE_FONT_SIZE: f32 = 12.5;
-const BADGE_RADIUS: f32 = 8.0;
+/// Pill height. The badge is a capsule (rounded rect with corner
+/// radius = height / 2) so multi-digit counts expand horizontally
+/// without cramping, while single-digit counts still read as a
+/// circle (minimum-width pill = height, which paints as a circle).
+const BADGE_HEIGHT: f32 = 16.0;
+/// Horizontal padding inside the pill, per side.
+const BADGE_H_PAD: f32 = 5.0;
 const BADGE_FONT_SIZE: f32 = 9.0;
+/// Max count rendered inline. Anything higher shows as `99+`.
+const BADGE_MAX_COUNT: usize = 99;
 const NOTIF_FONT_SIZE: f32 = 10.0;
 const NOTIF_PREVIEW_HEIGHT: f32 = 24.0;
 const CLOSE_BTN_SIZE: f32 = 16.0;
@@ -98,6 +106,28 @@ pub(crate) fn paint_close_x(
         ],
         stroke,
     );
+}
+
+/// Format an unread count for the badge, capping at `BADGE_MAX_COUNT`.
+fn badge_label(unread: usize) -> String {
+    if unread > BADGE_MAX_COUNT {
+        format!("{BADGE_MAX_COUNT}+")
+    } else {
+        format!("{unread}")
+    }
+}
+
+/// Width the badge pill will occupy for a given unread count. Floors
+/// at `BADGE_HEIGHT` so single-digit counts still render as a circle
+/// (the minimum-width capsule is a circle).
+fn badge_pill_width(ui: &egui::Ui, unread: usize) -> f32 {
+    let label = badge_label(unread);
+    let font = egui::FontId::proportional(BADGE_FONT_SIZE);
+    let text_w = ui
+        .fonts(|f| f.layout_no_wrap(label, font, Color32::WHITE))
+        .size()
+        .x;
+    (text_w + BADGE_H_PAD * 2.0).max(BADGE_HEIGHT)
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +343,14 @@ fn render_workspace_row(
     let mut actions = Vec::new();
     let pane_ids: Vec<u64> = ws.tree.iter_panes();
     let unread = notifications.workspace_unread_count(&pane_ids);
+    // Measured once per row and reused by the title-width-reserve pass
+    // and the badge render pass, so we don't re-layout the pill label
+    // twice per frame per workspace.
+    let badge_pill_w = if unread > 0 {
+        badge_pill_width(ui, unread)
+    } else {
+        0.0
+    };
     let status = notifications.workspace_status(ws.id);
     let has_status = status.is_some();
     let has_progress = status.as_ref().and_then(|s| s.progress).is_some();
@@ -365,7 +403,11 @@ fn render_workspace_row(
     } else {
         ROW_H_PAD
     };
-    let right_reserve_est = BADGE_RADIUS * 2.0 + 4.0;
+    let right_reserve_est = if unread > 0 {
+        badge_pill_w + 4.0
+    } else {
+        BADGE_HEIGHT + 4.0
+    };
     let max_title_w_est = ui.available_width() - content_left_est - ROW_H_PAD - right_reserve_est;
     let title_text_w = ui
         .fonts(|f| f.layout_no_wrap(display_title.clone(), title_font.clone(), Color32::WHITE))
@@ -528,12 +570,16 @@ fn render_workspace_row(
     };
 
     let close_btn_reserve = CLOSE_BTN_SIZE + 4.0;
-    let badge_reserve = BADGE_RADIUS * 2.0 + 4.0;
-    let right_reserve = if hovered {
-        close_btn_reserve
+    let badge_reserve = if unread > 0 {
+        badge_pill_w + 4.0
     } else {
-        badge_reserve
+        BADGE_HEIGHT + 4.0
     };
+    // Take the max of both states so wrap/ellipsis width is stable
+    // across hover — otherwise a wide unread pill can cause the title
+    // to reflow (different line break, visible jitter) the instant
+    // the user hovers the row.
+    let right_reserve = badge_reserve.max(close_btn_reserve);
     let max_title_w = avail_w - content_left - ROW_H_PAD - right_reserve;
 
     {
@@ -591,18 +637,28 @@ fn render_workspace_row(
             return (actions, rect);
         }
     } else if unread > 0 {
-        let badge_center = egui::pos2(rect.right() - ROW_H_PAD - BADGE_RADIUS, badge_center_y);
+        let label = badge_label(unread);
+        let pill_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                rect.right() - ROW_H_PAD - badge_pill_w,
+                badge_center_y - BADGE_HEIGHT / 2.0,
+            ),
+            egui::vec2(badge_pill_w, BADGE_HEIGHT),
+        );
         let badge_color = if is_active {
             BADGE_ACTIVE_BG
         } else {
             theme.chrome.accent
         };
+        // Capsule: corner radius = height / 2 makes the short sides
+        // full semicircles. For the minimum-width case (single digit)
+        // this degenerates to a circle.
         ui.painter()
-            .circle_filled(badge_center, BADGE_RADIUS, badge_color);
+            .rect_filled(pill_rect, BADGE_HEIGHT / 2.0, badge_color);
         ui.painter().text(
-            badge_center,
+            pill_rect.center(),
             egui::Align2::CENTER_CENTER,
-            format!("{unread}"),
+            label,
             egui::FontId::proportional(BADGE_FONT_SIZE),
             Color32::WHITE,
         );
@@ -856,4 +912,22 @@ fn shorten_path(path: &str) -> String {
         }
     }
     path.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn badge_label_passes_through_small_counts() {
+        assert_eq!(badge_label(1), "1");
+        assert_eq!(badge_label(42), "42");
+        assert_eq!(badge_label(BADGE_MAX_COUNT), "99");
+    }
+
+    #[test]
+    fn badge_label_caps_over_max() {
+        assert_eq!(badge_label(100), "99+");
+        assert_eq!(badge_label(12_345), "99+");
+    }
 }
