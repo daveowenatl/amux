@@ -108,6 +108,29 @@ pub(crate) fn paint_close_x(
     );
 }
 
+/// Build the priority-sorted list of keyed status rows to render for a
+/// workspace. See the call site in `render_workspace_row` for the full
+/// rationale (G20). Returned tuples are `(text, priority)`; priority is
+/// used by the render loop to pick row color.
+fn build_status_rows(status: &amux_notify::WorkspaceStatus) -> Vec<(String, i32)> {
+    let agent_texts: std::collections::HashSet<&str> = status
+        .displayed
+        .iter()
+        .filter(|(k, _)| k.starts_with(amux_notify::AGENT_KEY_PREFIX))
+        .map(|(_, e)| e.text.as_str())
+        .collect();
+    status
+        .displayed_by_priority()
+        .into_iter()
+        .filter(|(k, _)| *k != amux_notify::KEY_AGENT_LABEL)
+        .filter(|(_, e)| !e.text.is_empty())
+        .filter(|(k, e)| {
+            k.starts_with(amux_notify::AGENT_KEY_PREFIX) || !agent_texts.contains(e.text.as_str())
+        })
+        .map(|(_, e)| (e.text.clone(), e.priority))
+        .collect()
+}
+
 /// Format an unread count for the badge, capping at `BADGE_MAX_COUNT`.
 fn badge_label(unread: usize) -> String {
     if unread > BADGE_MAX_COUNT {
@@ -360,29 +383,29 @@ fn render_workspace_row(
         .and_then(|s| s.progress_label.as_deref())
         .filter(|l| !l.is_empty());
     let has_progress_label = progress_label.is_some();
-    // Filter empty-string entries: upsert_entry lets publishers write empty
-    // text, and we shouldn't reserve a subtitle line for a blank message.
-    // G3: render from the debounced `displayed` projection so rapid bursts
-    // of hook writes don't flash intermediate values through the sidebar.
-    let agent_message = status
-        .as_ref()
-        .and_then(|s| s.displayed_message())
-        .filter(|m| !m.is_empty());
-    let has_agent_message = agent_message.is_some();
+    // G20: Build the priority-sorted list of keyed status entries that
+    // render as per-workspace rows. Iterates the debounced `displayed`
+    // snapshot so bursts of rapid hook writes don't flash intermediate
+    // values. `agent.label` is rendered separately below with its
+    // AgentState icon, so it's excluded here. Higher-priority entries
+    // (task > notification > subagent > tool/message) sort first so the
+    // row closest to the title is the most important.
+    //
+    // Dedup for the legacy dual-write: during the single-slot → keyed
+    // transition, claude_hook writes both `agent.message = "X"` and
+    // `claude.tool = "X"`. Rendering both would duplicate. We keep the
+    // agent.* copy (it's the canonical legacy slot) and drop any non-
+    // agent.* entry whose text matches any agent.* entry's text.
+    let status_rows = status.map(build_status_rows).unwrap_or_default();
+    let has_status_rows = !status_rows.is_empty();
     let latest_notif = notifications.latest_for_workspace(ws.id);
-    let has_notif_text = !has_agent_message && latest_notif.is_some_and(|n| !n.body.is_empty());
+    let has_notif_text = !has_status_rows && latest_notif.is_some_and(|n| !n.body.is_empty());
     let has_color = ws.color.is_some();
     let has_git_or_cwd = metadata.is_some_and(|m| m.git_branch.is_some() || m.cwd.is_some());
     let has_pr = metadata.is_some_and(|m| m.pr_number.is_some());
 
     // Compute title text early so we can measure if it needs two lines.
     let title_font = crate::fonts::bold_font(TITLE_FONT_SIZE);
-    // Task is rendered as its own row (G18), not baked into the title.
-    let agent_task = status
-        .as_ref()
-        .and_then(|s| s.displayed_task())
-        .filter(|t| !t.is_empty());
-    let has_agent_task = agent_task.is_some();
 
     // Title priority: user-set name (sticky) > surface title > default
     // workspace name. A user who explicitly renamed the workspace via
@@ -427,15 +450,10 @@ fn render_workspace_row(
     let title_line_h = TITLE_FONT_SIZE + 2.0;
     let title_lines = if title_needs_wrap { 2.0 } else { 1.0 };
     let mut row_h = ROW_V_PAD * 2.0 + title_line_h * title_lines;
-    if has_agent_message {
-        row_h += METADATA_LINE_HEIGHT + 2.0;
-    }
     if has_status {
         row_h += METADATA_LINE_HEIGHT + 4.0;
     }
-    if has_agent_task {
-        row_h += METADATA_LINE_HEIGHT + 2.0;
-    }
+    row_h += status_rows.len() as f32 * (METADATA_LINE_HEIGHT + 2.0);
     if has_git_or_cwd {
         row_h += METADATA_LINE_HEIGHT + 2.0;
     }
@@ -710,47 +728,34 @@ fn render_workspace_row(
         content_bottom += METADATA_LINE_HEIGHT;
     }
 
-    // --- Agent task (distinct row, G18) ---
+    // --- Keyed status entry rows (G18 + G20) ---
     //
-    // Previously jammed into the title as `✱ {task}`; now lives as its
-    // own row so (a) the title reflects workspace identity and (b) long
-    // task strings don't force title wrap/truncation. Uses the same
-    // `status_color` as the indicator above to associate it visually
-    // with the agent's activity.
-    if let Some(task) = agent_task {
+    // Renders the priority-sorted `status_rows` built earlier. agent.task
+    // previously lived in the title as `✱ task` (G18); it now flows
+    // through this generic loop alongside any other keyed entries
+    // (claude.tool, claude.notification, user.*, …). Higher-priority
+    // entries render closer to the title per G20's task > notification
+    // > tool ordering. Task-tier entries (priority >= TASK) use
+    // `status_color` so they're visually tied to the agent indicator
+    // above; lower-priority entries use `meta_color` for a subtitle
+    // treatment.
+    for (text, priority) in &status_rows {
         content_bottom += 2.0;
-        let task_x = rect.min.x + content_left;
+        let row_x = rect.min.x + content_left;
         let max_w = avail_w - content_left - ROW_H_PAD;
-        let task_font = egui::FontId::proportional(METADATA_FONT_SIZE);
-        let truncated = truncate_text(ui, task, &task_font, max_w);
+        let font = egui::FontId::proportional(METADATA_FONT_SIZE);
+        let color = if *priority >= amux_notify::priority::TASK {
+            status_color
+        } else {
+            meta_color
+        };
+        let truncated = truncate_text(ui, text, &font, max_w);
         ui.painter().text(
-            egui::pos2(task_x, content_bottom),
+            egui::pos2(row_x, content_bottom),
             egui::Align2::LEFT_TOP,
             &truncated,
-            task_font,
-            status_color,
-        );
-        content_bottom += METADATA_LINE_HEIGHT;
-    }
-
-    // --- Agent message (subtitle) ---
-    if let Some(message) = agent_message {
-        let msg_color = meta_color;
-        content_bottom += 2.0;
-        let msg_x = rect.min.x + content_left;
-        let max_w = avail_w - content_left - ROW_H_PAD;
-        let msg_font = egui::FontId::proportional(METADATA_FONT_SIZE);
-        let galley = ui
-            .painter()
-            .layout(message.to_string(), msg_font, msg_color, max_w);
-        let clip_rect = egui::Rect::from_min_size(
-            egui::pos2(msg_x, content_bottom),
-            egui::vec2(max_w, METADATA_LINE_HEIGHT),
-        );
-        ui.painter().with_clip_rect(clip_rect).galley(
-            egui::pos2(msg_x, content_bottom),
-            galley,
-            msg_color,
+            font,
+            color,
         );
         content_bottom += METADATA_LINE_HEIGHT;
     }
@@ -806,9 +811,9 @@ fn render_workspace_row(
         }
     }
 
-    // --- Notification preview text (only when no agent message) ---
+    // --- Notification preview text (only when no keyed status rows) ---
     if let Some(notif) = latest_notif
-        .filter(|_| !has_agent_message)
+        .filter(|_| !has_status_rows)
         .filter(|n| !n.body.is_empty())
     {
         let notif_color = meta_color;
@@ -963,5 +968,90 @@ mod tests {
     fn badge_label_caps_over_max() {
         assert_eq!(badge_label(100), "99+");
         assert_eq!(badge_label(12_345), "99+");
+    }
+
+    // Helper: populate the `displayed` snapshot via a real commit pass,
+    // matching what the per-frame sidebar render sees.
+    fn commit(store: &mut amux_notify::NotificationStore) {
+        store.commit_displayed_at(
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(40),
+        );
+    }
+
+    #[test]
+    fn build_status_rows_sorts_by_priority_descending() {
+        let mut store = amux_notify::NotificationStore::new();
+        store.set_status(
+            1,
+            amux_notify::AgentState::Active,
+            Some("Running".into()),
+            Some("Refactor foo".into()),
+            None,
+        );
+        store.upsert_entry(
+            1,
+            "claude.notification",
+            "Needs approval",
+            amux_notify::priority::MESSAGE + 10, // 70
+            None,
+            None,
+            None,
+        );
+        commit(&mut store);
+        let status = store.workspace_status(1).unwrap();
+        let rows = build_status_rows(status);
+        // agent.label (priority 100) excluded — it renders in the status
+        // row with its state icon. task (80) ranks above notification (70).
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "Refactor foo");
+        assert_eq!(rows[0].1, amux_notify::priority::TASK);
+        assert_eq!(rows[1].0, "Needs approval");
+    }
+
+    #[test]
+    fn build_status_rows_dedups_non_agent_entries_matching_agent_text() {
+        let mut store = amux_notify::NotificationStore::new();
+        // Legacy dual-write pattern from claude_hook: agent.message and
+        // claude.tool carry identical text during PreToolUse.
+        store.set_status(
+            1,
+            amux_notify::AgentState::Active,
+            Some("Running".into()),
+            None,
+            Some("Reading file.rs".into()),
+        );
+        store.upsert_entry(
+            1,
+            "claude.tool",
+            "Reading file.rs",
+            amux_notify::priority::MESSAGE,
+            None,
+            None,
+            None,
+        );
+        commit(&mut store);
+        let status = store.workspace_status(1).unwrap();
+        let rows = build_status_rows(status);
+        // Dedup keeps the agent.* copy and drops claude.tool.
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "Reading file.rs");
+    }
+
+    #[test]
+    fn build_status_rows_filters_empty_text() {
+        let mut store = amux_notify::NotificationStore::new();
+        store.upsert_entry(
+            1,
+            "user.generic",
+            "",
+            amux_notify::priority::USER_GENERIC,
+            None,
+            None,
+            None,
+        );
+        commit(&mut store);
+        let status = store.workspace_status(1).unwrap();
+        assert!(build_status_rows(status).is_empty());
     }
 }
