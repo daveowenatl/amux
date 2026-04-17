@@ -80,6 +80,11 @@ pub struct SavedWorkspace {
     pub panes: HashMap<u64, SavedManagedPane>,
     #[serde(default)]
     pub color: Option<[u8; 4]>,
+    /// When true, the workspace sorts to the top of the sidebar and
+    /// renders with a pin glyph. Defaults to `false`, so session files
+    /// written before this field existed deserialize unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
     /// Non-reserved keyed status entries (user publications via
     /// `amux set-status`, e.g. `git.branch` or a workspace description).
     /// Reserved `agent.*` slots and the live `AgentState` / progress are
@@ -348,6 +353,7 @@ mod tests {
                 zoomed: None,
                 panes,
                 color: None,
+                pinned: false,
                 workspace_status: None,
             }],
             active_workspace_idx: 0,
@@ -537,6 +543,42 @@ mod tests {
         let session = minimal_session();
         let json = serde_json::to_string(&session).unwrap();
         assert!(!json.contains("workspace_status"));
+    }
+
+    #[test]
+    fn pinned_default_false_is_omitted_from_json() {
+        // skip_serializing_if on `pinned` keeps the common case terse.
+        let session = minimal_session();
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(!json.contains("\"pinned\""));
+    }
+
+    #[test]
+    fn pinned_round_trips() {
+        let mut session = minimal_session();
+        session.workspaces[0].pinned = true;
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("\"pinned\":true"));
+        let restored: SessionData = serde_json::from_str(&json).unwrap();
+        assert!(restored.workspaces[0].pinned);
+    }
+
+    #[test]
+    fn deserialize_without_pinned_defaults_to_false() {
+        // Sessions written before the `pinned` field existed must still
+        // load cleanly.
+        let mut session = minimal_session();
+        session.workspaces[0].pinned = false;
+        let mut json: serde_json::Value = serde_json::to_value(&session).unwrap();
+        // Confirm the field is absent in the default case.
+        assert!(json["workspaces"][0].get("pinned").is_none());
+        // And a hand-written session without the field decodes.
+        json["workspaces"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("pinned");
+        let restored: SessionData = serde_json::from_value(json).unwrap();
+        assert!(!restored.workspaces[0].pinned);
     }
 
     #[test]

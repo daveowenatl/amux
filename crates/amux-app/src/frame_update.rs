@@ -347,11 +347,27 @@ impl eframe::App for AmuxApp {
                             {
                                 self.active_workspace_idx += 1;
                             }
+                            // Reassert the pinned-first invariant: a drag
+                            // that crossed the pin boundary snaps back so
+                            // pinned workspaces always group at the top.
+                            workspace_ops::enforce_pinned_first(
+                                &mut self.workspaces,
+                                &mut self.active_workspace_idx,
+                            );
                         }
                     }
                     sidebar::SidebarAction::SetWorkspaceColor(idx, color) => {
                         if idx < self.workspaces.len() {
                             self.workspaces[idx].color = color;
+                        }
+                    }
+                    sidebar::SidebarAction::TogglePinWorkspace(idx) => {
+                        if idx < self.workspaces.len() {
+                            self.workspaces[idx].pinned = !self.workspaces[idx].pinned;
+                            workspace_ops::enforce_pinned_first(
+                                &mut self.workspaces,
+                                &mut self.active_workspace_idx,
+                            );
                         }
                     }
                 }

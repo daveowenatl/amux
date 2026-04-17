@@ -28,6 +28,10 @@ pub struct Workspace {
     pub last_pane_sizes: HashMap<PaneId, (usize, usize)>,
     /// Optional workspace color for sidebar indicator.
     pub color: Option<[u8; 4]>,
+    /// When true, the workspace sorts to the top of the sidebar and
+    /// renders a pin glyph next to its title. Toggled via the sidebar
+    /// context menu and persisted across sessions.
+    pub pinned: bool,
 }
 
 pub struct SidebarState {

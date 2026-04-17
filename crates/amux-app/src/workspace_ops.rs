@@ -2,6 +2,26 @@
 
 use crate::*;
 
+/// Stably partition `workspaces` so pinned entries come first, preserving
+/// relative order within each group, and rewrite `active_idx` so it still
+/// points at the same workspace (by id) after the reshuffle.
+///
+/// Called after any mutation that can change workspace ordering —
+/// pin toggle, drag-reorder, session restore — to keep the "pinned sorts
+/// to the top" invariant intact. A stable sort means unpinned drag order
+/// and pinned drag order are both preserved within their group, so a user
+/// dragging two pinned workspaces around each other still sees their
+/// manual order.
+pub(crate) fn enforce_pinned_first(workspaces: &mut [Workspace], active_idx: &mut usize) {
+    let active_id = workspaces.get(*active_idx).map(|w| w.id);
+    workspaces.sort_by_key(|w| !w.pinned);
+    if let Some(id) = active_id {
+        if let Some(new_idx) = workspaces.iter().position(|w| w.id == id) {
+            *active_idx = new_idx;
+        }
+    }
+}
+
 impl AmuxApp {
     /// Check if any egui text field (omnibar, rename modal, find bar) has focus.
     pub(crate) fn has_focused_text_field(&self) -> bool {
@@ -120,6 +140,7 @@ impl AmuxApp {
                     dragging_divider: None,
                     last_pane_sizes: HashMap::new(),
                     color: None,
+                    pinned: false,
                 };
 
                 self.workspaces.push(workspace);
