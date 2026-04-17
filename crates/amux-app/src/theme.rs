@@ -26,8 +26,15 @@ pub(crate) struct TerminalColors {
 #[derive(Debug, Clone)]
 pub(crate) struct ChromeColors {
     pub sidebar_bg: Color32,
+    /// Sidebar row background when the row is hovered but not the active
+    /// workspace. Subtle white overlay applied on top of `sidebar_bg`.
+    pub sidebar_hover_bg: Color32,
     /// Active/selected row background in the sidebar (derived from accent).
     pub sidebar_active_bg: Color32,
+    /// Sidebar row background when the row is active AND hovered. Derived
+    /// by lightening `sidebar_active_bg` so hover stays visible over the
+    /// selected row instead of collapsing into the plain active state.
+    pub sidebar_active_hover_bg: Color32,
     /// Tab bar background. Falls back to terminal background when `None`.
     pub tab_bar_bg: Option<Color32>,
     /// Title bar / top padding background. Falls back to `tab_bar_bg` when `None`.
@@ -155,7 +162,9 @@ impl ChromeColors {
         let [br, bg_g, bb] = bg;
         Self {
             sidebar_bg: darken_rgb(br, bg_g, bb, 0.15),
+            sidebar_hover_bg: Color32::from_rgba_premultiplied(255, 255, 255, 20),
             sidebar_active_bg: accent,
+            sidebar_active_hover_bg: lighten_color(accent, 0.12),
             tab_bar_bg: None,
             titlebar_bg: None,
             tab_active_bg: Color32::from_rgb(br, bg_g, bb),
@@ -220,6 +229,7 @@ impl Theme {
                 let c = Color32::from_rgb(r, g, b);
                 self.chrome.accent = c;
                 self.chrome.sidebar_active_bg = c;
+                self.chrome.sidebar_active_hover_bg = lighten_color(c, 0.12);
             }
         }
         if let Some(ref hex) = colors.sidebar_bg {
@@ -255,6 +265,11 @@ fn lighten_rgb(r: u8, g: u8, b: u8, amount: f32) -> Color32 {
         (g as f32 + (255.0 - g as f32) * amount) as u8,
         (b as f32 + (255.0 - b as f32) * amount) as u8,
     )
+}
+
+/// Lighten an opaque `Color32` toward white by `amount` (0.0–1.0).
+fn lighten_color(c: Color32, amount: f32) -> Color32 {
+    lighten_rgb(c.r(), c.g(), c.b(), amount)
 }
 
 impl Default for Theme {
@@ -309,10 +324,12 @@ impl Default for Theme {
                 // the sidebar reads as a distinct panel rather than
                 // blending into the terminal.
                 sidebar_bg: Color32::from_rgb(0x1d, 0x1f, 0x25),
+                sidebar_hover_bg: Color32::from_rgba_premultiplied(255, 255, 255, 20),
                 // Accent: amux blue — kept distinct from the Monokai
                 // terminal palette so the active workspace/tab
                 // highlight doesn't blend into the orange ANSI cells.
                 sidebar_active_bg: Color32::from_rgb(0x3d, 0x7d, 0xff),
+                sidebar_active_hover_bg: Color32::from_rgb(0x5a, 0x93, 0xff),
                 tab_bar_bg: None,  // falls back to terminal background
                 titlebar_bg: None, // falls back to tab bar background
                 tab_active_bg: Color32::from_rgb(0x25, 0x28, 0x30), // match terminal bg

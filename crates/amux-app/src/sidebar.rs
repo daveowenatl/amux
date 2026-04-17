@@ -9,9 +9,13 @@ use amux_core::model::{SidebarDragState, SidebarState, SurfaceMetadata, Workspac
 // Colors (cmux dark mode equivalents)
 // ---------------------------------------------------------------------------
 
-const ROW_HOVER_BG: Color32 = Color32::from_rgba_premultiplied(15, 15, 15, 15);
 const TEXT_ACTIVE: Color32 = Color32::WHITE;
 const TEXT_INACTIVE: Color32 = Color32::from_gray(180);
+/// Title color for unread-but-not-active rows. Brighter than
+/// `TEXT_INACTIVE` so an unread-but-idle row reads as "wants
+/// attention" without stealing the selected row's full-white
+/// treatment.
+const TEXT_UNREAD: Color32 = Color32::from_gray(230);
 const BADGE_ACTIVE_BG: Color32 = Color32::from_rgba_premultiplied(64, 64, 64, 64);
 const CLOSE_BTN_COLOR: Color32 = Color32::from_rgba_premultiplied(140, 140, 140, 179);
 const PROGRESS_TRACK: Color32 = Color32::from_rgba_premultiplied(20, 20, 20, 20);
@@ -354,6 +358,45 @@ fn handle_drag_reorder(
     }
 }
 
+/// Four-way combination of active/hover states for a workspace row.
+///
+/// Prior to G19 we used nested `if is_active / else if hovered` which
+/// meant hovering the active row produced no visual response (hover
+/// was swallowed by the active branch). Keeping the combinations as
+/// a single enum forces the render code to handle all four, and lets
+/// the theme expose separate tokens for `Active` vs `ActiveHovered`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowVisuals {
+    Idle,
+    Hovered,
+    Active,
+    ActiveHovered,
+}
+
+impl RowVisuals {
+    fn resolve(is_active: bool, hovered: bool) -> Self {
+        match (is_active, hovered) {
+            (true, true) => RowVisuals::ActiveHovered,
+            (true, false) => RowVisuals::Active,
+            (false, true) => RowVisuals::Hovered,
+            (false, false) => RowVisuals::Idle,
+        }
+    }
+
+    fn is_active(self) -> bool {
+        matches!(self, RowVisuals::Active | RowVisuals::ActiveHovered)
+    }
+
+    fn bg(self, chrome: &crate::theme::ChromeColors) -> Color32 {
+        match self {
+            RowVisuals::Idle => Color32::TRANSPARENT,
+            RowVisuals::Hovered => chrome.sidebar_hover_bg,
+            RowVisuals::Active => chrome.sidebar_active_bg,
+            RowVisuals::ActiveHovered => chrome.sidebar_active_hover_bg,
+        }
+    }
+}
+
 /// Renders a workspace row. Returns (actions, allocated_rect).
 #[allow(clippy::too_many_arguments)]
 fn render_workspace_row(
@@ -581,14 +624,9 @@ fn render_workspace_row(
     });
 
     // --- Background ---
+    let visuals = RowVisuals::resolve(is_active, hovered);
     let opacity = if is_being_dragged { 0.6 } else { 1.0 };
-    let bg = if is_active {
-        with_opacity(theme.chrome.sidebar_active_bg, opacity)
-    } else if hovered {
-        with_opacity(ROW_HOVER_BG, opacity)
-    } else {
-        Color32::TRANSPARENT
-    };
+    let bg = with_opacity(visuals.bg(&theme.chrome), opacity);
     ui.painter().rect_filled(rect, ROW_CORNER_RADIUS, bg);
 
     // --- Workspace color capsule (leading edge) ---
@@ -608,8 +646,13 @@ fn render_workspace_row(
     };
 
     // --- Title (or rename TextEdit) ---
-    let title_color = if is_active {
+    // G19: active rows are full-white; non-active rows with unread
+    // notifications get a brighter-than-idle grey so they read as
+    // "wants attention" without matching the selected row.
+    let title_color = if visuals.is_active() {
         TEXT_ACTIVE
+    } else if unread > 0 {
+        TEXT_UNREAD
     } else {
         TEXT_INACTIVE
     };
@@ -987,6 +1030,31 @@ fn shorten_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn row_visuals_resolves_all_four_combinations() {
+        use RowVisuals::*;
+        assert_eq!(RowVisuals::resolve(false, false), Idle);
+        assert_eq!(RowVisuals::resolve(false, true), Hovered);
+        assert_eq!(RowVisuals::resolve(true, false), Active);
+        assert_eq!(RowVisuals::resolve(true, true), ActiveHovered);
+    }
+
+    #[test]
+    fn row_visuals_active_hover_distinct_from_active() {
+        // Regression for G19: hovering the selected row must produce a
+        // different background than the selected-but-not-hovered row,
+        // so hover stays visible over active.
+        let chrome = crate::theme::Theme::default().chrome;
+        assert_ne!(
+            RowVisuals::Active.bg(&chrome),
+            RowVisuals::ActiveHovered.bg(&chrome),
+        );
+        assert!(RowVisuals::Active.is_active());
+        assert!(RowVisuals::ActiveHovered.is_active());
+        assert!(!RowVisuals::Hovered.is_active());
+        assert!(!RowVisuals::Idle.is_active());
+    }
 
     #[test]
     fn badge_label_passes_through_small_counts() {
