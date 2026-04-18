@@ -262,7 +262,7 @@ pub(crate) enum Command {
     #[command(name = "set-pr")]
     SetPr {
         /// PR number
-        #[arg(long, conflicts_with = "clear")]
+        #[arg(long, conflicts_with = "clear", required_unless_present = "clear")]
         number: Option<u32>,
         /// PR title
         #[arg(long, conflicts_with = "clear")]
@@ -271,8 +271,9 @@ pub(crate) enum Command {
         #[arg(long, conflicts_with = "clear")]
         state: Option<String>,
         /// Replace the surface's entire PR list with this one entry
-        /// instead of upserting by number
-        #[arg(long, conflicts_with = "clear")]
+        /// instead of upserting by number. Requires `--number` so a
+        /// typo/omission can't silently clear the PR list.
+        #[arg(long, conflicts_with = "clear", requires = "number")]
         replace: bool,
         /// Clear all PRs on the surface
         #[arg(long)]

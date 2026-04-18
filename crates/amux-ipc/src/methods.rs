@@ -210,8 +210,8 @@ pub struct SetPrParams {
     ///
     /// `number = None` + `replace = false` is treated as a no-op so
     /// legacy callers sending an empty body don't accidentally wipe
-    /// the list. Use an explicit `surface.clear_pr` (or
-    /// `replace = true` with `number = None`) to clear.
+    /// the list. Use `replace = true` with `number = None` to clear
+    /// the list explicitly.
     #[serde(default)]
     pub replace: bool,
 }

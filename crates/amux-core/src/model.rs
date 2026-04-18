@@ -87,10 +87,11 @@ pub struct SurfaceMetadata {
     pub git_branch: Option<String>,
     pub git_dirty: bool,
     /// PRs attached to this surface. Empty means no PR info set.
-    /// IPC `surface.set_pr` upserts by number (or clears when no number
-    /// supplied) so integrations can publish one PR at a time without
-    /// coordinating — a second call with a different number adds a
-    /// second row rather than replacing the first.
+    /// IPC `surface.set_pr` upserts by number. When `number` is omitted,
+    /// `replace=false` is a no-op and `replace=true` clears all PRs, so
+    /// integrations can publish one PR at a time without coordinating —
+    /// a second call with a different number adds a second row rather
+    /// than replacing the first.
     pub prs: Vec<PrSummary>,
     /// Surface title from OSC 0/2 (window title set by shell/agent).
     pub surface_title: Option<String>,

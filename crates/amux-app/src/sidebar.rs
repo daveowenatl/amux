@@ -52,8 +52,9 @@ const METADATA_FONT_SIZE: f32 = 10.0;
 const METADATA_LINE_HEIGHT: f32 = 16.0;
 /// G13: cap on the number of PR rows rendered beneath a workspace.
 /// More than this would start to dominate the sidebar for a workspace
-/// that publishes a PR per tiny feature branch; we fall back to
-/// "#N, #M, ... +K more" on the final visible row once this cap is hit.
+/// that publishes a PR per tiny feature branch; PRs still render one
+/// per row, and once this cap is hit the last visible PR row appends
+/// a `+K more` suffix to indicate additional hidden PRs.
 const MAX_PR_ROWS: usize = 3;
 /// G6: row-height animation duration. When a status entry appears or
 /// expires, the row interpolates toward the new target height over
