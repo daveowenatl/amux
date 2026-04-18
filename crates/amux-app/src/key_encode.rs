@@ -18,7 +18,13 @@ pub(crate) fn encode_egui_key(
     modifiers: &egui::Modifiers,
     repeat: bool,
 ) -> Option<Vec<u8>> {
-    let gkey = egui_key_to_ghostty(key)?;
+    let Some(gkey) = egui_key_to_ghostty(key) else {
+        crate::input_trace::log(
+            "encode_egui_key",
+            format_args!("key={key:?} -> None (unmapped egui key)"),
+        );
+        return None;
+    };
     let mods = egui_mods_to_ghostty(modifiers);
     let action = if repeat {
         Action::Repeat
@@ -30,6 +36,10 @@ pub(crate) fn encode_egui_key(
     // This avoids double-sending: egui fires both Event::Key and Event::Text for
     // plain character input.
     if is_character_key(key) && !modifiers.ctrl && !modifiers.alt && !modifiers.command {
+        crate::input_trace::log(
+            "encode_egui_key",
+            format_args!("key={key:?} -> None (plain char, expect Event::Text)"),
+        );
         return None;
     }
 
@@ -58,7 +68,18 @@ pub(crate) fn encode_egui_key(
         (None, None)
     };
 
-    pane.encode_key(gkey, mods, action, text.as_deref(), unshifted_cp)
+    let result = pane.encode_key(gkey, mods, action, text.as_deref(), unshifted_cp);
+    crate::input_trace::log(
+        "encode_egui_key",
+        format_args!(
+            "key={key:?} mods={mods:?} text={text:?} unshifted_cp={unshifted_cp:?} -> {r}",
+            r = match &result {
+                Some(b) => format!("{} bytes: {:?}", b.len(), b),
+                None => "None (encoder returned empty/err)".to_string(),
+            },
+        ),
+    );
+    result
 }
 
 /// Map an egui Key to the corresponding libghostty Key.

@@ -275,6 +275,29 @@ impl eframe::App for AmuxApp {
             if sent_input {
                 self.cursor_blink_since = Instant::now();
             }
+        } else {
+            // Diagnostic: log which gate blocked input so we can see if a
+            // stuck modal flag is silently eating keystrokes (see #297).
+            // Only log when the user actually pressed a key, otherwise
+            // we'd spam every frame.
+            let key_pressed = ctx.input(|i| {
+                i.events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))
+            });
+            if key_pressed {
+                crate::input_trace::log(
+                    "gate_skip",
+                    format_args!(
+                        "shortcut={s} copy_mode={c} rename={r} settings={st} find={f}",
+                        s = shortcut_consumed,
+                        c = self.copy_mode.is_some(),
+                        r = self.rename_modal.is_some(),
+                        st = self.settings_modal.is_some(),
+                        f = self.find_state.is_some(),
+                    ),
+                );
+            }
         }
 
         // The non-macOS menu bar (File / Edit / View) is rendered as

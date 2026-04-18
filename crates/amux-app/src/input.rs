@@ -1214,6 +1214,40 @@ impl AmuxApp {
         let events = ctx.input(|i| i.events.clone());
         let focused_id = self.focused_pane_id();
 
+        for event in &events {
+            match event {
+                egui::Event::Text(t) => {
+                    crate::input_trace::log("handle_input", format_args!("Text({t:?})"));
+                }
+                egui::Event::Key {
+                    key,
+                    pressed,
+                    modifiers,
+                    repeat,
+                    ..
+                } => {
+                    crate::input_trace::log(
+                        "handle_input",
+                        format_args!(
+                            "Key {{ key: {key:?}, pressed: {pressed}, repeat: {repeat}, \
+                             ctrl: {c}, shift: {s}, alt: {a}, cmd: {cm} }}",
+                            c = modifiers.ctrl,
+                            s = modifiers.shift,
+                            a = modifiers.alt,
+                            cm = modifiers.command,
+                        ),
+                    );
+                }
+                egui::Event::Paste(p) => {
+                    crate::input_trace::log("handle_input", format_args!("Paste(len={})", p.len()));
+                }
+                egui::Event::Ime(e) => {
+                    crate::input_trace::log("handle_input", format_args!("Ime({e:?})"));
+                }
+                _ => {}
+            }
+        }
+
         // Clear selection when user types
         let has_input = events.iter().any(|e| {
             matches!(
@@ -1273,6 +1307,10 @@ impl AmuxApp {
         for event in &events {
             match event {
                 egui::Event::Text(text) => {
+                    crate::input_trace::log(
+                        "write_pty",
+                        format_args!("Text {:?} -> {} bytes", text, text.len()),
+                    );
                     surface.snap_scroll_to_bottom();
                     let _ = surface.pane.write_bytes(text.as_bytes());
                 }
@@ -1286,6 +1324,10 @@ impl AmuxApp {
                     if let Some(bytes) =
                         key_encode::encode_egui_key(&mut surface.pane, key, modifiers, *repeat)
                     {
+                        crate::input_trace::log(
+                            "write_pty",
+                            format_args!("Key {key:?} -> {} bytes: {bytes:?}", bytes.len()),
+                        );
                         surface.snap_scroll_to_bottom();
                         let _ = surface.pane.write_bytes(&bytes);
                     }

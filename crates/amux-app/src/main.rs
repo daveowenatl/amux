@@ -12,6 +12,7 @@ mod gemini_title;
 mod hyperlinks;
 mod ime;
 mod input;
+mod input_trace;
 mod ipc_dispatch;
 mod key_encode;
 mod layout_ops;
