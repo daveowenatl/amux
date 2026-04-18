@@ -78,6 +78,11 @@ pub struct SurfaceMetadata {
     pub pr_state: Option<String>, // "open", "merged", "closed"
     /// Surface title from OSC 0/2 (window title set by shell/agent).
     pub surface_title: Option<String>,
+    /// Most recent non-empty line from the focused surface's viewport.
+    /// Sampled lazily in the PTY drain path (G11) so the sidebar can show
+    /// a one-line log preview under the agent status. `None` when the
+    /// viewport is empty or when no terminal surface is active.
+    pub latest_output_line: Option<String>,
 }
 
 /// Info about a process that has exited.
