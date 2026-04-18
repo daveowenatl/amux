@@ -1044,7 +1044,6 @@ pub(crate) fn spawn_surface(
         metadata,
         user_title: None,
         exited: None,
-        latest_output_line: None,
     })
 }
 

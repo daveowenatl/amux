@@ -184,11 +184,6 @@ pub(crate) struct PaneSurface {
     pub(crate) user_title: Option<String>,
     /// Set when the PTY process exits.
     pub(crate) exited: Option<ExitInfo>,
-    /// G11: most recent non-empty line from the viewport. Refreshed by
-    /// [`PaneSurface::refresh_latest_output_line`] after PTY bytes are
-    /// fed, so the sidebar can render a one-line log preview without
-    /// re-reading the viewport for every row on every frame.
-    pub(crate) latest_output_line: Option<String>,
 }
 
 impl PaneSurface {
@@ -204,35 +199,59 @@ impl PaneSurface {
     }
 
     /// G11: re-sample the viewport and cache the last non-empty visible
-    /// line so the sidebar can render a log preview under the agent
-    /// status. Called after a batch of PTY bytes is fed in the drain
-    /// loop; cheap enough at that cadence because it only runs for
-    /// surfaces that actually produced output this frame.
+    /// line on [`SurfaceMetadata::latest_output_line`] so the sidebar
+    /// can render a log preview under the agent status. Called after a
+    /// batch of PTY bytes is fed in the drain loop; cheap enough at
+    /// that cadence because it only runs for surfaces that actually
+    /// produced output this frame.
     ///
-    /// The returned line is trimmed to [`Self::LATEST_LINE_MAX_CHARS`]
-    /// characters so a multi-kilobyte single-line write (e.g. a long
-    /// JSON blob with no newlines) can't blow up the sidebar draw or
-    /// the session snapshot.
+    /// Reads only the last `LATEST_LINE_SCAN_LINES` lines via
+    /// [`TerminalBackend::read_screen_lines`] — that's long enough to
+    /// skip a trailing prompt with a couple of blank lines above it,
+    /// short enough that backends can stay fast (no need to materialize
+    /// the whole viewport just to find the tail). The stored line is
+    /// capped at [`Self::LATEST_LINE_MAX_CHARS`] so a multi-kilobyte
+    /// single-line write (e.g. a long JSON blob with no newlines)
+    /// can't blow up the sidebar draw or the session snapshot.
     pub(crate) fn refresh_latest_output_line(&mut self) {
-        let text = self.pane.read_screen_text();
-        let line = text.lines().rev().find_map(|l| {
-            let trimmed = l.trim_end();
-            (!trimmed.trim().is_empty()).then(|| trimmed.to_string())
-        });
-        self.latest_output_line = line.map(|l| {
-            if l.chars().count() > Self::LATEST_LINE_MAX_CHARS {
-                l.chars().take(Self::LATEST_LINE_MAX_CHARS).collect()
-            } else {
-                l
-            }
-        });
+        let text = self
+            .pane
+            .read_screen_lines(Self::LATEST_LINE_SCAN_SPEC, false);
+        self.metadata.latest_output_line = pick_latest_output_line(&text);
     }
 
-    /// Cap on [`Self::latest_output_line`] length. The sidebar truncates
-    /// by measured width anyway, but a hard character cap keeps the
-    /// cached string from pinning pathological amounts of memory when
-    /// an agent writes one unbroken megabyte to stdout.
+    /// Cap on [`SurfaceMetadata::latest_output_line`] length. The sidebar
+    /// truncates by measured width anyway, but a hard character cap keeps
+    /// the cached string from pinning pathological amounts of memory
+    /// when an agent writes one unbroken megabyte to stdout.
     pub(crate) const LATEST_LINE_MAX_CHARS: usize = 512;
+    /// Line-range spec passed to
+    /// [`TerminalBackend::read_screen_lines`] when sampling for the log
+    /// preview. Picks up the last `N` lines so the scan can always find
+    /// the latest non-empty output line above any trailing prompt /
+    /// blank rows without materializing the full screen.
+    const LATEST_LINE_SCAN_SPEC: &'static str = "-20";
+}
+
+/// Extract the last non-empty line from a chunk of viewport text and
+/// cap it at [`PaneSurface::LATEST_LINE_MAX_CHARS`] characters. Split
+/// out of [`PaneSurface::refresh_latest_output_line`] so the scan
+/// logic (trim handling, empty filter, length cap) can be unit-tested
+/// without standing up a real backend.
+pub(crate) fn pick_latest_output_line(text: &str) -> Option<String> {
+    let line = text.lines().rev().find_map(|l| {
+        let trimmed = l.trim_end();
+        (!trimmed.trim().is_empty()).then(|| trimmed.to_string())
+    })?;
+    Some(
+        if line.chars().count() > PaneSurface::LATEST_LINE_MAX_CHARS {
+            line.chars()
+                .take(PaneSurface::LATEST_LINE_MAX_CHARS)
+                .collect()
+        } else {
+            line
+        },
+    )
 }
 
 /// A leaf in the split tree. Each pane has its own tab bar with
@@ -386,5 +405,55 @@ impl ManagedPane {
             is_alive: self.is_alive(),
             surface_count: self.tab_count(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn latest_line_picks_last_non_blank() {
+        // Prompt `$ ` keeps its `$` — trim_end removes the trailing
+        // space but the line is still non-empty, so the scan returns it
+        // rather than skipping further up to `middle output`. Sidebar
+        // dedupe happens a layer up; this helper only cares about
+        // "latest non-empty".
+        let screen = "first line\nmiddle output\n$ \n\n";
+        assert_eq!(pick_latest_output_line(screen), Some("$".to_string()));
+    }
+
+    #[test]
+    fn latest_line_skips_trailing_blank_lines() {
+        // Trailing whitespace-only lines are skipped, but a line with
+        // any real content (here: `middle output`) is returned.
+        let screen = "first line\nmiddle output\n   \n\t\n";
+        assert_eq!(
+            pick_latest_output_line(screen),
+            Some("middle output".to_string()),
+        );
+    }
+
+    #[test]
+    fn latest_line_returns_none_when_all_blank() {
+        assert_eq!(pick_latest_output_line(""), None);
+        assert_eq!(pick_latest_output_line("\n\n   \n\t\n"), None);
+    }
+
+    #[test]
+    fn latest_line_trims_trailing_whitespace() {
+        // Trim trailing spaces/tabs but keep leading indentation so
+        // code-looking output doesn't get reflowed.
+        assert_eq!(
+            pick_latest_output_line("    indented   \n"),
+            Some("    indented".to_string()),
+        );
+    }
+
+    #[test]
+    fn latest_line_caps_at_max_chars() {
+        let long = "x".repeat(PaneSurface::LATEST_LINE_MAX_CHARS + 50);
+        let out = pick_latest_output_line(&long).expect("non-empty");
+        assert_eq!(out.chars().count(), PaneSurface::LATEST_LINE_MAX_CHARS);
     }
 }

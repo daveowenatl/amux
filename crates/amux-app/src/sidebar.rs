@@ -154,6 +154,28 @@ fn build_status_rows(status: &amux_notify::WorkspaceStatus) -> Vec<(&str, i32)> 
         .collect()
 }
 
+/// G11: pick the latest-output-line to render beneath a workspace's
+/// keyed status rows. Returns the cached viewport tail trimmed of
+/// trailing whitespace, and `None` if:
+///
+/// - the surface has no cached preview yet,
+/// - the cached preview is empty after trimming, or
+/// - the preview's trimmed text matches any status row's text
+///   (so the sidebar doesn't echo e.g. `claude.tool = "Running tests"`
+///   on one row and the terminal echo of the same string on the next).
+///
+/// Extracted so the trim / empty / dedupe behaviour is unit-testable
+/// without wiring up a real `Workspace` and `NotificationStore`.
+fn pick_sidebar_log_line<'a>(
+    latest_output_line: Option<&'a str>,
+    status_rows: &[(&str, i32)],
+) -> Option<&'a str> {
+    latest_output_line
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .filter(|l| !status_rows.iter().any(|(text, _)| text.trim() == *l))
+}
+
 /// Format an unread count for the badge, capping at `BADGE_MAX_COUNT`.
 fn badge_label(unread: usize) -> String {
     if unread > BADGE_MAX_COUNT {
@@ -467,16 +489,13 @@ fn render_workspace_row(
     let has_color = ws.color.is_some();
     let has_git_or_cwd = metadata.is_some_and(|m| m.git_branch.is_some() || m.cwd.is_some());
     let has_pr = metadata.is_some_and(|m| m.pr_number.is_some());
-    // G11: latest output line (dim preview beneath the keyed status rows).
-    // Hidden when the most-recent visible line duplicates what a status
-    // row already shows, so we don't double-render e.g. `claude.tool =
-    // "Running tests"` on one line and the terminal echo of the same
-    // string on the next.
-    let latest_log_line = metadata
-        .and_then(|m| m.latest_output_line.as_deref())
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .filter(|l| !status_rows.iter().any(|(text, _)| text.trim() == *l));
+    // G11: latest output line (dim preview beneath the keyed status
+    // rows). The helper handles trim / empty / dedupe so the inline
+    // logic here stays a single field-access + call.
+    let latest_log_line = pick_sidebar_log_line(
+        metadata.and_then(|m| m.latest_output_line.as_deref()),
+        &status_rows,
+    );
     let has_log_line = latest_log_line.is_some();
 
     // Compute title text early so we can measure if it needs two lines.
@@ -1161,6 +1180,44 @@ mod tests {
         assert_eq!(
             RowVisuals::Hovered.bg(&chrome),
             RowVisuals::Idle.bg(&chrome),
+        );
+    }
+
+    #[test]
+    fn log_line_none_when_cache_empty() {
+        assert_eq!(pick_sidebar_log_line(None, &[]), None);
+    }
+
+    #[test]
+    fn log_line_none_when_only_whitespace() {
+        assert_eq!(pick_sidebar_log_line(Some("   \t  "), &[]), None);
+        assert_eq!(pick_sidebar_log_line(Some(""), &[]), None);
+    }
+
+    #[test]
+    fn log_line_trims_surrounding_whitespace() {
+        assert_eq!(
+            pick_sidebar_log_line(Some("  hello world   "), &[]),
+            Some("hello world"),
+        );
+    }
+
+    #[test]
+    fn log_line_hidden_when_duplicates_status_row() {
+        // If the viewport's last line matches a status row's text (modulo
+        // trimming), don't render it — the structured status row already
+        // communicates that content.
+        let rows: &[(&str, i32)] = &[("Running tests", 10)];
+        assert_eq!(pick_sidebar_log_line(Some("Running tests"), rows), None);
+        assert_eq!(pick_sidebar_log_line(Some("  Running tests  "), rows), None,);
+    }
+
+    #[test]
+    fn log_line_passes_through_when_no_status_collision() {
+        let rows: &[(&str, i32)] = &[("Running tests", 10)];
+        assert_eq!(
+            pick_sidebar_log_line(Some("ok 1 - foo"), rows),
+            Some("ok 1 - foo"),
         );
     }
 
