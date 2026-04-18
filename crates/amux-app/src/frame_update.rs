@@ -155,6 +155,13 @@ impl eframe::App for AmuxApp {
                 if bytes_this_frame >= MAX_BYTES_PER_SURFACE_PER_FRAME {
                     pending_data = true;
                 }
+                // G11: refresh the latest-output-line cache whenever this
+                // surface produced PTY output this frame. Gated on
+                // `bytes_this_frame > 0` so idle surfaces don't re-scan
+                // their viewports on every tick.
+                if bytes_this_frame > 0 {
+                    surface.refresh_latest_output_line();
+                }
                 // Detect process exit once the channel is drained
                 if surface.exited.is_none() && !surface.pane.is_alive() {
                     let message = match surface.pane.exit_status() {
